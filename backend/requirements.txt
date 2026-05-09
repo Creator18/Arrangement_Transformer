@@ -1,0 +1,14 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+librosa==0.10.1
+basic-pitch==0.3.3
+ffmpeg-python==0.2.0
+numpy==1.26.4
+scipy==1.13.0
+pretty-midi==0.2.10
+mir-eval==0.7
+music21==9.1.0
+soundfile==0.12.1
+resampy>=0.2.2,<0.4.3
+pydantic==2.7.1

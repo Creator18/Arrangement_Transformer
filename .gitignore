@@ -1,0 +1,29 @@
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Large binaries
+ffmpeg-8.1.1-essentials_build/
+ffmpeg-8.1.1-full_build-shared/
+*.7z
+
+# Session temp data
+backend/temp_sessions/
+
+# Claude internal
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
