@@ -21,15 +21,15 @@ const STEPS = [
 function StepProgressBar({ active, done }) {
   if (done) {
     return (
-      <div className="mt-2 w-full h-1 rounded-full bg-green-100 overflow-hidden">
-        <div className="h-full w-full bg-green-400 rounded-full" />
+      <div className="mt-2 w-full h-1 rounded-full overflow-hidden" style={{ background: 'rgba(34,197,94,0.15)' }}>
+        <div className="h-full w-full rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 6px rgba(34,197,94,0.5)' }} />
       </div>
     )
   }
   if (active) {
-    return <AudioBars color="#0071e3" height={20} className="mt-2" />
+    return <AudioBars color="#22c55e" height={20} className="mt-2" />
   }
-  return <div className="mt-2 w-full h-1 rounded-full bg-[#f0f0f3]" />
+  return <div className="mt-2 w-full h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }} />
 }
 
 export default function ProcessingPage() {
@@ -82,16 +82,20 @@ export default function ProcessingPage() {
           {/* Header */}
           <div className="flex items-baseline justify-between mb-1">
             <h2 className="text-xl font-semibold text-gradient">Processing</h2>
-            <span className="text-sm font-medium text-[#0071e3] tabular-nums">{overallPct}%</span>
+            <span className="text-sm font-medium text-amber-400 tabular-nums">{overallPct}%</span>
           </div>
           {state?.filename && (
-            <p className="text-sm text-[#6e6e73] mb-2 truncate">{state.filename}</p>
+            <p className="text-sm text-zinc-500 mb-2 truncate">{state.filename}</p>
           )}
 
-          {/* Overall bar */}
-          <div className="w-full h-1.5 bg-[#e5e5ea] rounded-full overflow-hidden mb-8">
+          {/* Overall progress bar — amber gradient */}
+          <div className="w-full h-1.5 rounded-full overflow-hidden mb-8" style={{ background: 'rgba(255,255,255,0.08)' }}>
             <motion.div
-              className="h-full bg-[#0071e3] rounded-full"
+              className="h-full rounded-full"
+              style={{
+                background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
+                boxShadow: overallPct > 0 ? '0 0 8px rgba(245,158,11,0.5)' : 'none',
+              }}
               animate={{ width: `${overallPct}%` }}
               transition={{ ease: 'easeOut', duration: 0.5 }}
             />
@@ -108,35 +112,66 @@ export default function ProcessingPage() {
                 <motion.div
                   key={step.key}
                   initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: pending ? 0.4 : 1, x: 0 }}
+                  animate={{ opacity: pending ? 0.35 : 1, x: 0 }}
                   transition={{ duration: 0.4, delay: i * 0.05 }}
                 >
                   <div className="flex items-center gap-3">
                     {/* Status icon */}
                     <div className="flex-shrink-0">
                       {done ? (
-                        <div className="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
-                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <div
+                          style={{
+                            width: 20, height: 20,
+                            borderRadius: '50%',
+                            background: '#22c55e',
+                            boxShadow: '0 0 8px rgba(34,197,94,0.5)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          <svg style={{ width: 12, height: 12 }} fill="none" viewBox="0 0 24 24" stroke="white" strokeWidth={3}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                           </svg>
                         </div>
                       ) : active ? (
-                        <div className="w-5 h-5 rounded-full border-2 border-[#0071e3] flex items-center justify-center">
+                        <div
+                          style={{
+                            width: 20, height: 20,
+                            borderRadius: '50%',
+                            border: '2px solid #f59e0b',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
                           <motion.div
-                            className="w-2 h-2 rounded-full bg-[#0071e3]"
-                            animate={{ scale: [1, 1.5, 1] }}
-                            transition={{ duration: 1, repeat: Infinity }}
+                            style={{
+                              width: 8, height: 8,
+                              borderRadius: '50%',
+                              background: '#f59e0b',
+                              willChange: 'transform',
+                              transformOrigin: '50% 50%',
+                            }}
+                            animate={{ scale: [1, 1.4, 1] }}
+                            transition={{ duration: 1, repeat: Infinity, ease: 'easeInOut' }}
                           />
                         </div>
                       ) : (
-                        <div className="w-5 h-5 rounded-full border-2 border-[#d2d2d7]" />
+                        <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #3f3f46', flexShrink: 0 }} />
                       )}
                     </div>
 
                     {/* Label + detail */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-baseline justify-between">
-                        <p className={`text-sm font-medium ${done ? 'text-[#3a3a3c]' : active ? 'text-[#0071e3]' : 'text-[#6e6e73]'}`}>
+                        <p className={`text-sm font-medium ${
+                          done   ? 'text-zinc-300'
+                          : active ? 'text-amber-400'
+                          : 'text-zinc-600'
+                        }`}>
                           {step.label}
                         </p>
                         {done && (
@@ -150,14 +185,13 @@ export default function ProcessingPage() {
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0 }}
-                            className="text-xs text-[#6e6e73] mt-0.5"
+                            className="text-xs text-zinc-500 mt-0.5"
                           >
                             {step.detail}
                           </motion.p>
                         )}
                       </AnimatePresence>
 
-                      {/* Per-step bar */}
                       <StepProgressBar active={active} done={done} />
                     </div>
                   </div>
@@ -170,9 +204,10 @@ export default function ProcessingPage() {
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-6 p-4 rounded-xl bg-red-50 border border-red-100"
+              className="mt-6 p-4 rounded-xl"
+              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
             >
-              <p className="text-sm font-medium text-red-600 mb-1">Something went wrong</p>
+              <p className="text-sm font-medium text-red-400 mb-1">Something went wrong</p>
               <p className="text-xs text-red-500">{error}</p>
             </motion.div>
           )}

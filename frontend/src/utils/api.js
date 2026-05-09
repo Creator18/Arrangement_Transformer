@@ -66,6 +66,20 @@ export function getPdfUrl(sessionId) {
   return `${BASE}/export/${sessionId}/pdf`
 }
 
+export function getMusicXmlUrl(sessionId) {
+  return `${BASE}/export/${sessionId}/musicxml`
+}
+
+/**
+ * Per-part audio URL.
+ * @param {string} sessionId
+ * @param {'transcription'|'transformed'} arrangement
+ * @param {'bass'|'melody'|'voice'|'all'} part
+ */
+export function getPartAudioUrl(sessionId, arrangement, part) {
+  return `${BASE}/export/${sessionId}/audio/${arrangement}/${part}`
+}
+
 export function getCdefUrl(sessionId) {
   return `${BASE}/export/${sessionId}/cdef`
 }

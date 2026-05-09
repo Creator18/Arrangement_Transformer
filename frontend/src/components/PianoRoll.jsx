@@ -49,8 +49,13 @@ export default function PianoRoll({ originalNotes = [], transformedNotes = [] })
   const totalHeight = height * 2 + 24
 
   return (
-    <div className="overflow-x-auto rounded-xl">
+    <div
+      className="overflow-x-auto rounded-xl p-3"
+      style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.06)' }}
+    >
       <svg width={width} height={totalHeight} className="block">
+        {/* Dark SVG background */}
+        <rect x={0} y={0} width={width} height={totalHeight} fill="rgba(0,0,0,0.01)" />
         {/* Background grid lines (C notes) */}
         {Array.from({ length: pitchRange }, (_, i) => {
           const pitch = MIDI_HIGH - i
@@ -61,20 +66,20 @@ export default function PianoRoll({ originalNotes = [], transformedNotes = [] })
               key={i}
               x1={0} y1={i * NOTE_HEIGHT}
               x2={width} y2={i * NOTE_HEIGHT}
-              stroke="rgba(0,0,0,0.06)" strokeWidth={1}
+              stroke="rgba(255,255,255,0.05)" strokeWidth={1}
             />
           )
         })}
 
         {/* Original */}
-        <text x={6} y={10} fontSize={10} fill="#6e6e73" fontFamily="sans-serif">Original</text>
+        <text x={6} y={10} fontSize={10} fill="#71717a" fontFamily="sans-serif">Original</text>
         {renderNotes(originalNotes, 12)}
 
         {/* Divider */}
-        <line x1={0} y1={height + 12} x2={width} y2={height + 12} stroke="rgba(0,0,0,0.08)" strokeWidth={1} />
+        <line x1={0} y1={height + 12} x2={width} y2={height + 12} stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
 
         {/* Transformed */}
-        <text x={6} y={height + 22} fontSize={10} fill="#6e6e73" fontFamily="sans-serif">Transformed</text>
+        <text x={6} y={height + 22} fontSize={10} fill="#71717a" fontFamily="sans-serif">Transformed</text>
         {renderNotes(transformedNotes, height + 24)}
       </svg>
 
@@ -83,7 +88,7 @@ export default function PianoRoll({ originalNotes = [], transformedNotes = [] })
         {Object.entries(PART_COLORS).map(([label, { fill }]) => (
           <div key={label} className="flex items-center gap-1.5">
             <div className="w-3 h-3 rounded-sm" style={{ background: fill }} />
-            <span className="text-xs text-[#6e6e73] capitalize">{label}</span>
+            <span className="text-xs text-zinc-500 capitalize">{label}</span>
           </div>
         ))}
       </div>

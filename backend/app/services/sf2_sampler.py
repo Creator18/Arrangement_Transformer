@@ -23,6 +23,7 @@ def _pretty_midi_sf2() -> Path | None:
         return None
 
 _SF2_CANDIDATES = [
+    _REPO_ROOT / "OmegaGMGS2.sf2",
     _pretty_midi_sf2(),
     _REPO_ROOT / "UprightPianoKW-SF2-20220221" / "UprightPianoKW-SF2-20220221" / "UprightPianoKW-20220221.sf2",
 ]
@@ -164,7 +165,8 @@ def _parse_sf2(data: bytes):
 _smpl_pcm: np.ndarray | None = None
 _key_map:  dict | None = None
 _loaded = False
-_pitch_cache: dict[tuple, np.ndarray] = {}   # (pitch, sr) → resampled samples
+# cache: (pitch, sr) → (resampled_samples, loop_start, loop_end)
+_pitch_cache: dict[tuple, tuple] = {}
 
 
 def _ensure_loaded():
@@ -172,17 +174,18 @@ def _ensure_loaded():
     if _loaded:
         return
     if SF2_PATH is None:
-        raise FileNotFoundError("Upright piano SF2 not found in project directory.")
+        raise FileNotFoundError("No SF2 found in project directory.")
     data = SF2_PATH.read_bytes()
     _smpl_pcm, _key_map = _parse_sf2(data)
     _loaded = True
 
 
-def _get_shifted_sample(pitch: int, out_sr: int) -> np.ndarray:
+def _get_shifted_sample(pitch: int, out_sr: int) -> tuple:
     """
-    Return the pitch-shifted sample for `pitch` at `out_sr`.
-    Results are cached so each of the 88 MIDI pitches is computed only once
-    per session, regardless of how many notes use that pitch.
+    Return (samples, loop_start, loop_end) for `pitch` at `out_sr`.
+    loop_start/loop_end are indices into `samples` in output-sample units.
+    If the SF2 sample has no valid loop region, loop_start == loop_end == 0.
+    Results are cached per (pitch, sr).
     """
     cache_key = (pitch, out_sr)
     if cache_key in _pitch_cache:
@@ -195,11 +198,12 @@ def _get_shifted_sample(pitch: int, out_sr: int) -> np.ndarray:
 
     raw = _smpl_pcm[sh["start"]:sh["end"]]
     if len(raw) == 0:
-        _pitch_cache[cache_key] = raw
-        return raw
+        result = (raw, 0, 0)
+        _pitch_cache[cache_key] = result
+        return result
 
     semitones = (pitch - sh["root"]) - sh["correction"] / 100.0
-    ratio = 2.0 ** (semitones / 12.0)
+    ratio    = 2.0 ** (semitones / 12.0)
     combined = ratio * sh["sr"] / out_sr
 
     precision = 1000
@@ -209,16 +213,121 @@ def _get_shifted_sample(pitch: int, out_sr: int) -> np.ndarray:
     up, down = up // g, down // g
 
     shifted = resample_poly(raw, up, down).astype(np.float32)
-    _pitch_cache[cache_key] = shifted
-    return shifted
+    scale   = len(shifted) / max(len(raw), 1)
+
+    # Scale loop points from raw-sample coordinates to resampled coordinates
+    sloop_rel = sh["sloop"] - sh["start"]
+    eloop_rel = sh["eloop"] - sh["start"]
+    loop_start = int(sloop_rel * scale)
+    loop_end   = int(eloop_rel * scale)
+
+    # Validate — loop must be a non-trivial region inside the resampled array
+    loop_start = max(0, min(loop_start, len(shifted) - 1))
+    loop_end   = max(0, min(loop_end,   len(shifted)))
+    if loop_end - loop_start < 64:   # degenerate / missing loop → no loop
+        loop_start = loop_end = 0
+
+    result = (shifted, loop_start, loop_end)
+    _pitch_cache[cache_key] = result
+    return result
+
+
+def _seamless_tile(loop_region: np.ndarray, needed: int) -> np.ndarray:
+    """
+    Tile loop_region to fill `needed` samples without clicks.
+    Pre-applies a crossfade at the loop boundary so each repeat blends
+    smoothly into the next, eliminating the DC-jump that causes choppiness.
+    """
+    loop_len = len(loop_region)
+    if loop_len == 0:
+        return np.zeros(needed, dtype=np.float32)
+
+    xfade = min(512, loop_len // 4)
+
+    if xfade < 4:
+        reps = (needed // loop_len) + 2
+        return np.tile(loop_region, reps)[:needed].astype(np.float32)
+
+    fade_out = np.linspace(1.0, 0.0, xfade, dtype=np.float32)
+    fade_in  = np.linspace(0.0, 1.0, xfade, dtype=np.float32)
+
+    # Blend the end of the loop into its own beginning so tiling is seamless
+    seamless = loop_region.copy()
+    seamless[-xfade:] = loop_region[-xfade:] * fade_out + loop_region[:xfade] * fade_in
+
+    reps = (needed // loop_len) + 2
+    return np.tile(seamless, reps)[:needed].astype(np.float32)
+
+
+def _crossfade_join(a: np.ndarray, b: np.ndarray, xfade: int) -> np.ndarray:
+    """Concatenate two arrays with a short crossfade at the join point."""
+    xfade = min(xfade, len(a), len(b))
+    if xfade < 2:
+        return np.concatenate([a, b]).astype(np.float32)
+
+    fade_out = np.linspace(1.0, 0.0, xfade, dtype=np.float32)
+    fade_in  = np.linspace(0.0, 1.0, xfade, dtype=np.float32)
+    blend    = a[-xfade:] * fade_out + b[:xfade] * fade_in
+    return np.concatenate([a[:-xfade], blend, b[xfade:]]).astype(np.float32)
+
+
+def _build_note_segment(shifted: np.ndarray, loop_start: int, loop_end: int,
+                        sustain_samples: int, release_samples: int, sr: int) -> np.ndarray:
+    """
+    Build a note segment:
+      - Sustain: looped sample held for sustain_samples
+      - Release: natural ring-out over release_samples with exponential decay
+      - Always padded to full sustain+release length so the fade never cuts short
+    """
+    xfade        = min(256, sr // 88)
+    total_needed = sustain_samples + release_samples
+    has_loop     = (loop_end > loop_start + 64)
+
+    if not has_loop or len(shifted) >= total_needed:
+        use_len = min(len(shifted), total_needed)
+        seg = np.zeros(total_needed, dtype=np.float32)
+        seg[:use_len] = shifted[:use_len]
+    else:
+        pre_loop    = shifted[:loop_start]
+        loop_region = shifted[loop_start:loop_end]
+        post_loop   = shifted[loop_end:]
+
+        sustain_after_pre = max(0, sustain_samples - len(pre_loop))
+        looped = _seamless_tile(loop_region, sustain_after_pre + xfade)
+
+        tail_len = min(len(post_loop), release_samples + xfade)
+        tail = post_loop[:tail_len] if tail_len > 0 else \
+               np.zeros(release_samples, dtype=np.float32)
+
+        if len(pre_loop) > 0:
+            mid = _crossfade_join(pre_loop, looped, xfade)
+        else:
+            mid = looped
+        raw_seg = _crossfade_join(mid, tail, xfade)
+
+        # Pad to total_needed so release fade always has full room
+        seg = np.zeros(total_needed, dtype=np.float32)
+        copy_len = min(len(raw_seg), total_needed)
+        seg[:copy_len] = raw_seg[:copy_len]
+
+    # Attack ramp (3 ms)
+    attack = min(int(0.003 * sr), len(seg) // 8)
+    if attack > 0:
+        seg[:attack] *= np.linspace(0.0, 1.0, attack)
+
+    # Exponential release decay — sounds more natural than linear
+    if release_samples > 0:
+        t = np.linspace(0.0, 1.0, release_samples, dtype=np.float32)
+        decay = np.exp(-4.0 * t).astype(np.float32)   # e^0=1 → e^-4≈0.018
+        seg[sustain_samples:sustain_samples + release_samples] *= decay
+
+    return seg
 
 
 def render_notes_sf2(notes: list, sr: int = 22050) -> np.ndarray:
     """
-    Render note list using upright piano SF2 samples.
-    Each MIDI pitch is resampled once and cached — subsequent notes at
-    the same pitch are just array copies, making rendering ~10-50× faster.
-    Falls back to additive synthesis if SF2 is unavailable.
+    Render note list using SF2 piano samples with proper sustain looping.
+    Falls back to additive synthesis if no SF2 is available.
     """
     try:
         _ensure_loaded()
@@ -229,9 +338,9 @@ def render_notes_sf2(notes: list, sr: int = 22050) -> np.ndarray:
     if not notes:
         return np.zeros(sr, dtype=np.float32)
 
-    max_time = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes)
-    total_samples = int((max_time + 3.0) * sr)
-    audio = np.zeros(total_samples, dtype=np.float32)
+    max_time      = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes)
+    total_samples = int((max_time + 5.0) * sr)
+    audio         = np.zeros(total_samples, dtype=np.float32)
 
     for n in notes:
         pitch    = int(n["pitch"])
@@ -239,29 +348,18 @@ def render_notes_sf2(notes: list, sr: int = 22050) -> np.ndarray:
         onset_s  = int(float(n["onset"]) * sr)
         note_dur = float(n.get("offset", n["onset"] + 0.5)) - float(n["onset"])
 
-        shifted = _get_shifted_sample(pitch, sr)
+        shifted, loop_start, loop_end = _get_shifted_sample(pitch, sr)
         if len(shifted) == 0:
             continue
 
         sustain_samples = int(note_dur * sr)
-        tail_samples    = int(min(3.0, note_dur * 1.5) * sr)
-        use_len         = min(len(shifted), sustain_samples + tail_samples)
+        # Generous ring-out: at least 1.5 s, scales with note length, max 3 s
+        release_samples = int(min(3.0, max(1.5, note_dur * 0.8)) * sr)
 
-        seg = shifted[:use_len].copy()
+        seg = _build_note_segment(shifted, loop_start, loop_end,
+                                  sustain_samples, release_samples, sr)
 
-        attack  = min(int(0.002 * sr), use_len // 8)
-        if attack > 0:
-            seg[:attack] *= np.linspace(0, 1, attack)
-
-        rel_start = min(sustain_samples, use_len)
-        rel_end   = min(rel_start + int(0.08 * sr), use_len)
-        rel_len   = rel_end - rel_start
-        if rel_len > 0:
-            seg[rel_start:rel_end] *= np.linspace(1, 0, rel_len)
-        if rel_end < use_len:
-            seg[rel_end:] = 0.0
-
-        end_s     = min(onset_s + use_len, total_samples)
+        end_s     = min(onset_s + len(seg), total_samples)
         place_len = end_s - onset_s
         audio[onset_s:end_s] += seg[:place_len] * amp
 

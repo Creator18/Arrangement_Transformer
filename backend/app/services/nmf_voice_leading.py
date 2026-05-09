@@ -282,7 +282,9 @@ def quantize_notes(notes: List[Dict], tempo: float, subdivisions: int = 16) -> L
     return result
 
 
-# ── scale detection & snapping ────────────────────────────────────────────────
+# ── scale & chord detection ───────────────────────────────────────────────────
+
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 _SCALES: Dict[str, List[int]] = {
     "major":            [0, 2, 4, 5, 7, 9, 11],
@@ -294,22 +296,28 @@ _SCALES: Dict[str, List[int]] = {
     "mixolydian":       [0, 2, 4, 5, 7, 9, 10],
 }
 
-_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_CHORDS: Dict[str, List[int]] = {
+    "maj":   [0, 4, 7],
+    "min":   [0, 3, 7],
+    "dom7":  [0, 4, 7, 10],
+    "min7":  [0, 3, 7, 10],
+    "maj7":  [0, 4, 7, 11],
+    "dim":   [0, 3, 6],
+    "aug":   [0, 4, 8],
+    "sus2":  [0, 2, 7],
+    "sus4":  [0, 5, 7],
+    "hdim7": [0, 3, 6, 10],
+}
 
 
 def detect_scale(notes: List[Dict]) -> tuple:
-    """
-    Return (root: int, scale_name: str, scale_pcs: set[int]).
-    Builds a duration+velocity-weighted chroma histogram and scores every
-    root × scale combination by dot product with a binary scale mask.
-    """
+    """Return (root, scale_name, scale_pcs) via weighted chroma dot-product."""
     chroma = np.zeros(12, dtype=np.float32)
     for n in notes:
         pc  = int(n["pitch"]) % 12
         dur = float(n.get("offset", n["onset"] + 0.25)) - float(n["onset"])
         vel = float(n.get("velocity", 80)) / 127.0
         chroma[pc] += max(dur, 0.0) * vel
-
     total = chroma.sum()
     if total > 0:
         chroma /= total
@@ -328,15 +336,120 @@ def detect_scale(notes: List[Dict]) -> tuple:
     return best_root, best_name, scale_pcs
 
 
-def snap_to_scale(notes: List[Dict], scale_pcs: set) -> List[Dict]:
+def _infer_chord_pcs(pitch_classes: set) -> set:
     """
-    Move each note whose pitch class is outside scale_pcs to the nearest
-    in-scale pitch (tries ±1, ±2, … up to ±6 semitones; prefers smaller moves).
+    Return the chord pitch-class set that best fits the given pitch classes.
+    Scores each (root, chord_type) by a weighted combination of coverage
+    (how many chord tones are present) and precision (how many present pcs
+    are chord tones). Falls back to accepting all pitch classes if no chord
+    scores above a minimum threshold.
     """
-    result = []
+    if not pitch_classes:
+        return pitch_classes
+
+    best_score, best_pcs = -1.0, pitch_classes
+    for name, intervals in _CHORDS.items():
+        for root in range(12):
+            chord_pcs = {(root + i) % 12 for i in intervals}
+            hits      = len(pitch_classes & chord_pcs)
+            coverage  = hits / len(intervals)
+            precision = hits / len(pitch_classes)
+            score     = 0.6 * coverage + 0.4 * precision
+            if score > best_score:
+                best_score = score
+                best_pcs   = chord_pcs
+
+    # If best match is weak (< 40% coverage) keep all pcs — sparse beat
+    if best_score < 0.4:
+        return pitch_classes
+    return best_pcs
+
+
+def _group_by_beat(notes: List[Dict], tempo: float) -> Dict[int, List[int]]:
+    """Return {beat_idx: [note_indices]} grouping by quarter-note beat."""
+    beat_dur = 60.0 / tempo
+    groups: Dict[int, List[int]] = {}
+    for i, n in enumerate(notes):
+        beat_idx = int(float(n["onset"]) / beat_dur)
+        groups.setdefault(beat_idx, []).append(i)
+    return groups
+
+
+# ── layer 1: per-beat outlier removal ────────────────────────────────────────
+
+def remove_beat_outliers(notes: List[Dict], tempo: float) -> List[Dict]:
+    """
+    Drop notes that are spatial outliers within their beat AND have no
+    melodic continuation into adjacent beats.
+
+    Outlier criterion (both must be true to drop):
+      1. |pitch - beat_median| > max(1.5 * IQR, 18 semitones)
+      2. No note within ±5 semitones exists in the ±2 surrounding beats
+    Beats with fewer than 3 notes are left untouched.
+    """
+    if not notes or tempo <= 0:
+        return notes
+
+    groups = _group_by_beat(notes, tempo)
+    drop: set = set()
+
+    for beat_idx, idxs in groups.items():
+        if len(idxs) < 3:
+            continue
+
+        pitches = np.array([int(notes[i]["pitch"]) for i in idxs], dtype=float)
+        median  = float(np.median(pitches))
+        q75, q25 = float(np.percentile(pitches, 75)), float(np.percentile(pitches, 25))
+        threshold = max(1.5 * (q75 - q25), 18.0)
+
+        for idx in idxs:
+            pitch = int(notes[idx]["pitch"])
+            if abs(pitch - median) <= threshold:
+                continue
+
+            # Check melodic continuation in ±2 beats
+            continuation = any(
+                abs(int(notes[j]["pitch"]) - pitch) <= 5
+                for adj in range(beat_idx - 2, beat_idx + 3)
+                if adj != beat_idx
+                for j in groups.get(adj, [])
+            )
+            if not continuation:
+                drop.add(idx)
+
+    return [n for i, n in enumerate(notes) if i not in drop]
+
+
+# ── layer 2: per-beat chord inference + chord-tone snapping ──────────────────
+
+def snap_to_chord_tones(notes: List[Dict], tempo: float) -> List[Dict]:
+    """
+    Infer the most likely chord for each beat, then move any note whose
+    pitch class falls outside that chord to the nearest chord tone
+    (tries ±1 … ±6 semitones, prefers smallest move).
+    This is strictly more precise than global scale snapping because it
+    respects local harmonic context — an E♭ is wrong in C major globally
+    but correct in a C7 or Cm chord locally.
+    """
+    if not notes or tempo <= 0:
+        return notes
+
+    groups = _group_by_beat(notes, tempo)
+
+    # Infer chord pcs for each beat
+    beat_chord: Dict[int, set] = {}
+    for beat_idx, idxs in groups.items():
+        pcs = {int(notes[i]["pitch"]) % 12 for i in idxs}
+        beat_chord[beat_idx] = _infer_chord_pcs(pcs)
+
+    beat_dur = 60.0 / tempo
+    result   = []
     for n in notes:
-        pitch = int(n["pitch"])
-        if pitch % 12 in scale_pcs:
+        beat_idx  = int(float(n["onset"]) / beat_dur)
+        chord_pcs = beat_chord.get(beat_idx)
+        pitch     = int(n["pitch"])
+
+        if not chord_pcs or pitch % 12 in chord_pcs:
             result.append(n)
             continue
 
@@ -345,8 +458,8 @@ def snap_to_scale(notes: List[Dict], scale_pcs: set) -> List[Dict]:
             found = False
             for d in (delta, -delta):
                 candidate = pitch + d
-                if 21 <= candidate <= 108 and candidate % 12 in scale_pcs:
-                    best = candidate
+                if 21 <= candidate <= 108 and candidate % 12 in chord_pcs:
+                    best  = candidate
                     found = True
                     break
             if found:
@@ -372,29 +485,32 @@ def transform_nmf(
 ) -> tuple:
     """
     Full NMF + voice-leading transform.
-    Returns (transformed_notes, detected_scale_info).
-    1. Build piano roll
-    2. NMF compress pitch range to [target_low, target_high]
-    3. Reconstruct note list
-    4. Apply voice-leading smoothing
-    5. Quantize to 16th-note grid
-    6. Snap straggler notes to detected scale
+    Returns (transformed_notes, scale_info dict).
+
+    Pipeline:
+      1. Build piano roll
+      2. NMF compress pitch range to [target_low, target_high]
+      3. Reconstruct note list
+      4. Apply voice-leading smoothing
+      5. Quantize to 16th-note grid
+      6. Remove per-beat outliers (isolated high/low stragglers)
+      7. Snap remaining off-chord notes to nearest chord tone
     """
     if not notes:
         return notes, {}
 
-    duration = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes) + 1.0
-    roll = build_piano_roll(notes, duration)
-    compressed = nmf_compress(roll, target_low, target_high, n_components)
+    duration    = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes) + 1.0
+    roll        = build_piano_roll(notes, duration)
+    compressed  = nmf_compress(roll, target_low, target_high, n_components)
     transformed = piano_roll_to_notes(compressed)
     transformed = apply_voice_leading(transformed)
     transformed = quantize_notes(transformed, tempo)
+    transformed = remove_beat_outliers(transformed, tempo)
+    transformed = snap_to_chord_tones(transformed, tempo)
 
     root, scale_name, scale_pcs = detect_scale(transformed)
-    transformed = snap_to_scale(transformed, scale_pcs)
-
     scale_info = {
-        "root": _NOTE_NAMES[root],
+        "root":  _NOTE_NAMES[root],
         "scale": scale_name,
         "notes": sorted(_NOTE_NAMES[pc] for pc in scale_pcs),
     }
