@@ -2,10 +2,25 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import json
+import numpy as np
 
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi
-from app.services.nmf_voice_leading import transform_nmf, TARGET_LOW, TARGET_HIGH
+from app.services.nmf_voice_leading import (
+    BASS_MAX, MELODY_MIN,
+    compress_notes_to_range, post_process_notes,
+    detect_scale, _NOTE_NAMES,
+    TARGET_LOW, TARGET_HIGH,
+    apply_feel_offset,
+)
+from app.services.segmentation import _chord_map_from_json
+from app.services.pattern_extraction import extract_layers
+from app.services.percussion_pattern import (
+    extract_percussion_onsets,
+    build_measure_patterns,
+    find_section_kick_patterns,
+    generate_walking_bass,
+)
 
 router = APIRouter()
 
@@ -26,53 +41,163 @@ class TransformRequest(BaseModel):
 async def transform_arrangement(session_id: str, body: TransformRequest = TransformRequest()):
     session_dir = get_session_dir(session_id)
 
-    transcription_file = session_dir / "transcription.json"
-    segments_file      = session_dir / "segments.json"
+    for fname, step in [
+        ("transcription.json", "/transcribe"),
+        ("segments.json",      "/segment"),
+    ]:
+        if not (session_dir / fname).exists():
+            raise HTTPException(404, f"{fname} not found. Run {step} first.")
 
-    if not transcription_file.exists():
-        raise HTTPException(404, "Transcription not found. Run /transcribe first.")
-    if not segments_file.exists():
-        raise HTTPException(404, "Segments not found. Run /segment first.")
-
-    with open(transcription_file) as f:
+    with open(session_dir / "transcription.json") as f:
         transcription = json.load(f)
-    with open(segments_file) as f:
+    with open(session_dir / "segments.json") as f:
         seg_data = json.load(f)
 
     notes       = transcription["notes"]
-    tempo       = seg_data["tempo_bpm"]
+    tempo       = float(seg_data["tempo_bpm"])
     source_span = body.source_octave_range or transcription["octave_range"]["octave_span"]
-
     tgt_low, tgt_high = _OCTAVE_BOUNDS.get(body.target_octave_range, (TARGET_LOW, TARGET_HIGH))
+    audio_path  = session_dir / "audio.wav"
 
-    transformed_notes, scale_info = transform_nmf(
-        notes,
-        target_low=tgt_low,
-        target_high=tgt_high,
-        n_components=body.nmf_components,
-        tempo=tempo,
-    )
+    # Per-layer timing feel from transcription (median onset offset vs beat)
+    timing_feel = transcription.get("timing_feel", {})
+    bass_feel   = float(timing_feel.get("bass",  0.0))
+    upper_feel  = float(timing_feel.get("upper", 0.0))
+
+    # Chord map from audio chroma — loaded directly, no re-inference from notes
+    chord_map = _chord_map_from_json(seg_data.get("chord_map", {}))
+
+    # Per-measure dominance map: 'bass' or 'melody' based on JS divergence from segmentation
+    dominance_map = {
+        seg["measure_index"]: seg["star"]
+        for seg in seg_data.get("segments", [])
+        if "star" in seg and "measure_index" in seg
+    }
+
+    # ── pattern extraction on the original pre-labeled transcription ──────────
+    layers       = None
+    export_notes = None
+    scale_info   = {}
+
+    try:
+        layers = extract_layers(
+            notes,
+            chord_map,
+            tempo,
+            audio_path if audio_path.exists() else None,
+            dominance_map=dominance_map,
+            upper_feel=upper_feel,
+        )
+
+        merged = layers[0].pop("_merged_notes", None)
+        if merged is None:
+            merged = sorted(
+                (n for layer in layers for n in layer["notes"]),
+                key=lambda n: (float(n["onset"]), int(n["pitch"])),
+            )
+
+        # Compress into target octave range
+        merged = compress_notes_to_range(merged, tgt_low, tgt_high)
+
+        # Inject walking bass from kick-pattern grid
+        bass_lo = tgt_low
+        bass_hi = min(BASS_MAX, tgt_high)
+        if audio_path.exists() and bass_lo < bass_hi:
+            try:
+                duration_s  = max(float(n.get("offset", n["onset"] + 0.5)) for n in merged) + 1.0
+                measure_dur = (60.0 / tempo) * 4
+                n_measures  = max(1, int(np.ceil(duration_s / measure_dur)))
+
+                perc_onsets  = extract_percussion_onsets(audio_path)
+                patterns     = build_measure_patterns(perc_onsets, n_measures, tempo)
+                kick_map     = find_section_kick_patterns(patterns["kick"])
+                walking_bass = generate_walking_bass(
+                    chord_map             = chord_map,
+                    measure_kick_patterns = kick_map,
+                    tempo                 = tempo,
+                    lo                    = bass_lo,
+                    hi                    = bass_hi,
+                )
+                if walking_bass:
+                    # Shift generated walking bass by the bass register's feel so
+                    # it lands with the same timing character as the transcribed bass
+                    walking_bass = apply_feel_offset(walking_bass, bass_feel)
+                    merged = [n for n in merged if int(n["pitch"]) > bass_hi] + walking_bass
+                    merged.sort(key=lambda n: (float(n["onset"]), int(n["pitch"])))
+            except Exception:
+                pass
+
+        # Voice leading, quantise, chord snap, music theory
+        root, scale_name, _ = detect_scale(merged)
+        scale_info = {
+            "root":  _NOTE_NAMES[root],
+            "scale": scale_name,
+            "notes": sorted(_NOTE_NAMES[(root + iv) % 12] for iv in [0,2,4,5,7,9,11]),
+        }
+        merged = post_process_notes(
+            merged,
+            chord_map  = chord_map,
+            tempo      = tempo,
+            key_root   = root,
+            scale_name = scale_name,
+            bass_lo    = bass_lo,
+            bass_hi    = bass_hi,
+        )
+
+        export_notes = merged
+
+    except Exception:
+        # Hard fallback: return original notes post-processed only
+        from app.services.nmf_voice_leading import (
+            quantize_notes, apply_voice_leading,
+            remove_beat_outliers, snap_to_chord_tones,
+        )
+        try:
+            export_notes = compress_notes_to_range(notes, tgt_low, tgt_high)
+            export_notes = apply_voice_leading(export_notes)
+            export_notes = quantize_notes(export_notes, tempo)
+            export_notes = remove_beat_outliers(export_notes, tempo)
+            export_notes = snap_to_chord_tones(export_notes, tempo)
+            root, scale_name, _ = detect_scale(export_notes)
+            scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
+        except Exception:
+            export_notes = notes
 
     for stale in ["arrangement_preview.wav", "transcription_preview.wav"]:
         p = session_dir / stale
         if p.exists():
             p.unlink()
 
-    pm = notes_to_pretty_midi(transformed_notes, tempo)
+    # Load actual beat positions (seconds) for tick-aligned MIDI export.
+    # beat_frames were saved during separation; convert frame indices → seconds.
+    beat_times_arr = None
+    try:
+        with open(session_dir / "components.json") as _f:
+            _comp = json.load(_f)
+        _frames = _comp.get("beat_frames", [])
+        _sr     = float(_comp.get("sr", 22050))
+        _hop    = float(_comp.get("hop_length", 512))
+        if _frames:
+            beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
+    except Exception:
+        pass
+
+    pm        = notes_to_pretty_midi(export_notes, tempo, beat_times=beat_times_arr)
     midi_path = session_dir / "transformed.mid"
     pm.write(str(midi_path))
 
     result = {
-        "session_id": session_id,
-        "method": "nmf_voice_leading",
-        "source_octave_range": source_span,
-        "target_octave_range": body.target_octave_range,
-        "nmf_components": body.nmf_components,
-        "original_note_count": len(notes),
-        "transformed_note_count": len(transformed_notes),
-        "transformed_notes": transformed_notes,
-        "detected_scale": scale_info,
-        "midi_path": str(midi_path),
+        "session_id":             session_id,
+        "method":                 "pattern_extraction",
+        "source_octave_range":    source_span,
+        "target_octave_range":    body.target_octave_range,
+        "nmf_components":         body.nmf_components,
+        "original_note_count":    len(notes),
+        "transformed_note_count": len(export_notes),
+        "transformed_notes":      export_notes,
+        "detected_scale":         scale_info,
+        "midi_path":              str(midi_path),
+        "layers":                 layers,
     }
 
     with open(session_dir / "transformed.json", "w") as f:

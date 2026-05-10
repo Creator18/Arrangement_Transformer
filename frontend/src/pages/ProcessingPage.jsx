@@ -2,7 +2,6 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import GradientOrbs from '../components/GradientOrbs'
-import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
 import {
   transcribeAudio, separateStems, segmentAudio,
@@ -10,35 +9,172 @@ import {
 } from '../utils/api'
 
 const STEPS = [
-  { key: 'upload',     label: 'Uploading',               detail: 'Audio file received and converted to WAV' },
-  { key: 'transcribe', label: 'Transcribing',             detail: 'Basic Pitch is detecting every note…' },
-  { key: 'separate',   label: 'Separating Stems',         detail: 'Spleeter is isolating bass and melody…' },
-  { key: 'segment',    label: 'Detecting Segments',       detail: 'Analysing measure structure and star parts…' },
-  { key: 'transform',  label: 'Transforming Arrangement', detail: 'Applying priority hierarchy and ghost fills…' },
-  { key: 'score',      label: 'Scoring Fidelity',         detail: 'Comparing spectrograms for fidelity…' },
+  { key: 'upload',     label: 'Upload',     detail: 'Audio received and converted to WAV',                     sym: '▲', color: '#f59e0b' },
+  { key: 'separate',   label: 'Analyse',    detail: 'NMF decomposing audio into pattern and melody components…', sym: '⬡', color: '#06b6d4' },
+  { key: 'transcribe', label: 'Transcribe', detail: 'Transcribing each component with pYIN and Basic Pitch…',   sym: '◈', color: '#a78bfa' },
+  { key: 'segment',    label: 'Chords',     detail: 'Detecting chord progression from audio chroma…',           sym: '▪', color: '#34d399' },
+  { key: 'transform',  label: 'Arrange',    detail: 'Pattern extraction, range compression, voice leading…',    sym: '▶', color: '#f87171' },
+  { key: 'score',      label: 'Score',      detail: 'Comparing spectrograms for fidelity…',                     sym: '◉', color: '#e879f9' },
 ]
 
-function StepProgressBar({ active, done }) {
-  if (done) {
-    return (
-      <div className="mt-2 w-full h-1 rounded-full overflow-hidden" style={{ background: 'rgba(34,197,94,0.15)' }}>
-        <div className="h-full w-full rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 6px rgba(34,197,94,0.5)' }} />
+// ── Step pad ───────────────────────────────────────────────────────────────────
+function StepPad({ step, index, status }) {
+  // status: 'done' | 'active' | 'pending'
+  const isDone    = status === 'done'
+  const isActive  = status === 'active'
+  const isPending = status === 'pending'
+
+  const color = isDone ? '#22c55e' : isActive ? step.color : 'rgba(255,255,255,0.08)'
+  const textColor = isDone ? '#22c55e' : isActive ? step.color : 'rgba(255,255,255,0.22)'
+
+  return (
+    <motion.div
+      className="relative flex items-center gap-4 p-4 rounded-2xl"
+      style={{
+        background: isActive
+          ? `linear-gradient(135deg, ${step.color}12, ${step.color}05)`
+          : isDone
+          ? 'rgba(34,197,94,0.04)'
+          : 'rgba(255,255,255,0.015)',
+        border: `1px solid ${isActive ? step.color + '40' : isDone ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.05)'}`,
+        transition: 'all 0.35s ease',
+      }}
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: isPending ? 0.4 : 1, x: 0 }}
+      transition={{ duration: 0.4, delay: index * 0.06 }}
+    >
+      {/* Pad button visual */}
+      <motion.div
+        style={{
+          width: 48, height: 48,
+          borderRadius: 12,
+          flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: isDone
+            ? 'rgba(34,197,94,0.12)'
+            : isActive
+            ? `${step.color}18`
+            : 'rgba(255,255,255,0.03)',
+          border: `1px solid ${isDone ? 'rgba(34,197,94,0.35)' : isActive ? step.color + '45' : 'rgba(255,255,255,0.06)'}`,
+          boxShadow: isActive
+            ? `0 0 16px ${step.color}30, 0 0 32px ${step.color}15`
+            : isDone
+            ? '0 0 12px rgba(34,197,94,0.2)'
+            : 'none',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Shimmer on active */}
+        {isActive && (
+          <motion.div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: `linear-gradient(90deg, transparent, ${step.color}20, transparent)`,
+              backgroundSize: '200% 100%',
+            }}
+            animate={{ backgroundPosition: ['-200% center', '200% center'] }}
+            transition={{ duration: 1.8, repeat: Infinity, ease: 'linear' }}
+          />
+        )}
+
+        {isDone ? (
+          <motion.svg
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 28 }}
+            style={{ width: 16, height: 16 }}
+            fill="none" viewBox="0 0 24 24" stroke="#22c55e" strokeWidth={2.5}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </motion.svg>
+        ) : isActive ? (
+          <motion.span
+            style={{ fontSize: 16, color: step.color, fontFamily: 'ui-monospace,monospace', lineHeight: 1, position: 'relative' }}
+            animate={{ opacity: [1, 0.5, 1] }}
+            transition={{ duration: 1, repeat: Infinity }}
+          >
+            {step.sym}
+          </motion.span>
+        ) : (
+          <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.15)', fontFamily: 'ui-monospace,monospace' }}>
+            {step.sym}
+          </span>
+        )}
+      </motion.div>
+
+      {/* Text */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <p style={{
+            fontSize: 13,
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+            color: textColor,
+            transition: 'color 0.3s',
+          }}>
+            {step.label.toUpperCase()}
+          </p>
+          {isDone && (
+            <motion.span
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              style={{ fontSize: 9, color: '#22c55e', fontFamily: 'ui-monospace,monospace', letterSpacing: '0.1em', flexShrink: 0 }}
+            >
+              DONE
+            </motion.span>
+          )}
+        </div>
+
+        <AnimatePresence>
+          {isActive && (
+            <motion.p
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 4, letterSpacing: '0.02em' }}
+            >
+              {step.detail}
+            </motion.p>
+          )}
+        </AnimatePresence>
+
+        {/* Progress bar */}
+        <div className="mt-2.5 h-0.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+          <motion.div
+            className="h-full rounded-full"
+            style={{
+              background: isDone
+                ? '#22c55e'
+                : isActive
+                ? `linear-gradient(90deg, ${step.color}, ${step.color}80)`
+                : 'transparent',
+              boxShadow: isDone
+                ? '0 0 6px rgba(34,197,94,0.5)'
+                : isActive
+                ? `0 0 6px ${step.color}60`
+                : 'none',
+            }}
+            animate={{ width: isDone ? '100%' : isActive ? '60%' : '0%' }}
+            transition={{ duration: 0.6, ease: 'easeOut' }}
+          />
+        </div>
       </div>
-    )
-  }
-  if (active) {
-    return <AudioBars color="#22c55e" height={20} className="mt-2" />
-  }
-  return <div className="mt-2 w-full h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }} />
+    </motion.div>
+  )
 }
 
+// ── Main processing page ───────────────────────────────────────────────────────
 export default function ProcessingPage() {
   const { sessionId } = useParams()
-  const { state } = useLocation()
-  const navigate = useNavigate()
+  const { state }     = useLocation()
+  const navigate      = useNavigate()
+
+  const preset = state?.preset || { octaves: 5, components: 16, color: '#f59e0b', label: 'Standard' }
 
   const [currentStep, setCurrentStep] = useState(0)
-  const [error, setError] = useState(null)
+  const [error,       setError]       = useState(null)
   const ran = useRef(false)
 
   useEffect(() => {
@@ -49,18 +185,13 @@ export default function ProcessingPage() {
 
   async function runPipeline() {
     try {
-      setCurrentStep(1)
-      await transcribeAudio(sessionId)
-      setCurrentStep(2)
-      await separateStems(sessionId)
-      setCurrentStep(3)
-      await segmentAudio(sessionId)
-      setCurrentStep(4)
-      await transformArrangement(sessionId)
-      setCurrentStep(5)
-      await scoreFidelity(sessionId)
+      setCurrentStep(1); await separateStems(sessionId)
+      setCurrentStep(2); await transcribeAudio(sessionId)
+      setCurrentStep(3); await segmentAudio(sessionId)
+      setCurrentStep(4); await transformArrangement(sessionId, preset.octaves, preset.components)
+      setCurrentStep(5); await scoreFidelity(sessionId)
       setCurrentStep(6)
-      setTimeout(() => navigate(`/results/${sessionId}`), 800)
+      setTimeout(() => navigate(`/results/${sessionId}`), 900)
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || 'Pipeline failed.')
     }
@@ -69,149 +200,101 @@ export default function ProcessingPage() {
   const overallPct = Math.round((currentStep / STEPS.length) * 100)
 
   return (
-    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden">
+    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden px-4 py-24">
       <GradientOrbs />
 
       <motion.div
-        className="relative z-10 w-full max-w-lg px-4"
+        className="relative z-10 w-full"
+        style={{ maxWidth: 480 }}
         initial={{ opacity: 0, y: 32 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: [0.4, 0, 0.2, 1] }}
       >
-        <GlassCard className="p-10">
-          {/* Header */}
-          <div className="flex items-baseline justify-between mb-1">
-            <h2 className="text-xl font-semibold text-gradient">Processing</h2>
-            <span className="text-sm font-medium text-amber-400 tabular-nums">{overallPct}%</span>
+        {/* Header glass panel */}
+        <div
+          className="rounded-2xl p-6 mb-4"
+          style={{
+            background: 'rgba(255,255,255,0.025)',
+            border: '1px solid rgba(255,255,255,0.07)',
+            backdropFilter: 'blur(32px)',
+          }}
+        >
+          {/* Waveform + title row */}
+          <div className="flex items-center gap-4 mb-5 min-w-0">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-2 mb-0.5 min-w-0">
+                <h2 style={{ fontSize: 16, fontWeight: 700, color: '#fff', letterSpacing: '0.02em', flexShrink: 0 }}>
+                  Processing
+                </h2>
+                <span style={{
+                  fontSize: 10,
+                  fontFamily: 'ui-monospace,monospace',
+                  color: `${preset.color || '#f59e0b'}bb`,
+                  letterSpacing: '0.1em',
+                  flexShrink: 0,
+                }}>
+                  {preset.label?.toUpperCase()}
+                </span>
+              </div>
+              {state?.filename && (
+                <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.02em' }}
+                  className="truncate">
+                  {state.filename}
+                </p>
+              )}
+            </div>
+            <div className="flex-shrink-0">
+              <AudioBars color={preset.color || '#22c55e'} height={28} />
+            </div>
           </div>
-          {state?.filename && (
-            <p className="text-sm text-zinc-500 mb-2 truncate">{state.filename}</p>
-          )}
 
-          {/* Overall progress bar — amber gradient */}
-          <div className="w-full h-1.5 rounded-full overflow-hidden mb-8" style={{ background: 'rgba(255,255,255,0.08)' }}>
-            <motion.div
-              className="h-full rounded-full"
-              style={{
-                background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)',
-                boxShadow: overallPct > 0 ? '0 0 8px rgba(245,158,11,0.5)' : 'none',
-              }}
-              animate={{ width: `${overallPct}%` }}
-              transition={{ ease: 'easeOut', duration: 0.5 }}
+          {/* Overall progress bar */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <motion.div
+                className="h-full rounded-full"
+                style={{
+                  background: `linear-gradient(90deg, ${preset.color || '#f59e0b'}, ${preset.color || '#d97706'})`,
+                  boxShadow: overallPct > 0 ? `0 0 8px ${preset.color || '#f59e0b'}60` : 'none',
+                }}
+                animate={{ width: `${overallPct}%` }}
+                transition={{ ease: 'easeOut', duration: 0.55 }}
+              />
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: preset.color || '#f59e0b', fontFamily: 'ui-monospace,monospace', flexShrink: 0 }}>
+              {overallPct}%
+            </span>
+          </div>
+        </div>
+
+        {/* Step pads grid */}
+        <div className="space-y-2.5">
+          {STEPS.map((step, i) => (
+            <StepPad
+              key={step.key}
+              step={step}
+              index={i}
+              status={i < currentStep ? 'done' : i === currentStep ? 'active' : 'pending'}
             />
-          </div>
+          ))}
+        </div>
 
-          {/* Steps */}
-          <div className="space-y-5">
-            {STEPS.map((step, i) => {
-              const done = i < currentStep
-              const active = i === currentStep
-              const pending = i > currentStep
-
-              return (
-                <motion.div
-                  key={step.key}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: pending ? 0.35 : 1, x: 0 }}
-                  transition={{ duration: 0.4, delay: i * 0.05 }}
-                >
-                  <div className="flex items-center gap-3">
-                    {/* Status icon */}
-                    <div className="flex-shrink-0">
-                      {done ? (
-                        <div
-                          style={{
-                            width: 20, height: 20,
-                            borderRadius: '50%',
-                            background: '#22c55e',
-                            boxShadow: '0 0 8px rgba(34,197,94,0.5)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <svg style={{ width: 12, height: 12 }} fill="none" viewBox="0 0 24 24" stroke="white" strokeWidth={3}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        </div>
-                      ) : active ? (
-                        <div
-                          style={{
-                            width: 20, height: 20,
-                            borderRadius: '50%',
-                            border: '2px solid #f59e0b',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <motion.div
-                            style={{
-                              width: 8, height: 8,
-                              borderRadius: '50%',
-                              background: '#f59e0b',
-                              willChange: 'transform',
-                              transformOrigin: '50% 50%',
-                            }}
-                            animate={{ scale: [1, 1.4, 1] }}
-                            transition={{ duration: 1, repeat: Infinity, ease: 'easeInOut' }}
-                          />
-                        </div>
-                      ) : (
-                        <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #3f3f46', flexShrink: 0 }} />
-                      )}
-                    </div>
-
-                    {/* Label + detail */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline justify-between">
-                        <p className={`text-sm font-medium ${
-                          done   ? 'text-zinc-300'
-                          : active ? 'text-amber-400'
-                          : 'text-zinc-600'
-                        }`}>
-                          {step.label}
-                        </p>
-                        {done && (
-                          <span className="text-[10px] text-green-500 font-medium ml-2 flex-shrink-0">Done</span>
-                        )}
-                      </div>
-
-                      <AnimatePresence>
-                        {active && (
-                          <motion.p
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
-                            className="text-xs text-zinc-500 mt-0.5"
-                          >
-                            {step.detail}
-                          </motion.p>
-                        )}
-                      </AnimatePresence>
-
-                      <StepProgressBar active={active} done={done} />
-                    </div>
-                  </div>
-                </motion.div>
-              )
-            })}
-          </div>
-
+        {/* Error */}
+        <AnimatePresence>
           {error && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-6 p-4 rounded-xl"
-              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
+              className="mt-5 p-4 rounded-2xl"
+              style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.18)' }}
             >
-              <p className="text-sm font-medium text-red-400 mb-1">Something went wrong</p>
-              <p className="text-xs text-red-500">{error}</p>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#f87171', marginBottom: 4 }}>
+                Something went wrong
+              </p>
+              <p style={{ fontSize: 11, color: 'rgba(239,68,68,0.6)' }}>{error}</p>
             </motion.div>
           )}
-        </GlassCard>
+        </AnimatePresence>
       </motion.div>
     </div>
   )

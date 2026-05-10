@@ -18,6 +18,10 @@ from sklearn.decomposition import NMF
 from scipy.optimize import linear_sum_assignment
 from typing import List, Dict, Any
 
+from pathlib import Path
+
+from app.services.music_theory import apply_music_theory
+
 # ── constants ─────────────────────────────────────────────────────────────────
 PIANO_LOW   = 21    # A0
 PIANO_HIGH  = 108   # C8
@@ -474,44 +478,93 @@ def snap_to_chord_tones(notes: List[Dict], tempo: float) -> List[Dict]:
     return result
 
 
-# ── main entry point ──────────────────────────────────────────────────────────
+# ── per-layer feel offset ─────────────────────────────────────────────────────
 
-def transform_nmf(
+def apply_feel_offset(notes: List[Dict], feel_seconds: float) -> List[Dict]:
+    """
+    Shift all note onsets and offsets by feel_seconds.
+
+    Used to stamp generated notes (walking bass, pYIN fill) with the same
+    timing character as their layer family measured from the original audio.
+    Positive feel = behind the beat; negative = ahead of the beat.
+    Values smaller than 2 ms are ignored (below perceptual threshold).
+    """
+    if not notes or abs(feel_seconds) < 0.002:
+        return notes
+    result = []
+    for n in notes:
+        onset  = round(max(0.0, float(n['onset'])  + feel_seconds), 4)
+        offset = round(max(0.0, float(n.get('offset', float(n['onset']) + 0.25)) + feel_seconds), 4)
+        if offset <= onset:
+            offset = round(onset + 0.25, 4)
+        result.append({**n, 'onset': onset, 'offset': offset})
+    return result
+
+
+# ── note-level range compression ──────────────────────────────────────────────
+
+def compress_notes_to_range(
     notes: List[Dict],
-    target_low: int = TARGET_LOW,
-    target_high: int = TARGET_HIGH,
-    n_components: int = 16,
-    tempo: float = 120.0,
-) -> tuple:
+    tgt_low: int,
+    tgt_high: int,
+) -> List[Dict]:
     """
-    Full NMF + voice-leading transform.
-    Returns (transformed_notes, scale_info dict).
-
-    Pipeline:
-      1. Build piano roll
-      2. NMF compress pitch range to [target_low, target_high]
-      3. Reconstruct note list
-      4. Apply voice-leading smoothing
-      5. Quantize to 16th-note grid
-      6. Remove per-beat outliers (isolated high/low stragglers)
-      7. Snap remaining off-chord notes to nearest chord tone
+    Shift each note's pitch by whole octaves until it falls within
+    [tgt_low, tgt_high].  Preserves pitch class exactly (C stays C, etc.).
+    Used by the pattern-extraction pipeline as a clean alternative to the
+    NMF roll-based compression.
     """
-    if not notes:
-        return notes, {}
+    if tgt_low <= PIANO_LOW and tgt_high >= PIANO_HIGH:
+        return notes   # full range — nothing to do
 
-    duration    = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes) + 1.0
-    roll        = build_piano_roll(notes, duration)
-    compressed  = nmf_compress(roll, target_low, target_high, n_components)
-    transformed = piano_roll_to_notes(compressed)
-    transformed = apply_voice_leading(transformed)
-    transformed = quantize_notes(transformed, tempo)
-    transformed = remove_beat_outliers(transformed, tempo)
-    transformed = snap_to_chord_tones(transformed, tempo)
+    result = []
+    for n in notes:
+        pitch = int(n["pitch"])
+        while pitch < tgt_low:
+            pitch += 12
+        while pitch > tgt_high:
+            pitch -= 12
+        pitch = max(tgt_low, min(tgt_high, pitch))
+        if pitch != int(n["pitch"]):
+            n = {**n, "pitch": pitch, "pitch_name": librosa.midi_to_note(pitch)}
+        result.append(n)
+    return result
 
-    root, scale_name, scale_pcs = detect_scale(transformed)
-    scale_info = {
-        "root":  _NOTE_NAMES[root],
-        "scale": scale_name,
-        "notes": sorted(_NOTE_NAMES[pc] for pc in scale_pcs),
-    }
-    return transformed, scale_info
+
+# ── post-processing bundle (used by the pattern-extraction pipeline) ───────────
+
+def post_process_notes(
+    notes: List[Dict],
+    chord_map: Dict,
+    tempo: float,
+    key_root: int = 0,
+    scale_name: str = "major",
+    bass_lo: int = TARGET_LOW,
+    bass_hi: int = BASS_MAX,
+) -> List[Dict]:
+    """
+    Apply all musical post-processing steps to a flat note list:
+      1. Voice leading (Hungarian assignment)
+      2. Quantise to 16th-note grid
+      3. Remove per-beat pitch outliers
+      4. Snap off-chord notes to nearest chord tone
+      5. Music-theory pass (contrary motion, cadential prep, parallel avoidance)
+    """
+    notes = apply_voice_leading(notes)
+    notes = quantize_notes(notes, tempo)
+    notes = remove_beat_outliers(notes, tempo)
+    notes = snap_to_chord_tones(notes, tempo)
+    try:
+        from app.services.music_theory import apply_music_theory
+        notes = apply_music_theory(
+            notes,
+            chord_map  = chord_map,
+            tempo      = tempo,
+            key_root   = key_root,
+            scale_name = scale_name,
+            bass_lo    = bass_lo,
+            bass_hi    = bass_hi,
+        )
+    except Exception:
+        pass
+    return notes

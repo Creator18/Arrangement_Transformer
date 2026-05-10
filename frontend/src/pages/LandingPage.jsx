@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import GradientOrbs from '../components/GradientOrbs'
 import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
@@ -8,56 +8,190 @@ import { uploadAudio } from '../utils/api'
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
 
-// Decorative MIDI pad grid — 3 rows × 4 cols
-function SoundboardPads() {
-  // Each pad has a dot color: green (active), amber (hot), or off
-  const pads = [
-    'green', 'off',   'amber', 'off',
-    'off',   'green', 'off',   'green',
-    'amber', 'off',   'green', 'amber',
-  ]
+// ── Transformation presets — the soundboard pads ─────────────────────────────
+// Each pad is a real config that gets passed to the backend transform step.
+const PRESETS = [
+  { id: 'standard',  label: 'Standard',   sym: '◈',  octaves: 5, components: 16, color: '#f59e0b', desc: '5 oct · balanced'    },
+  { id: 'wide',      label: 'Wide',        sym: '⬡',  octaves: 6, components: 16, color: '#3b82f6', desc: '6 oct · expressive'  },
+  { id: 'full',      label: 'Concert',     sym: '◉',  octaves: 7, components: 20, color: '#a78bfa', desc: '7 oct · full range'  },
+  { id: 'minimal',   label: 'Minimal',     sym: '▪',  octaves: 4, components: 8,  color: '#34d399', desc: '4 oct · clean'       },
+  { id: 'jazz',      label: 'Jazz',        sym: '♩',  octaves: 5, components: 24, color: '#f87171', desc: '5 oct · rich NMF'    },
+  { id: 'classical', label: 'Classical',   sym: '♪',  octaves: 6, components: 20, color: '#06b6d4', desc: '6 oct · detailed'    },
+  { id: 'beginner',  label: 'Beginner',    sym: '▸',  octaves: 4, components: 12, color: '#84cc16', desc: '4 oct · simplified'  },
+  { id: 'dense',     label: 'Dense',       sym: '⬟',  octaves: 5, components: 32, color: '#e879f9', desc: '5 oct · max NMF'     },
+]
+
+// ── Single preset pad ─────────────────────────────────────────────────────────
+function PresetPad({ preset, selected, onSelect }) {
+  const ref = useRef(null)
+
+  const onMouseMove = (e) => {
+    const el = ref.current
+    if (!el) return
+    const r  = el.getBoundingClientRect()
+    const x  = (e.clientX - r.left) / r.width  - 0.5
+    const y  = (e.clientY - r.top)  / r.height - 0.5
+    el.style.transform = `perspective(360px) rotateX(${-y * 14}deg) rotateY(${x * 14}deg) scale(${selected ? 1.06 : 1.04}) translateZ(4px)`
+    el.style.transition = 'transform 0.06s ease'
+  }
+
+  const onMouseLeave = () => {
+    const el = ref.current
+    if (!el) return
+    el.style.transform = selected
+      ? 'perspective(360px) rotateX(0deg) rotateY(0deg) scale(1.03) translateZ(2px)'
+      : 'perspective(360px) rotateX(0deg) rotateY(0deg) scale(1) translateZ(0px)'
+    el.style.transition = 'transform 0.35s cubic-bezier(0.4,0,0.2,1)'
+  }
 
   return (
-    <div className="grid grid-cols-4 gap-2 w-fit mx-auto" aria-hidden>
-      {pads.map((state, i) => (
-        <motion.div
-          key={i}
-          className="w-12 h-12 rounded-lg flex items-end justify-end p-1.5"
-          style={{
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.4)',
-          }}
-          whileHover={{ background: 'rgba(255,255,255,0.06)', scale: 1.04 }}
-          transition={{ duration: 0.15 }}
-        >
-          {state !== 'off' && (
-            <motion.span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: state === 'green' ? '#22c55e' : '#f59e0b',
-                display: 'block',
-                boxShadow: state === 'green'
-                  ? '0 0 6px rgba(34,197,94,0.7)'
-                  : '0 0 6px rgba(245,158,11,0.7)',
-              }}
-              animate={{ opacity: [0.6, 1, 0.6] }}
-              transition={{ duration: 1.8 + i * 0.2, repeat: Infinity, ease: 'easeInOut', delay: i * 0.1 }}
-            />
-          )}
-        </motion.div>
-      ))}
+    <motion.button
+      ref={ref}
+      onClick={() => onSelect(preset)}
+      onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
+      className="pad-press relative flex flex-col items-start text-left"
+      style={{
+        background: selected
+          ? `linear-gradient(145deg, ${preset.color}18, ${preset.color}08)`
+          : 'rgba(255,255,255,0.025)',
+        border: `1px solid ${selected ? preset.color + '55' : 'rgba(255,255,255,0.07)'}`,
+        borderRadius: 14,
+        padding: '14px 12px 12px',
+        cursor: 'pointer',
+        boxShadow: selected
+          ? `0 0 0 1px ${preset.color}30, 0 0 24px ${preset.color}25, 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.10)`
+          : 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 16px rgba(0,0,0,0.5)',
+        transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
+        minHeight: 90,
+        willChange: 'transform',
+      }}
+      initial={false}
+      animate={{ scale: selected ? 1.03 : 1 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+      whileTap={{ scale: 0.92 }}
+    >
+      {/* Status LED */}
+      <motion.div
+        style={{
+          position: 'absolute',
+          top: 8, right: 8,
+          width: 6, height: 6,
+          borderRadius: '50%',
+          background: selected ? preset.color : 'rgba(255,255,255,0.08)',
+          boxShadow: selected ? `0 0 8px ${preset.color}, 0 0 16px ${preset.color}80` : 'none',
+        }}
+        animate={selected ? { opacity: [1, 0.5, 1] } : { opacity: 1 }}
+        transition={{ duration: 1.6, repeat: selected ? Infinity : 0 }}
+      />
+
+      {/* Symbol */}
+      <span style={{
+        fontSize: 18,
+        color: selected ? preset.color : 'rgba(255,255,255,0.35)',
+        display: 'block',
+        marginBottom: 8,
+        lineHeight: 1,
+        transition: 'color 0.2s',
+        fontFamily: 'ui-monospace, monospace',
+      }}>
+        {preset.sym}
+      </span>
+
+      {/* Label */}
+      <p style={{
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.08em',
+        color: selected ? preset.color : 'rgba(255,255,255,0.65)',
+        marginBottom: 3,
+        transition: 'color 0.2s',
+      }}>
+        {preset.label.toUpperCase()}
+      </p>
+
+      {/* Description */}
+      <p style={{
+        fontSize: 8.5,
+        color: selected ? `${preset.color}99` : 'rgba(255,255,255,0.25)',
+        letterSpacing: '0.04em',
+        transition: 'color 0.2s',
+        lineHeight: 1.4,
+      }}>
+        {preset.desc}
+      </p>
+    </motion.button>
+  )
+}
+
+// ── Soundboard pad section ─────────────────────────────────────────────────────
+function PresetBoard({ selected, onSelect }) {
+  return (
+    <div>
+      {/* Section label row */}
+      <div className="flex items-center gap-3 mb-4">
+        <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.06)' }} />
+        <span style={{
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: '0.18em',
+          color: 'rgba(255,255,255,0.25)',
+          fontFamily: 'ui-monospace, monospace',
+        }}>
+          SELECT PRESET
+        </span>
+        <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.06)' }} />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: 8,
+        }}
+      >
+        {PRESETS.map((p) => (
+          <PresetPad
+            key={p.id}
+            preset={p}
+            selected={selected?.id === p.id}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+
+      {/* Octave + component hint */}
+      <AnimatePresence mode="wait">
+        {selected && (
+          <motion.div
+            key={selected.id}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className="flex items-center justify-center gap-4 mt-4"
+          >
+            <span style={{ fontSize: 10, color: `${selected.color}bb`, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
+              {selected.octaves} OCTAVES
+            </span>
+            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.15)', fontFamily: 'ui-monospace,monospace' }}>·</span>
+            <span style={{ fontSize: 10, color: `${selected.color}bb`, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
+              {selected.components} NMF COMPONENTS
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
 
+// ── Main landing page ─────────────────────────────────────────────────────────
 export default function LandingPage() {
-  const [dragging, setDragging] = useState(false)
+  const [dragging,  setDragging]  = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [error, setError] = useState(null)
+  const [progress,  setProgress]  = useState(0)
+  const [error,     setError]     = useState(null)
+  const [preset,    setPreset]    = useState(PRESETS[0])   // Standard is default
+
   const inputRef = useRef(null)
   const navigate = useNavigate()
 
@@ -68,116 +202,172 @@ export default function LandingPage() {
     setProgress(0)
     try {
       const result = await uploadAudio(file, setProgress)
-      navigate(`/processing/${result.session_id}`, { state: { filename: file.name, duration: result.duration_seconds } })
+      navigate(`/processing/${result.session_id}`, {
+        state: {
+          filename: file.name,
+          duration: result.duration_seconds,
+          preset,           // ← the chosen preset travels with the session
+        },
+      })
     } catch (e) {
       setError(e?.response?.data?.detail || 'Upload failed. Please try again.')
       setUploading(false)
     }
-  }, [navigate])
+  }, [navigate, preset])
 
-  const onDrop = useCallback((e) => {
-    e.preventDefault()
-    setDragging(false)
+  const onDrop      = useCallback((e) => {
+    e.preventDefault(); setDragging(false)
     const file = e.dataTransfer.files[0]
     if (file) handleFile(file)
   }, [handleFile])
-
-  const onDragOver = (e) => { e.preventDefault(); setDragging(true) }
+  const onDragOver  = (e) => { e.preventDefault(); setDragging(true) }
   const onDragLeave = () => setDragging(false)
 
   return (
-    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden pt-24">
+    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden pt-24 pb-32">
       <GradientOrbs />
 
-      {/* Hero */}
+      {/* ── Hero ── */}
       <motion.div
-        className="relative z-10 text-center mb-10"
-        initial={{ opacity: 0, y: 32 }}
+        className="relative z-10 text-center mb-12 px-4"
+        initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: [0.4, 0, 0.2, 1] }}
+        transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
       >
+        <motion.div
+          className="float"
+          style={{ display: 'inline-block', marginBottom: 8 }}
+        >
+          <span style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: '0.22em',
+            color: 'rgba(245,158,11,0.6)',
+            fontFamily: 'ui-monospace, monospace',
+          }}>
+            ◈ AI PIANO ARRANGEMENT ◈
+          </span>
+        </motion.div>
+
         <h1
-          className="text-6xl md:text-8xl font-bold tracking-tight mb-4 leading-none text-gradient-amber"
+          className="text-gradient-animated font-black tracking-tighter leading-none select-none"
+          style={{
+            fontSize: 'clamp(52px, 9vw, 100px)',
+            lineHeight: 0.92,
+            marginBottom: 20,
+            letterSpacing: '-0.03em',
+          }}
         >
           Arrangement<br />Transformer
         </h1>
-        <p className="text-xl md:text-2xl text-zinc-400 font-light">
-          Any piano piece. Any keyboard.
+
+        <p style={{
+          fontSize: 18,
+          color: 'rgba(255,255,255,0.38)',
+          fontWeight: 300,
+          letterSpacing: '0.01em',
+        }}>
+          Any song. Any keyboard. Full arrangement.
         </p>
       </motion.div>
 
-      {/* Decorative soundboard pads */}
+      {/* ── Main card: preset board + upload ── */}
       <motion.div
-        className="relative z-10 mb-10"
-        initial={{ opacity: 0, y: 16 }}
+        className="relative z-10 w-full px-4"
+        style={{ maxWidth: 560 }}
+        initial={{ opacity: 0, y: 48 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, delay: 0.1, ease: [0.4, 0, 0.2, 1] }}
+        transition={{ duration: 0.8, delay: 0.15, ease: [0.4, 0, 0.2, 1] }}
       >
-        <SoundboardPads />
-      </motion.div>
+        <GlassCard tilt tiltStrength={3} className="p-7">
 
-      {/* Upload card */}
-      <motion.div
-        className="relative z-10 w-full max-w-lg px-4"
-        initial={{ opacity: 0, y: 40 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, delay: 0.2, ease: [0.4, 0, 0.2, 1] }}
-      >
-        <GlassCard
-          className={`p-10 text-center transition-all duration-300 ${
-            dragging
-              ? 'ring-2 ring-amber-400/60 scale-[1.02]'
-              : ''
-          }`}
-          style={dragging ? { borderColor: 'rgba(245,158,11,0.4)', boxShadow: '0 0 32px rgba(245,158,11,0.15)' } : {}}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-        >
+          {/* Preset board */}
+          {!uploading && (
+            <div className="mb-7">
+              <PresetBoard selected={preset} onSelect={setPreset} />
+            </div>
+          )}
+
+          {/* Divider */}
+          {!uploading && (
+            <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', marginBottom: 24 }} />
+          )}
+
+          {/* Upload zone */}
           {!uploading ? (
-            <>
-              {/* Piano icon in a dark knob-like circle */}
-              <div className="mb-6 flex justify-center">
-                <div
-                  className="w-16 h-16 rounded-full flex items-center justify-center text-3xl"
+            <div
+              onDrop={onDrop}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+            >
+              {/* Drop area */}
+              <motion.div
+                className="rounded-xl flex flex-col items-center gap-3 py-8 px-6 mb-5"
+                style={{
+                  border: `1.5px dashed ${dragging ? (preset?.color || 'rgba(245,158,11,0.6)') : 'rgba(255,255,255,0.08)'}`,
+                  background: dragging ? `${preset?.color || '#f59e0b'}06` : 'rgba(255,255,255,0.01)',
+                  transition: 'all 0.2s ease',
+                  cursor: 'default',
+                }}
+                animate={dragging ? { scale: 1.01 } : { scale: 1 }}
+              >
+                {/* Animated icon */}
+                <motion.div
+                  className="float"
                   style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    boxShadow: '0 0 0 4px rgba(245,158,11,0.08), inset 0 1px 0 rgba(255,255,255,0.08)',
+                    width: 52, height: 52,
+                    borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 22,
+                    background: `linear-gradient(135deg, ${preset?.color || '#f59e0b'}20, ${preset?.color || '#f59e0b'}08)`,
+                    border: `1px solid ${preset?.color || '#f59e0b'}30`,
+                    boxShadow: `0 0 20px ${preset?.color || '#f59e0b'}20`,
                   }}
                 >
                   🎹
+                </motion.div>
+
+                <div className="text-center">
+                  <p className="text-sm font-medium text-white mb-1">
+                    Drop your recording here
+                  </p>
+                  <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.04em' }}>
+                    MP3 · WAV · M4A · OGG · FLAC · AIFF
+                  </p>
+                </div>
+              </motion.div>
+
+              {/* CTA */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => inputRef.current?.click()}
+                  className="flex-1 py-3 rounded-xl text-sm font-bold tracking-wide transition-all duration-200 active:scale-95 relative overflow-hidden"
+                  style={{
+                    background: `linear-gradient(135deg, ${preset?.color || '#f59e0b'} 0%, ${preset?.color || '#d97706'}cc 100%)`,
+                    color: '#0a0a0b',
+                    boxShadow: `0 4px 24px ${preset?.color || '#f59e0b'}40, 0 0 0 1px ${preset?.color || '#f59e0b'}20`,
+                  }}
+                >
+                  <span className="shimmer absolute inset-0 rounded-xl" />
+                  <span className="relative">Choose File</span>
+                </button>
+
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: 'rgba(255,255,255,0.22)',
+                    fontFamily: 'ui-monospace,monospace',
+                    letterSpacing: '0.06em',
+                    lineHeight: 1.5,
+                    textAlign: 'center',
+                    padding: '0 8px',
+                  }}
+                >
+                  PRESET<br />
+                  <span style={{ color: preset?.color || '#f59e0b' }}>{preset?.label.toUpperCase()}</span>
                 </div>
               </div>
 
-              {/* Drop zone dashed border hint */}
-              <div
-                className="rounded-xl px-6 py-5 mb-6"
-                style={{
-                  border: `2px dashed ${dragging ? 'rgba(245,158,11,0.5)' : 'rgba(255,255,255,0.1)'}`,
-                  background: dragging ? 'rgba(245,158,11,0.04)' : 'transparent',
-                  transition: 'all 0.2s ease',
-                }}
-              >
-                <p className="text-base font-medium text-white mb-1">
-                  Drop your piano recording here
-                </p>
-                <p className="text-sm text-zinc-500">
-                  MP3, WAV, M4A, OGG, FLAC, AIFF supported
-                </p>
-              </div>
-
-              <button
-                onClick={() => inputRef.current?.click()}
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold transition-all duration-200 active:scale-95"
-                style={{
-                  background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                  color: '#0a0a0b',
-                  boxShadow: '0 4px 16px rgba(245,158,11,0.35)',
-                }}
-              >
-                Choose File
-              </button>
               <input
                 ref={inputRef}
                 type="file"
@@ -185,96 +375,135 @@ export default function LandingPage() {
                 className="hidden"
                 onChange={(e) => handleFile(e.target.files[0])}
               />
-              {error && (
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="mt-4 text-sm text-red-400"
-                >
-                  {error}
-                </motion.p>
-              )}
-            </>
+
+              <AnimatePresence>
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="mt-4 text-sm text-red-400 text-center"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </div>
           ) : (
-            <div className="py-4 flex flex-col items-center gap-4">
-              <AudioBars color="#22c55e" height={36} />
-              <p className="text-sm font-medium text-white">Uploading…</p>
-              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+            /* Uploading state */
+            <div className="flex flex-col items-center gap-5 py-6">
+              <AudioBars color={preset?.color || '#22c55e'} height={40} />
+              <p className="text-sm font-semibold" style={{ color: preset?.color || '#f59e0b' }}>
+                Uploading…
+              </p>
+              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
                 <motion.div
                   className="h-full rounded-full"
-                  style={{ background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)' }}
+                  style={{ background: `linear-gradient(90deg, ${preset?.color || '#f59e0b'}, ${preset?.color || '#d97706'})` }}
                   initial={{ width: 0 }}
                   animate={{ width: `${progress}%` }}
                   transition={{ ease: 'easeOut' }}
                 />
               </div>
-              <p className="text-xs text-zinc-500">{progress}%</p>
+              <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontFamily: 'ui-monospace,monospace' }}>
+                {progress}%
+              </p>
             </div>
           )}
         </GlassCard>
       </motion.div>
 
-      {/* How it works */}
+      {/* ── How it works ── */}
       <motion.section
         id="how-it-works"
-        className="relative z-10 mt-24 w-full max-w-4xl px-4 pb-24"
+        className="relative z-10 mt-28 w-full px-4 pb-8"
+        style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, delay: 0.4, ease: [0.4, 0, 0.2, 1] }}
+        transition={{ duration: 0.8, delay: 0.35 }}
       >
-        <h2 className="text-center text-3xl font-semibold tracking-tight mb-12 text-gradient">
-          How it works
-        </h2>
+        <div className="text-center mb-10">
+          <span style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.20em',
+            color: 'rgba(255,255,255,0.2)',
+            fontFamily: 'ui-monospace,monospace',
+          }}>
+            HOW IT WORKS
+          </span>
+          <h2 className="text-2xl font-bold tracking-tight mt-2 text-gradient">
+            Three steps to your arrangement
+          </h2>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[
             {
               num: '01',
-              icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-                </svg>
-              ),
+              color: '#f59e0b',
+              sym: '▲',
               title: 'Upload',
-              desc: 'Drop any piano recording — MP3, WAV, and more. We convert it to the ideal format automatically.',
+              desc: 'Drop any piano recording in any format. We convert, normalise and store it automatically.',
             },
             {
               num: '02',
-              icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-                </svg>
-              ),
+              color: '#a78bfa',
+              sym: '◈',
               title: 'Analyse',
-              desc: 'Basic Pitch transcribes every note. Spleeter separates stems. Librosa detects tempo and segments by measure.',
+              desc: 'Basic Pitch transcribes every note. Spleeter separates stems. Librosa detects tempo and chord sections.',
             },
             {
               num: '03',
-              icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" />
-                </svg>
-              ),
+              color: '#06b6d4',
+              sym: '▶',
               title: 'Transform',
-              desc: 'Notes are rearranged into your target keyboard range using a smart priority hierarchy with ghost-note fills.',
+              desc: 'NMF compresses pitch range to your preset. Walking bass, voice leading and music theory rules apply.',
             },
-          ].map((step) => (
-            <GlassCard key={step.title} className="p-6 glass-hover" hover>
-              {/* Amber numbered circle */}
-              <div className="flex items-center gap-3 mb-4">
-                <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{
-                    background: 'rgba(245,158,11,0.12)',
-                    border: '1px solid rgba(245,158,11,0.3)',
-                    boxShadow: '0 0 12px rgba(245,158,11,0.15)',
-                  }}
-                >
-                  <span className="text-xs font-bold text-amber-400">{step.num}</span>
-                </div>
-                <div className="text-amber-400">{step.icon}</div>
+          ].map((step, i) => (
+            <GlassCard
+              key={step.title}
+              tilt
+              tiltStrength={7}
+              className="p-6 relative overflow-hidden"
+              style={{ cursor: 'default' }}
+            >
+              {/* Background number */}
+              <span style={{
+                position: 'absolute',
+                right: 16, top: 12,
+                fontSize: 64,
+                fontWeight: 900,
+                color: `${step.color}08`,
+                fontFamily: 'ui-monospace,monospace',
+                userSelect: 'none',
+                lineHeight: 1,
+              }}>
+                {step.num}
+              </span>
+
+              {/* Icon circle */}
+              <div style={{
+                width: 40, height: 40,
+                borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: `${step.color}12`,
+                border: `1px solid ${step.color}30`,
+                boxShadow: `0 0 16px ${step.color}15`,
+                marginBottom: 16,
+                fontSize: 16,
+                color: step.color,
+                fontFamily: 'ui-monospace,monospace',
+              }}>
+                {step.sym}
               </div>
-              <h3 className="text-base font-semibold mb-2 text-white">{step.title}</h3>
-              <p className="text-sm text-zinc-400 leading-relaxed">{step.desc}</p>
+
+              <h3 className="text-base font-bold mb-2" style={{ color: '#ffffff' }}>
+                {step.title}
+              </h3>
+              <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
+                {step.desc}
+              </p>
             </GlassCard>
           ))}
         </div>

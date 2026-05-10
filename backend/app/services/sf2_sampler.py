@@ -280,7 +280,8 @@ def _build_note_segment(shifted: np.ndarray, loop_start: int, loop_end: int,
       - Always padded to full sustain+release length so the fade never cuts short
     """
     xfade        = min(256, sr // 88)
-    total_needed = sustain_samples + release_samples
+    sustain_samples = max(0, sustain_samples)
+    total_needed = max(1, sustain_samples + release_samples)
     has_loop     = (loop_end > loop_start + 64)
 
     if not has_loop or len(shifted) >= total_needed:
@@ -348,10 +349,13 @@ def render_notes_sf2(notes: list, sr: int = 22050) -> np.ndarray:
         onset_s  = int(float(n["onset"]) * sr)
         note_dur = float(n.get("offset", n["onset"] + 0.5)) - float(n["onset"])
 
+        if onset_s < 0:
+            continue
         shifted, loop_start, loop_end = _get_shifted_sample(pitch, sr)
         if len(shifted) == 0:
             continue
 
+        note_dur = max(0.05, note_dur)   # minimum 50 ms — guards against offset ≤ onset
         sustain_samples = int(note_dur * sr)
         # Generous ring-out: at least 1.5 s, scales with note length, max 3 s
         release_samples = int(min(3.0, max(1.5, note_dur * 0.8)) * sr)

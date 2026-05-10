@@ -1,10 +1,8 @@
 from fastapi import APIRouter, HTTPException
-from pathlib import Path
 import json
 
 from app.services.session import get_session_dir
-from app.services.transcription import run_basic_pitch, refine_notes, get_octave_range
-from app.services.audio_utils import detect_tempo_and_beats
+from app.services.transcription import transcribe_components, get_octave_range
 
 router = APIRouter()
 
@@ -12,31 +10,32 @@ router = APIRouter()
 @router.post("/transcribe/{session_id}")
 async def transcribe_audio(session_id: str):
     session_dir = get_session_dir(session_id)
-    wav_path = session_dir / "audio.wav"
 
-    if not wav_path.exists():
-        raise HTTPException(404, "Session audio not found. Upload first.")
+    if not (session_dir / "components.json").exists():
+        raise HTTPException(404, "Components not found. Run /separate first.")
 
-    notes = run_basic_pitch(wav_path)
-    tempo, beat_times = detect_tempo_and_beats(wav_path)
-    notes = refine_notes(notes, tempo)
-    octave_range = get_octave_range(notes)
+    notes, timing_feel = transcribe_components(session_dir)
+    octave_range       = get_octave_range(notes)
 
-    # Invalidate cached transcription audio so next playback re-renders
+    # Load tempo from components.json (detected during separation)
+    with open(session_dir / "components.json") as f:
+        comp_meta = json.load(f)
+    tempo = float(comp_meta.get("tempo_bpm", 120.0))
+
+    # Invalidate cached audio
     stale = session_dir / "transcription_preview.wav"
     if stale.exists():
         stale.unlink()
 
     result = {
-        "session_id": session_id,
-        "note_count": len(notes),
-        "notes": notes,
+        "session_id":   session_id,
+        "note_count":   len(notes),
+        "notes":        notes,
         "octave_range": octave_range,
-        "tempo_bpm": round(tempo, 1),
-        "beat_times": beat_times[:20],
+        "tempo_bpm":    round(tempo, 1),
+        "timing_feel":  timing_feel,
     }
 
-    # Persist transcription for downstream steps
     with open(session_dir / "transcription.json", "w") as f:
         json.dump(result, f)
 

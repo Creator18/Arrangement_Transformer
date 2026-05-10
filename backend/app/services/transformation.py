@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 import copy
+import numpy as np
 import librosa
 import pretty_midi
 
@@ -170,16 +171,92 @@ def transform_notes(
     return transformed
 
 
-def notes_to_pretty_midi(notes: List[Dict], tempo: float = 120.0) -> pretty_midi.PrettyMIDI:
-    pm = pretty_midi.PrettyMIDI(initial_tempo=tempo)
+def notes_to_pretty_midi(
+    notes: List[Dict],
+    tempo: float = 120.0,
+    beat_times: Optional[np.ndarray] = None,
+    resolution: int = 480,
+) -> pretty_midi.PrettyMIDI:
+    """
+    Convert a note list to a PrettyMIDI object at a strict, uniform tempo.
+
+    When beat_times (actual beat positions from the original audio, in seconds)
+    is provided, each note's floating-point onset is mapped to its fractional
+    beat position in the original performance's variable-tempo grid, then
+    snapped to the nearest 16th-note tick in the uniform-tempo MIDI grid.
+
+    This separates two concerns:
+      - Rhythmic intent  (which beat / subdivision the note targets) — preserved
+      - Absolute spacing (the original's rubato / tempo drift)        — discarded
+
+    Result: the MIDI always plays back at a perfectly consistent tempo that
+    matches the overall BPM of the source track, with no jumped sections.
+    """
+    # 12 subdivisions per beat = LCM(4, 3) — captures duplet 16ths, triplet 8ths,
+    # and dotted-beat compound meters (6/8, 12/8, 9/8) without needing to know
+    # the time signature.  Resolution is set to a multiple of 12 so that every
+    # subdivision maps to an exact integer tick count.
+    SUBS = 12                           # subdivisions per beat
+    resolution = SUBS * 40             # 480 ticks/beat, each sub = 40 ticks
+
+    pm  = pretty_midi.PrettyMIDI(initial_tempo=tempo, resolution=resolution)
+    spb = 60.0 / tempo                 # seconds per beat at uniform tempo
+    tpb = float(resolution)            # ticks per beat
+    tps = tpb / SUBS                   # ticks per subdivision (exactly 40)
+
+    bt: Optional[np.ndarray] = (
+        np.asarray(beat_times, dtype=float) if beat_times is not None and len(beat_times) >= 2
+        else None
+    )
+
+    def _time_to_tick(t: float) -> int:
+        t = float(t)
+
+        if bt is None:
+            # No beat grid — direct uniform conversion
+            return max(0, round(t / spb * tpb))
+
+        N = len(bt)
+
+        if t <= bt[0]:
+            dt   = bt[1] - bt[0]
+            frac = (t - bt[0]) / dt
+            i    = 0
+        elif t >= bt[-1]:
+            dt   = bt[-1] - bt[-2]
+            frac = (t - bt[-1]) / dt
+            i    = N - 1
+        else:
+            i    = int(np.searchsorted(bt, t, side='right')) - 1
+            i    = min(i, N - 2)
+            dt   = bt[i + 1] - bt[i]
+            frac = (t - bt[i]) / dt
+
+        # Fractional beat position in the original performance
+        beat_pos = i + frac
+
+        # Snap to nearest subdivision (works for duplet, triplet, compound meters)
+        sub_idx = round(beat_pos * SUBS)
+        return max(0, round(sub_idx * tps))
+
+    def _tick_to_s(tick: int) -> float:
+        return tick / tpb * spb
+
+    min_ticks = max(1, round(tps))     # minimum note length = one subdivision
+
     piano = pretty_midi.Instrument(program=0)
     for n in notes:
-        note = pretty_midi.Note(
-            velocity=int(n.get("velocity", 80)),
-            pitch=int(n["pitch"]),
-            start=float(n["onset"]),
-            end=float(n["offset"]),
-        )
-        piano.notes.append(note)
+        start_tick = _time_to_tick(float(n["onset"]))
+        end_tick   = _time_to_tick(float(n.get("offset", float(n["onset"]) + spb / 4)))
+        if end_tick <= start_tick:
+            end_tick = start_tick + min_ticks
+
+        piano.notes.append(pretty_midi.Note(
+            velocity=max(1, min(127, int(n.get("velocity", 80)))),
+            pitch=max(0, min(127, int(n["pitch"]))),
+            start=_tick_to_s(start_tick),
+            end=_tick_to_s(end_tick),
+        ))
+
     pm.instruments.append(piano)
     return pm

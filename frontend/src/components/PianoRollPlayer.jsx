@@ -2,14 +2,15 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 // ── layout constants ──────────────────────────────────────────────────────────
-const NOTE_H    = 8      // px per semitone row
-const KEY_W     = 56     // keyboard panel width
-const PX_PER_S  = 80     // roll px per second
-const HEADER_H  = 28     // top strip (measure markers)
+const NOTE_W     = 8     // px per semitone column  (pitch → X axis)
+const KEY_H      = 68    // keyboard panel height   (fixed at bottom)
+const PX_PER_S   = 80    // px per second           (time → Y axis, downward)
+const TIMELINE_W = 28    // left strip for measure / beat labels
+const ROLL_MAX_H = 370   // max height of the scrollable roll viewport
 
 // Which pitch classes are black keys
 const BLACK_PCS = new Set([1, 3, 6, 8, 10])
-const isBlack   = (pitch) => BLACK_PCS.has(pitch % 12)
+const isBlack   = p => BLACK_PCS.has(p % 12)
 
 // ── register colours ──────────────────────────────────────────────────────────
 const REG_COLOR = {
@@ -45,41 +46,52 @@ function fmt(s) {
   return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
-// ── Keyboard SVG ──────────────────────────────────────────────────────────────
-// Renders a vertical DAW-style piano keyboard aligned to the roll rows.
-// White keys span full width; black keys are narrower and right-aligned
-// (simulating depth). Both use rounded "Apple button" corners.
+// ── Horizontal Keyboard SVG ───────────────────────────────────────────────────
+// Runs LEFT → RIGHT: bass (low pitch) on the left, treble (high pitch) on the right.
+// Exactly mirrors a real piano viewed from the player's seat.
+//
+// White-key width rules (for pitch P at column i):
+//   • If pitch P-1 is black (left neighbour) → extend left  edge by NOTE_W/2
+//   • If pitch P+1 is black (right neighbour) → extend right edge by NOTE_W/2
+// This gives natural piano proportions:
+//   C / E / F / B  → 1.5 × NOTE_W
+//   D / G / A      → 2.0 × NOTE_W
+//
+// Black keys are top-aligned (protruding toward the roll), 60% height, 70% width.
 function KeyboardSVG({ midiLo, midiHi, activePitches }) {
   const pitchRange = midiHi - midiLo + 1
-  const totalH     = HEADER_H + pitchRange * NOTE_H
-  const WHITE_W    = KEY_W - 1          // white key width (1px gap for panel border)
-  const BLACK_W    = Math.round(KEY_W * 0.55)
-  const BLACK_X    = KEY_W - BLACK_W    // right-aligned so they "float" in front
+  const totalW     = TIMELINE_W + pitchRange * NOTE_W
+  const WHITE_H    = KEY_H - 1
+  const BLACK_H    = Math.round(KEY_H * 0.60)
+  const BLACK_W    = Math.round(NOTE_W * 0.70)
 
-  // Note-name labels on C keys
-  const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+  function whiteKeyBounds(pitch, col) {
+    const xBase = TIMELINE_W + col * NOTE_W
+    let xL = xBase
+    let xR = xBase + NOTE_W
+    if (col > 0               && isBlack(pitch - 1)) xL = xBase - NOTE_W / 2
+    if (col < pitchRange - 1  && isBlack(pitch + 1)) xR = xBase + NOTE_W * 1.5
+    return { xL, xR }
+  }
 
   return (
-    <svg
-      width={KEY_W}
-      height={totalH}
-      style={{ display: 'block', flexShrink: 0 }}
-    >
-      {/* Header patch (aligns with roll header) */}
-      <rect x={0} y={0} width={KEY_W} height={HEADER_H}
-        fill="rgba(0,0,0,0.4)" />
-      <text x={KEY_W / 2} y={HEADER_H * 0.68}
-        fontSize={7} fill="rgba(245,158,11,0.5)"
+    <svg width={totalW} height={KEY_H} style={{ display: 'block', flexShrink: 0 }}>
+
+      {/* Timeline-strip patch */}
+      <rect x={0} y={0} width={TIMELINE_W} height={KEY_H} fill="rgba(0,0,0,0.45)" />
+      <text x={TIMELINE_W / 2} y={KEY_H / 2}
+        fontSize={6} fill="rgba(245,158,11,0.45)"
         fontFamily="ui-monospace,monospace" fontWeight="700"
-        textAnchor="middle" letterSpacing="1">
+        textAnchor="middle" dominantBaseline="middle" letterSpacing="0.5">
         KEY
       </text>
 
       {/* ── White keys (bottom layer) ── */}
       {Array.from({ length: pitchRange }, (_, i) => {
-        const pitch = midiHi - i
+        const pitch = midiLo + i
         if (isBlack(pitch)) return null
-        const y      = HEADER_H + i * NOTE_H
+        const { xL, xR } = whiteKeyBounds(pitch, i)
+        const w      = xR - xL
         const active = activePitches.has(pitch)
         const reg    = classify(pitch)
         const isC    = pitch % 12 === 0
@@ -87,25 +99,26 @@ function KeyboardSVG({ midiLo, midiHi, activePitches }) {
         return (
           <g key={pitch}>
             <rect
-              x={1} y={y + 1}
-              width={WHITE_W - 1} height={NOTE_H - 2}
+              x={xL + 0.5} y={1}
+              width={w - 1} height={WHITE_H - 1}
               rx={3}
-              fill={active ? REG_COLOR[reg].fill : 'rgba(230,230,235,0.92)'}
-              stroke={active ? 'none' : 'rgba(0,0,0,0.08)'}
+              fill={active ? REG_COLOR[reg].fill : 'rgba(228,228,232,0.94)'}
+              stroke={active ? 'none' : 'rgba(0,0,0,0.10)'}
               strokeWidth={0.5}
-              style={active
-                ? { filter: `drop-shadow(0 0 4px ${REG_COLOR[reg].glow}) drop-shadow(0 0 8px ${REG_COLOR[reg].glow})` }
-                : undefined}
+              style={active ? {
+                filter: [
+                  `drop-shadow(0 0 6px ${REG_COLOR[reg].glow})`,
+                  `drop-shadow(0 0 12px ${REG_COLOR[reg].glow})`,
+                  `drop-shadow(0 0 20px ${REG_COLOR[reg].glow})`,
+                ].join(' '),
+              } : undefined}
             />
-            {/* C note octave label */}
             {isC && !active && (
               <text
-                x={4} y={y + NOTE_H - 2}
-                fontSize={5.5}
-                fill="rgba(80,80,90,0.7)"
-                fontFamily="ui-monospace,monospace"
-                fontWeight="700"
-              >
+                x={xL + w / 2} y={KEY_H - 5}
+                fontSize={5} fill="rgba(80,80,90,0.70)"
+                fontFamily="ui-monospace,monospace" fontWeight="700"
+                textAnchor="middle">
                 C{octave}
               </text>
             )}
@@ -113,30 +126,58 @@ function KeyboardSVG({ midiLo, midiHi, activePitches }) {
         )
       })}
 
-      {/* ── Black keys (top layer — rendered after so they appear above) ── */}
+      {/* ── Black keys (top layer — protrude toward the roll) ── */}
       {Array.from({ length: pitchRange }, (_, i) => {
-        const pitch = midiHi - i
+        const pitch  = midiLo + i
         if (!isBlack(pitch)) return null
-        const y      = HEADER_H + i * NOTE_H
+        const xBase  = TIMELINE_W + i * NOTE_W
+        const xL     = xBase + (NOTE_W - BLACK_W) / 2
         const active = activePitches.has(pitch)
         const reg    = classify(pitch)
         return (
           <rect
             key={pitch}
-            x={BLACK_X} y={y + 1}
-            width={BLACK_W} height={NOTE_H - 2}
-            rx={3}
-            fill={active ? REG_COLOR[reg].fill : 'rgba(16,16,20,0.97)'}
-            style={active
-              ? { filter: `drop-shadow(0 0 4px ${REG_COLOR[reg].glow}) drop-shadow(0 0 8px ${REG_COLOR[reg].glow})` }
-              : undefined}
+            x={xL} y={0}
+            width={BLACK_W} height={BLACK_H}
+            rx={2}
+            fill={active ? REG_COLOR[reg].fill : 'rgba(14,14,18,0.98)'}
+            style={active ? {
+              filter: [
+                `drop-shadow(0 0 6px ${REG_COLOR[reg].glow})`,
+                `drop-shadow(0 0 12px ${REG_COLOR[reg].glow})`,
+                `drop-shadow(0 0 20px ${REG_COLOR[reg].glow})`,
+              ].join(' '),
+            } : undefined}
           />
         )
       })}
 
-      {/* Right-edge separator */}
-      <line x1={KEY_W - 0.5} y1={HEADER_H} x2={KEY_W - 0.5} y2={totalH}
-        stroke="rgba(255,255,255,0.10)" strokeWidth={1} />
+      {/* Top separator (between roll and keyboard) */}
+      <line x1={0} y1={0.5} x2={totalW} y2={0.5}
+        stroke="rgba(255,255,255,0.12)" strokeWidth={1} />
+
+      {/* ── Middle-C LH / RH vertical divider ── */}
+      {midiLo <= 60 && 60 <= midiHi && (() => {
+        const divX = TIMELINE_W + (60 - midiLo) * NOTE_W
+        return (
+          <g>
+            <line x1={divX} y1={0} x2={divX} y2={KEY_H}
+              stroke="rgba(245,158,11,0.75)" strokeWidth={1.5} />
+            <text x={divX - 5} y={KEY_H / 2}
+              textAnchor="end" dominantBaseline="middle"
+              fontSize={5.5} fill="rgba(245,158,11,0.85)"
+              fontFamily="ui-monospace,monospace" fontWeight="700">
+              LH
+            </text>
+            <text x={divX + 5} y={KEY_H / 2}
+              textAnchor="start" dominantBaseline="middle"
+              fontSize={5.5} fill="rgba(245,158,11,0.85)"
+              fontFamily="ui-monospace,monospace" fontWeight="700">
+              RH
+            </text>
+          </g>
+        )
+      })()}
     </svg>
   )
 }
@@ -147,42 +188,46 @@ export default function PianoRollPlayer({
   getPartUrl      = () => '',
   label           = 'Track',
   tempo           = 120,
-  keyboardStart   = 36,   // lowest MIDI note shown (C2 = 36)
-  keyboardOctaves = 7,    // number of octaves displayed
+  keyboardStart   = 36,   // lowest MIDI note shown (C2)
+  keyboardOctaves = 7,
+  defaultPart     = 'all', // controlled from parent (results page part pads)
 }) {
-  const [activePart,  setActivePart]  = useState('all')
+  const [activePart,  setActivePart]  = useState(defaultPart)
   const [playing,     setPlaying]     = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration,    setDuration]    = useState(0)
   const [loading,     setLoading]     = useState(false)
   const [dragging,    setDragging]    = useState(false)
 
-  const audioRef     = useRef(null)
-  const rollRef      = useRef(null)    // scrollable roll container
-  const isDragging   = useRef(false)
-  const rafRef       = useRef(null)
+  const audioRef   = useRef(null)
+  const rollRef    = useRef(null)   // scrollable roll container
+  const isDragging = useRef(false)
+  const rafRef     = useRef(null)
 
-  // MIDI range for this keyboard/roll
-  const midiLo    = keyboardStart
-  const midiHi    = keyboardStart + keyboardOctaves * 12 - 1
-  const pitchRange = midiHi - midiLo + 1
-  const rollHeight = pitchRange * NOTE_H
-  const totalH     = HEADER_H + rollHeight
+  // Sync when parent results-page part pad changes
+  useEffect(() => { setActivePart(defaultPart) }, [defaultPart])
 
-  // Roll width from note content
-  const maxTime   = notes.length
+  // MIDI range
+  const midiLo     = keyboardStart
+  const midiHi     = keyboardStart + keyboardOctaves * 12 - 1
+  const pitchRange  = midiHi - midiLo + 1
+
+  // SVG dimensions
+  const rollSvgW   = TIMELINE_W + pitchRange * NOTE_W
+
+  const maxTime    = notes.length
     ? Math.max(...notes.map(n => n.offset ?? n.onset + 0.5))
     : 10
-  const rollWidth = Math.max(800, maxTime * PX_PER_S)
+  const rollSvgH   = Math.max(600, maxTime * PX_PER_S + 60)   // +60 bottom padding
 
   // Beat / measure layout
-  const beatDur   = 60 / tempo
-  const beatCount = Math.ceil(maxTime / beatDur)
+  const beatDur    = 60 / tempo
+  const beatCount  = Math.ceil(maxTime / beatDur)
 
-  // Part filter range
+  // Part filter
   const [partLo, partHi] = PART_RANGE[activePart]
 
-  // ── Active pitches at current playhead position ─────────────────────────
+  // ── Active pitches ──────────────────────────────────────────────────────────
   const activePitches = useMemo(() => {
     const active = new Set()
     if (currentTime <= 0) return active
@@ -197,7 +242,7 @@ export default function PianoRollPlayer({
     return active
   }, [notes, currentTime, activePart, partLo, partHi, midiLo, midiHi])
 
-  // ── Audio events ──────────────────────────────────────────────────────────
+  // ── Audio events ────────────────────────────────────────────────────────────
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -226,11 +271,7 @@ export default function PianoRollPlayer({
     const audio = audioRef.current
     if (!audio) return
     const wasPlaying = playing
-    audio.pause()
-    setPlaying(false)
-    setCurrentTime(0)
-    setDuration(0)
-    setLoading(true)
+    audio.pause(); setPlaying(false); setCurrentTime(0); setDuration(0); setLoading(true)
     const url = getPartUrl(activePart)
     if (url) {
       audio.src = url
@@ -243,7 +284,9 @@ export default function PianoRollPlayer({
     }
   }, [activePart, getPartUrl])
 
-  // rAF loop: scroll roll so current time aligns with the left keyboard edge
+  // ── rAF auto-scroll (vertical) ──────────────────────────────────────────────
+  // Scroll so the current time sits at the bottom edge of the roll viewport
+  // (the top edge of the keyboard = the "now" indicator).
   useEffect(() => {
     if (!playing) {
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
@@ -253,7 +296,7 @@ export default function PianoRollPlayer({
       const audio = audioRef.current
       const roll  = rollRef.current
       if (audio && roll && !isDragging.current) {
-        roll.scrollLeft = audio.currentTime * PX_PER_S
+        roll.scrollTop = Math.max(0, audio.currentTime * PX_PER_S - roll.clientHeight)
       }
       rafRef.current = requestAnimationFrame(tick)
     }
@@ -261,7 +304,7 @@ export default function PianoRollPlayer({
     return () => { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null } }
   }, [playing])
 
-  // ── Transport ─────────────────────────────────────────────────────────────
+  // ── Transport ───────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -274,26 +317,26 @@ export default function PianoRollPlayer({
     }
   }, [playing])
 
-  // ── Seek ──────────────────────────────────────────────────────────────────
-  const seekToX = useCallback((clientX) => {
+  // ── Seek (y-based: click = time position) ──────────────────────────────────
+  const seekToY = useCallback((clientY) => {
     const c     = rollRef.current
     const audio = audioRef.current
     if (!c || !audio) return
     const rect = c.getBoundingClientRect()
-    const x    = clientX - rect.left + c.scrollLeft
-    const t    = Math.max(0, Math.min(x / PX_PER_S, duration || maxTime))
+    const y    = clientY - rect.top + c.scrollTop
+    const t    = Math.max(0, Math.min(y / PX_PER_S, duration || maxTime))
     audio.currentTime = t
     setCurrentTime(t)
-    c.scrollLeft = t * PX_PER_S
+    c.scrollTop = Math.max(0, t * PX_PER_S - c.clientHeight)
   }, [duration, maxTime])
 
   const onMouseDown = useCallback((e) => {
     if (e.button !== 0) return
-    isDragging.current = true; setDragging(true); seekToX(e.clientX)
-  }, [seekToX])
+    isDragging.current = true; setDragging(true); seekToY(e.clientY)
+  }, [seekToY])
   const onMouseMove = useCallback((e) => {
-    if (!isDragging.current) return; seekToX(e.clientX)
-  }, [seekToX])
+    if (!isDragging.current) return; seekToY(e.clientY)
+  }, [seekToY])
   const onMouseUp = useCallback(() => {
     isDragging.current = false; setDragging(false)
   }, [])
@@ -308,12 +351,19 @@ export default function PianoRollPlayer({
     }
   }, [dragging, onMouseMove, onMouseUp])
 
-  const onTouchStart = useCallback((e) => seekToX(e.touches[0].clientX), [seekToX])
-  const onTouchMove  = useCallback((e) => seekToX(e.touches[0].clientX), [seekToX])
+  const onTouchStart = useCallback((e) => seekToY(e.touches[0].clientY), [seekToY])
+  const onTouchMove  = useCallback((e) => {
+    e.preventDefault(); seekToY(e.touches[0].clientY)
+  }, [seekToY])
 
   const pct = duration > 0 ? (currentTime / duration) * 100 : 0
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── LH/RH divider x position ───────────────────────────────────────────────
+  const handDivX = (midiLo <= 60 && 60 <= midiHi)
+    ? TIMELINE_W + (60 - midiLo) * NOTE_W
+    : null
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-2">
 
@@ -374,7 +424,7 @@ export default function PianoRollPlayer({
               style={{
                 background: isActive ? `${color}22` : 'rgba(255,255,255,0.04)',
                 border: `1px solid ${isActive ? `${color}55` : 'rgba(255,255,255,0.08)'}`,
-                color: isActive ? color : '#71717a',
+                color:  isActive ? color : '#71717a',
                 boxShadow: isActive ? `0 0 8px ${color}30` : 'none',
               }}>
               {pLabel}
@@ -386,59 +436,116 @@ export default function PianoRollPlayer({
         </span>
       </div>
 
-      {/* ── Keyboard + Roll ── */}
+      {/* ── Roll + Keyboard ── */}
       <div
         className="rounded-xl overflow-hidden select-none"
         style={{
-          display: 'flex',
           background: 'rgba(0,0,0,0.45)',
           border: `1px solid ${dragging ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.07)'}`,
           transition: 'border-color 0.15s ease',
+          overflowX: 'auto',   // horizontal scroll if viewport is narrow
         }}
       >
-        {/* Fixed keyboard panel */}
-        <KeyboardSVG
-          midiLo={midiLo}
-          midiHi={midiHi}
-          activePitches={activePitches}
-        />
-
         {/* Scrollable roll */}
         <div
           ref={rollRef}
-          style={{ overflowX: 'auto', flex: 1, cursor: 'col-resize' }}
+          style={{
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            maxHeight: ROLL_MAX_H,
+            cursor: 'row-resize',
+            width: rollSvgW,
+          }}
           onMouseDown={onMouseDown}
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
         >
-          <svg width={rollWidth} height={totalH} style={{ display: 'block' }}>
+          <svg width={rollSvgW} height={rollSvgH} style={{ display: 'block' }}>
 
-            {/* Roll background */}
-            <rect x={0} y={0} width={rollWidth} height={totalH} fill="rgba(0,0,0,0.0)" />
+            {/* ── Timeline strip background ── */}
+            <rect x={0} y={0} width={TIMELINE_W} height={rollSvgH}
+              fill="rgba(0,0,0,0.30)" />
 
-            {/* Measure header background */}
-            <rect x={0} y={0} width={rollWidth} height={HEADER_H} fill="rgba(0,0,0,0.3)" />
-            <line x1={0} y1={HEADER_H - 0.5} x2={rollWidth} y2={HEADER_H - 0.5}
-              stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+            {/* ── Black-key column shading ── */}
+            {Array.from({ length: pitchRange }, (_, i) => {
+              const pitch = midiLo + i
+              if (!isBlack(pitch)) return null
+              return (
+                <rect key={pitch}
+                  x={TIMELINE_W + i * NOTE_W} y={0}
+                  width={NOTE_W} height={rollSvgH}
+                  fill="rgba(0,0,0,0.18)" />
+              )
+            })}
 
-            {/* Beat / measure grid */}
+            {/* ── C-note vertical grid lines ── */}
+            {Array.from({ length: pitchRange }, (_, i) => {
+              const pitch = midiLo + i
+              if (pitch % 12 !== 0) return null
+              const x = TIMELINE_W + i * NOTE_W
+              return (
+                <line key={pitch}
+                  x1={x} y1={0} x2={x} y2={rollSvgH}
+                  stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
+              )
+            })}
+
+            {/* ── LH / RH zone tints + vertical divider ── */}
+            {handDivX !== null && (() => {
+              const lhW = handDivX - TIMELINE_W
+              const rhW = rollSvgW - handDivX
+              return (
+                <g>
+                  <rect x={TIMELINE_W} y={0} width={lhW} height={rollSvgH}
+                    fill="rgba(59,130,246,0.025)" />
+                  <rect x={handDivX} y={0} width={rhW} height={rollSvgH}
+                    fill="rgba(248,113,113,0.025)" />
+                  <line x1={handDivX} y1={0} x2={handDivX} y2={rollSvgH}
+                    stroke="rgba(245,158,11,0.35)" strokeWidth={1}
+                    strokeDasharray="6 4" />
+                  <text x={TIMELINE_W + lhW / 2} y={14}
+                    textAnchor="middle" fontSize={7}
+                    fill="rgba(59,130,246,0.18)"
+                    fontFamily="ui-monospace,monospace" fontWeight="700"
+                    letterSpacing="1.5">LEFT HAND</text>
+                  <text x={handDivX + rhW / 2} y={14}
+                    textAnchor="middle" fontSize={7}
+                    fill="rgba(248,113,113,0.18)"
+                    fontFamily="ui-monospace,monospace" fontWeight="700"
+                    letterSpacing="1.5">RIGHT HAND</text>
+                  <text x={handDivX + 3} y={rollSvgH - 8}
+                    fontSize={6.5} fill="rgba(245,158,11,0.45)"
+                    fontFamily="ui-monospace,monospace" fontWeight="700">
+                    C4
+                  </text>
+                </g>
+              )
+            })()}
+
+            {/* ── Beat / measure horizontal grid ── */}
             {Array.from({ length: beatCount + 1 }, (_, b) => {
-              const x          = b * beatDur * PX_PER_S
+              const y          = b * beatDur * PX_PER_S
               const isMeasure  = b % 4 === 0
               const measureNum = Math.floor(b / 4) + 1
               return (
                 <g key={b}>
-                  <line x1={x} y1={HEADER_H} x2={x} y2={totalH}
-                    stroke={isMeasure ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.035)'}
+                  {/* Beat line across full roll */}
+                  <line x1={TIMELINE_W} y1={y} x2={rollSvgW} y2={y}
+                    stroke={isMeasure ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.030)'}
                     strokeWidth={isMeasure ? 1 : 0.5} />
+                  {/* Tick into timeline strip */}
                   <line
-                    x1={x} y1={isMeasure ? HEADER_H * 0.3 : HEADER_H * 0.58}
-                    x2={x} y2={HEADER_H - 1}
+                    x1={isMeasure ? TIMELINE_W * 0.30 : TIMELINE_W * 0.58}
+                    y1={y}
+                    x2={TIMELINE_W - 1} y2={y}
                     stroke={isMeasure ? 'rgba(245,158,11,0.55)' : 'rgba(255,255,255,0.18)'}
                     strokeWidth={isMeasure ? 1.5 : 0.75} />
+                  {/* Measure number */}
                   {isMeasure && (
-                    <text x={x + 4} y={HEADER_H * 0.7} fontSize={9}
-                      fill="rgba(245,158,11,0.7)" fontFamily="ui-monospace,monospace" fontWeight="700">
+                    <text x={TIMELINE_W / 2} y={y + 9}
+                      fontSize={8} fill="rgba(245,158,11,0.70)"
+                      fontFamily="ui-monospace,monospace" fontWeight="700"
+                      textAnchor="middle">
                       {measureNum}
                     </text>
                   )}
@@ -446,55 +553,40 @@ export default function PianoRollPlayer({
               )
             })}
 
-            {/* C-note horizontal lines + subtle row shading for black keys */}
-            {Array.from({ length: pitchRange }, (_, i) => {
-              const pitch   = midiHi - i
-              const isC     = pitch % 12 === 0
-              const isBlack_ = isBlack(pitch)
-              return (
-                <g key={pitch}>
-                  {isBlack_ && (
-                    <rect x={0} y={HEADER_H + i * NOTE_H} width={rollWidth} height={NOTE_H}
-                      fill="rgba(0,0,0,0.18)" />
-                  )}
-                  {isC && (
-                    <line x1={0} y1={HEADER_H + i * NOTE_H} x2={rollWidth} y2={HEADER_H + i * NOTE_H}
-                      stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
-                  )}
-                </g>
-              )
-            })}
-
-            {/* Notes */}
+            {/* ── Notes (vertical bars: x = pitch column, y = time) ── */}
             {notes.map((n, i) => {
               const p = parseInt(n.pitch, 10)
               if (p < midiLo || p > midiHi) return null
 
-              const x       = n.onset * PX_PER_S
-              const w       = Math.max(4, ((n.offset ?? n.onset + 0.25) - n.onset) * PX_PER_S)
-              const rowIdx  = midiHi - p
-              const y       = HEADER_H + rowIdx * NOTE_H + 1
-              const { fill, glow } = REG_COLOR[classify(p)]
+              const col    = p - midiLo
+              const x      = TIMELINE_W + col * NOTE_W
+              const y      = n.onset * PX_PER_S
+              const h      = Math.max(4, ((n.offset ?? n.onset + 0.25) - n.onset) * PX_PER_S)
+              const { fill } = REG_COLOR[classify(p)]
 
               const inPart   = activePart === 'all' || (p >= partLo && p <= partHi)
               const isActive = activePitches.has(p)
 
               return (
                 <rect key={i}
-                  x={x} y={y}
-                  width={w} height={NOTE_H - 2}
-                  rx={3}
+                  x={x + 1} y={y}
+                  width={NOTE_W - 2} height={h}
+                  rx={2}
                   fill={fill}
-                  opacity={inPart ? (isActive ? 1 : 0.70) : 0.10}
-                  style={isActive
-                    ? { filter: `drop-shadow(0 0 3px ${glow}) drop-shadow(0 0 7px ${glow})` }
-                    : undefined}
+                  opacity={inPart ? (isActive ? 1 : 0.55) : 0.08}
                 />
               )
             })}
 
           </svg>
         </div>
+
+        {/* Fixed keyboard at the bottom */}
+        <KeyboardSVG
+          midiLo={midiLo}
+          midiHi={midiHi}
+          activePitches={activePitches}
+        />
       </div>
 
       {/* Legend */}

@@ -29,8 +29,11 @@ export async function segmentAudio(sessionId) {
   return data
 }
 
-export async function transformArrangement(sessionId, targetOctaveRange = 5) {
-  const { data } = await api.post(`/transform/${sessionId}`, { target_octave_range: targetOctaveRange })
+export async function transformArrangement(sessionId, targetOctaveRange = 5, nmfComponents = 16) {
+  const { data } = await api.post(`/transform/${sessionId}`, {
+    target_octave_range: targetOctaveRange,
+    nmf_components: nmfComponents,
+  })
   return data
 }
 

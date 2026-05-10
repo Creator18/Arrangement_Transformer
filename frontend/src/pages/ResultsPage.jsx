@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import GradientOrbs from '../components/GradientOrbs'
@@ -13,47 +13,146 @@ import AudioBars from '../components/AudioBars'
 
 const TABS = ['Piano Roll', 'Sheet Music', 'CDEF']
 
+// ── Static fallback parts (used when API returns no dynamic layers) ────────────
+const STATIC_PARTS = [
+  { key: 'all',    label: 'All',    sym: '◉', color: '#a1a1aa', desc: 'Full mix'      },
+  { key: 'bass',   label: 'Bass',   sym: '▪', color: '#3b82f6', desc: 'Low register'  },
+  { key: 'melody', label: 'Melody', sym: '▲', color: '#f87171', desc: 'Mid register'  },
+  { key: 'voice',  label: 'Voice',  sym: '◈', color: '#a78bfa', desc: 'High register' },
+]
+
+// Layer sym glyphs per name keyword
+function layerSym(name) {
+  if (name.includes('Bass'))   return '▪'
+  if (name.includes('Mid'))    return '◈'
+  if (name.includes('High'))   return '⬡'
+  if (name.includes('Melody')) return '▲'
+  return '◉'
+}
+
+function PartPad({ part, selected, onSelect }) {
+  const ref = useRef(null)
+
+  const onMouseMove = (e) => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const x = (e.clientX - r.left) / r.width  - 0.5
+    const y = (e.clientY - r.top)  / r.height - 0.5
+    el.style.transform = `perspective(300px) rotateX(${-y * 10}deg) rotateY(${x * 10}deg) scale(${selected ? 1.05 : 1.03})`
+    el.style.transition = 'transform 0.07s ease'
+  }
+
+  const onMouseLeave = () => {
+    const el = ref.current
+    if (!el) return
+    el.style.transform = selected
+      ? 'perspective(300px) rotateX(0deg) rotateY(0deg) scale(1.03)'
+      : 'perspective(300px) rotateX(0deg) rotateY(0deg) scale(1)'
+    el.style.transition = 'transform 0.35s ease'
+  }
+
+  return (
+    <motion.button
+      ref={ref}
+      onClick={() => onSelect(part.key)}
+      onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
+      className="pad-press flex-1 flex flex-col items-center justify-center gap-1.5 py-4 rounded-2xl relative overflow-hidden"
+      style={{
+        background: selected
+          ? `linear-gradient(145deg, ${part.color}18, ${part.color}08)`
+          : 'rgba(255,255,255,0.02)',
+        border: `1px solid ${selected ? part.color + '50' : 'rgba(255,255,255,0.06)'}`,
+        cursor: 'pointer',
+        boxShadow: selected
+          ? `0 0 0 1px ${part.color}25, 0 0 20px ${part.color}20, 0 8px 32px rgba(0,0,0,0.5)`
+          : '0 4px 16px rgba(0,0,0,0.4)',
+        transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
+        willChange: 'transform',
+        minHeight: 80,
+      }}
+      whileTap={{ scale: 0.91 }}
+      initial={false}
+      animate={{ scale: selected ? 1.03 : 1 }}
+      transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+    >
+      {/* LED */}
+      <motion.div
+        style={{
+          width: 5, height: 5,
+          borderRadius: '50%',
+          background: selected ? part.color : 'rgba(255,255,255,0.08)',
+          boxShadow: selected ? `0 0 6px ${part.color}, 0 0 12px ${part.color}70` : 'none',
+          marginBottom: 2,
+        }}
+        animate={selected ? { opacity: [1, 0.4, 1] } : { opacity: 1 }}
+        transition={{ duration: 1.4, repeat: selected ? Infinity : 0 }}
+      />
+
+      <span style={{
+        fontSize: 16,
+        color: selected ? part.color : 'rgba(255,255,255,0.25)',
+        fontFamily: 'ui-monospace,monospace',
+        lineHeight: 1,
+        transition: 'color 0.2s',
+      }}>
+        {part.sym}
+      </span>
+
+      <p style={{
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: '0.10em',
+        color: selected ? part.color : 'rgba(255,255,255,0.35)',
+        transition: 'color 0.2s',
+      }}>
+        {part.label.toUpperCase()}
+      </p>
+
+      <p style={{
+        fontSize: 7.5,
+        color: selected ? `${part.color}80` : 'rgba(255,255,255,0.15)',
+        letterSpacing: '0.04em',
+        transition: 'color 0.2s',
+      }}>
+        {part.desc}
+      </p>
+    </motion.button>
+  )
+}
+
+// ── Detected key badge ────────────────────────────────────────────────────────
 function DetectedKeyBadge({ detected_scale }) {
   if (!detected_scale) return null
   const { root, scale, notes } = detected_scale
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
+      initial={{ opacity: 0, scale: 0.88 }}
       animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.4 }}
+      transition={{ duration: 0.45 }}
       className="flex justify-center"
     >
       <div
-        className="inline-flex items-center gap-3 px-4 py-2.5 rounded-2xl"
+        className="inline-flex items-center gap-3 px-5 py-2.5 rounded-2xl"
         style={{
-          background: 'rgba(245,158,11,0.08)',
-          border: '1px solid rgba(245,158,11,0.3)',
-          boxShadow: '0 0 16px rgba(245,158,11,0.12), inset 0 1px 0 rgba(255,255,255,0.04)',
+          background: 'rgba(245,158,11,0.07)',
+          border: '1px solid rgba(245,158,11,0.28)',
+          boxShadow: '0 0 20px rgba(245,158,11,0.10), inset 0 1px 0 rgba(255,255,255,0.04)',
         }}
       >
-        {/* Musical note icon */}
-        <svg
-          className="w-4 h-4 flex-shrink-0"
-          style={{ color: '#f59e0b' }}
-          fill="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path d="M9 3v10.55A4 4 0 1011 17V7h4V3H9z" />
-        </svg>
+        <span style={{ fontSize: 14, color: '#f59e0b', fontFamily: 'ui-monospace,monospace' }}>♪</span>
         <div className="flex items-baseline gap-2">
-          <span className="text-xs font-bold tracking-widest text-amber-400 uppercase">Key</span>
-          <span className="text-sm font-bold text-white">{root}</span>
-          <span className="text-sm text-amber-300/80 capitalize">{scale}</span>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.18em', color: '#f59e0b' }}>KEY</span>
+          <span style={{ fontSize: 14, fontWeight: 800, color: '#fff' }}>{root}</span>
+          <span style={{ fontSize: 13, color: 'rgba(251,191,36,0.75)', textTransform: 'capitalize' }}>{scale}</span>
         </div>
-        {notes && notes.length > 0 && (
+        {notes?.length > 0 && (
           <>
-            <div className="w-px h-4 bg-white/10" />
+            <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.08)' }} />
             <div className="flex gap-1">
               {notes.slice(0, 7).map((n) => (
-                <span
-                  key={n}
-                  className="text-[10px] font-medium text-zinc-500 tabular-nums"
-                >
+                <span key={n} style={{ fontSize: 9, color: 'rgba(255,255,255,0.28)', fontFamily: 'ui-monospace,monospace' }}>
                   {n}
                 </span>
               ))}
@@ -65,15 +164,17 @@ function DetectedKeyBadge({ detected_scale }) {
   )
 }
 
+// ── Main results page ─────────────────────────────────────────────────────────
 export default function ResultsPage() {
   const { sessionId } = useParams()
-  const [tab, setTab] = useState(0)
-  const [scoreData, setScoreData] = useState(null)
-  const [transformData, setTransformData] = useState(null)
-  const [transcriptionData, setTranscriptionData] = useState(null)
-  const [segmentData, setSegmentData] = useState(null)
-  const [cdef, setCdef] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [tab,              setTab]              = useState(0)
+  const [scoreData,        setScoreData]        = useState(null)
+  const [transformData,    setTransformData]    = useState(null)
+  const [transcriptionData,setTranscriptionData]= useState(null)
+  const [segmentData,      setSegmentData]      = useState(null)
+  const [cdef,             setCdef]             = useState('')
+  const [loading,          setLoading]          = useState(true)
+  const [activePart,       setActivePart]       = useState('all')
 
   useEffect(() => {
     async function load() {
@@ -88,7 +189,6 @@ export default function ResultsPage() {
         setTransformData(transformRes)
         setTranscriptionData(transcriptionRes)
         setSegmentData(segmentRes)
-
         const cdefText = await getCdefText(sessionId)
         setCdef(cdefText)
       } catch (e) {
@@ -100,17 +200,45 @@ export default function ResultsPage() {
     load()
   }, [sessionId])
 
-  const originalNotes  = transcriptionData?.notes || []
+  const originalNotes    = transcriptionData?.notes || []
   const transformedNotes = transformData?.transformed_notes || []
-  const segments = segmentData?.segments || []
-  const flagged  = scoreData?.flagged_segments || []
+  const segments         = segmentData?.segments || []
+  const flagged          = scoreData?.flagged_segments || []
+
+  // Build layer pads from dynamic API layers, or fall back to static register parts
+  const apiLayers = transformData?.layers || null
+  const layerPads = useMemo(() => {
+    if (!apiLayers || apiLayers.length === 0) return STATIC_PARTS
+    // Always prepend an "All" pad
+    const all = { key: 'all', label: 'All', sym: '◉', color: '#a1a1aa', desc: 'Full mix' }
+    return [
+      all,
+      ...apiLayers.map(l => ({
+        key:   l.id,
+        label: l.name.length > 8 ? l.name.split(' ')[0] : l.name,
+        sym:   layerSym(l.name),
+        color: l.color,
+        desc:  `${l.notes?.length ?? 0} notes`,
+      })),
+    ]
+  }, [apiLayers])
+
+  // Notes shown in the transformed piano roll — filtered by selected layer
+  const displayedTransformedNotes = useMemo(() => {
+    if (activePart === 'all' || !apiLayers) return transformedNotes
+    const layer = apiLayers.find(l => l.id === activePart)
+    return layer?.notes ?? transformedNotes
+  }, [activePart, transformedNotes, apiLayers])
 
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4">
         <GradientOrbs />
-        <AudioBars color="#22c55e" height={40} className="relative z-10" />
-        <p className="relative z-10 text-zinc-500 text-sm">Loading results…</p>
+        <AudioBars color="#a78bfa" height={40} className="relative z-10" />
+        <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.28)', fontFamily: 'ui-monospace,monospace', letterSpacing: '0.12em' }}
+          className="relative z-10">
+          LOADING RESULTS
+        </p>
       </div>
     )
   }
@@ -118,46 +246,47 @@ export default function ResultsPage() {
   return (
     <div className="relative min-h-screen pt-20 pb-24 px-4">
       <GradientOrbs />
-      <div className="relative z-10 max-w-4xl mx-auto space-y-6">
+      <div className="relative z-10 max-w-4xl mx-auto space-y-5">
 
-        {/* Header + fidelity + detected key */}
+        {/* ── Header ── */}
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
-          className="text-center space-y-4"
+          className="text-center space-y-4 pt-4"
         >
-          <h1 className="text-3xl font-bold tracking-tight text-gradient mb-2">Your Arrangement</h1>
+          <span style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: '0.22em',
+            color: 'rgba(255,255,255,0.2)',
+            fontFamily: 'ui-monospace,monospace',
+          }}>
+            YOUR ARRANGEMENT
+          </span>
+          <h1
+            className="text-gradient-animated font-black tracking-tight"
+            style={{ fontSize: 'clamp(28px, 5vw, 48px)', letterSpacing: '-0.02em' }}
+          >
+            Ready to Play
+          </h1>
           {scoreData && (
             <div className="flex justify-center">
               <FidelityBadge score={scoreData.fidelity_score} tier={scoreData.tier} />
             </div>
           )}
-          {/* Detected key badge — between fidelity and player */}
           <DetectedKeyBadge detected_scale={transformData?.detected_scale} />
-          {scoreData?.manual_review_required && (
-            <p className="text-sm text-zinc-500">
-              Some segments were flagged for manual review — see below.
-            </p>
-          )}
         </motion.div>
 
-        {/* Audio player */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.08 }}
-        >
-          <GlassCard className="p-5">
-            <p
-              className="text-xs font-bold tracking-widest mb-4 uppercase"
-              style={{ color: '#f59e0b', letterSpacing: '0.12em' }}
-            >
-              Listen
+        {/* ── Listen ── */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.08 }}>
+          <GlassCard className="p-6">
+            <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(245,158,11,0.7)', fontFamily: 'ui-monospace,monospace', marginBottom: 16 }}>
+              LISTEN
             </p>
             <AudioPlayer
               tracks={[
-                { label: 'Original Recording',    url: getOriginalAudioUrl(sessionId),      downloadName: 'original.wav'      },
+                { label: 'Original Recording',   url: getOriginalAudioUrl(sessionId),      downloadName: 'original.wav'      },
                 { label: 'Original Arrangement',  url: getTranscriptionAudioUrl(sessionId), downloadName: 'transcription.wav' },
                 { label: 'Transformed',           url: getTransformedAudioUrl(sessionId),   downloadName: 'transformed.wav'   },
               ]}
@@ -165,67 +294,87 @@ export default function ResultsPage() {
           </GlassCard>
         </motion.div>
 
-        {/* Downloads */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.1 }}
-        >
-          <GlassCard className="p-5 flex flex-wrap gap-3 justify-center">
-            {[
-              { label: 'Download MIDI', url: getMidiUrl(sessionId),  ext: '.mid'  },
-              { label: 'Download MusicXML', url: getMusicXmlUrl(sessionId), ext: '.xml' },
-              { label: 'Download CDEF', url: getCdefUrl(sessionId),  ext: '.cdef' },
-            ].map(({ label, url, ext }) => (
-              <a
-                key={ext}
-                href={url}
-                download
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium transition-all duration-200 hover:scale-[1.03] active:scale-95"
-                style={{
-                  background: 'rgba(245,158,11,0.08)',
-                  border: '1px solid rgba(245,158,11,0.3)',
-                  color: '#f59e0b',
-                  boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.background = 'rgba(245,158,11,0.14)'
-                  e.currentTarget.style.boxShadow = '0 0 12px rgba(245,158,11,0.2), 0 2px 12px rgba(0,0,0,0.3)'
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.background = 'rgba(245,158,11,0.08)'
-                  e.currentTarget.style.boxShadow = '0 2px 12px rgba(0,0,0,0.3)'
-                }}
-              >
-                {label}
-              </a>
+        {/* ── Part layer selector (soundboard pads) ── */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.12 }}>
+          <div className="mb-2 flex items-center gap-3">
+            <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(255,255,255,0.20)', fontFamily: 'ui-monospace,monospace' }}>
+              ISOLATE LAYER
+            </span>
+            <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
+          </div>
+          <div className="flex gap-2.5">
+            {layerPads.map(p => (
+              <PartPad
+                key={p.key}
+                part={p}
+                selected={activePart === p.key}
+                onSelect={setActivePart}
+              />
             ))}
+          </div>
+          <p style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', textAlign: 'center', marginTop: 8, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
+            Pad selection applies to piano roll playback and key glow
+          </p>
+        </motion.div>
+
+        {/* ── Downloads ── */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.14 }}>
+          <GlassCard className="p-5">
+            <div className="flex flex-wrap gap-3 justify-center">
+              {[
+                { label: 'MIDI',     url: getMidiUrl(sessionId),     ext: '.mid',  color: '#f59e0b' },
+                { label: 'MusicXML', url: getMusicXmlUrl(sessionId), ext: '.xml',  color: '#06b6d4' },
+                { label: 'CDEF',     url: getCdefUrl(sessionId),     ext: '.cdef', color: '#a78bfa' },
+              ].map(({ label, url, color }) => (
+                <a
+                  key={label}
+                  href={url}
+                  download
+                  className="relative overflow-hidden inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold tracking-widest transition-all duration-200 hover:scale-[1.03] active:scale-95"
+                  style={{
+                    background: `${color}10`,
+                    border: `1px solid ${color}30`,
+                    color: color,
+                    boxShadow: `0 2px 12px rgba(0,0,0,0.3), 0 0 0 0 ${color}40`,
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = `${color}18`
+                    e.currentTarget.style.boxShadow  = `0 0 16px ${color}30, 0 2px 12px rgba(0,0,0,0.3)`
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = `${color}10`
+                    e.currentTarget.style.boxShadow  = '0 2px 12px rgba(0,0,0,0.3)'
+                  }}
+                >
+                  <span className="shimmer absolute inset-0" />
+                  <span className="relative">↓ {label}</span>
+                </a>
+              ))}
+            </div>
           </GlassCard>
         </motion.div>
 
-        {/* Tabs */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.15 }}
-        >
+        {/* ── Tabs: Piano Roll / Sheet / CDEF ── */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.18 }}>
           <GlassCard className="overflow-hidden">
             {/* Tab bar */}
-            <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               {TABS.map((name, i) => (
                 <button
                   key={name}
                   onClick={() => setTab(i)}
-                  className={`flex-1 py-3.5 text-sm font-medium transition-colors duration-200 relative ${
-                    tab === i ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-300'
+                  className={`flex-1 py-3.5 text-xs font-bold tracking-widest transition-colors duration-200 relative ${
+                    tab === i ? 'text-amber-400' : 'text-zinc-600 hover:text-zinc-400'
                   }`}
+                  style={{ fontFamily: 'ui-monospace,monospace', letterSpacing: '0.12em' }}
                 >
-                  {name}
+                  {name.toUpperCase()}
                   {tab === i && (
                     <motion.div
                       layoutId="tab-indicator"
-                      className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full"
-                      style={{ background: 'linear-gradient(90deg, #f59e0b, #d97706)' }}
+                      className="absolute bottom-0 left-0 right-0 h-px"
+                      style={{ background: 'linear-gradient(90deg, transparent, #f59e0b, transparent)' }}
                     />
                   )}
                 </button>
@@ -233,51 +382,43 @@ export default function ResultsPage() {
             </div>
 
             {/* Tab content */}
-            <div className="p-6">
+            <div className="p-5">
               <AnimatePresence mode="wait">
                 {tab === 0 && (
                   <motion.div
                     key="piano-roll"
                     initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                    transition={{ duration: 0.25 }}
+                    transition={{ duration: 0.2 }}
                     className="space-y-6"
                   >
-                    {/* Original — 7-octave keyboard C1→B7 */}
                     <PianoRollPlayer
                       notes={originalNotes}
                       getPartUrl={(part) => getPartAudioUrl(sessionId, 'transcription', part)}
-                      label="Original Arrangement"
+                      label="Original"
                       tempo={segmentData?.tempo_bpm ?? 120}
                       keyboardStart={24}
                       keyboardOctaves={7}
+                      defaultPart={activePart}
                     />
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '8px 0' }} />
-                    {/* Transformed — 5-octave keyboard C2→B6 */}
+                    <div style={{ height: 1, background: 'rgba(255,255,255,0.04)' }} />
                     <PianoRollPlayer
-                      notes={transformedNotes}
+                      notes={displayedTransformedNotes}
                       getPartUrl={(part) => getPartAudioUrl(sessionId, 'transformed', part)}
-                      label="Transformed Arrangement"
+                      label="Transformed"
                       tempo={segmentData?.tempo_bpm ?? 120}
                       keyboardStart={36}
                       keyboardOctaves={5}
+                      defaultPart={apiLayers ? 'all' : activePart}
                     />
                   </motion.div>
                 )}
                 {tab === 1 && (
-                  <motion.div
-                    key="sheet"
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                    transition={{ duration: 0.25 }}
-                  >
+                  <motion.div key="sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
                     <SheetMusicView xmlUrl={getMusicXmlUrl(sessionId)} />
                   </motion.div>
                 )}
                 {tab === 2 && (
-                  <motion.div
-                    key="cdef"
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                    transition={{ duration: 0.25 }}
-                  >
+                  <motion.div key="cdef" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
                     <CdefView cdef={cdef} />
                   </motion.div>
                 )}
@@ -286,81 +427,76 @@ export default function ResultsPage() {
           </GlassCard>
         </motion.div>
 
-        {/* Segment breakdown */}
+        {/* ── Segment breakdown ── */}
         {segments.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-          >
-            <h2 className="text-lg font-semibold text-gradient mb-4">Segment Breakdown</h2>
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.22 }}>
+            <div className="flex items-center gap-3 mb-4">
+              <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
+              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(255,255,255,0.20)', fontFamily: 'ui-monospace,monospace' }}>
+                SEGMENT BREAKDOWN
+              </span>
+              <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {segments.map((seg) => {
-                const flagInfo = flagged.find(f => f.measure_index === seg.measure_index)
+                const flagInfo  = flagged.find(f => f.measure_index === seg.measure_index)
                 const isFlagged = !!flagInfo
-                const isRedFlag = isFlagged && flagInfo.flag === 'red'
+                const isRed     = isFlagged && flagInfo.flag === 'red'
 
                 return (
                   <GlassCard
                     key={seg.measure_index}
                     className="p-4"
                     style={isFlagged ? {
-                      borderColor: isRedFlag ? 'rgba(239,68,68,0.35)' : 'rgba(234,179,8,0.35)',
-                      boxShadow: isRedFlag
-                        ? '0 0 16px rgba(239,68,68,0.1), 0 25px 60px rgba(0,0,0,0.5)'
-                        : '0 0 16px rgba(234,179,8,0.1), 0 25px 60px rgba(0,0,0,0.5)',
+                      borderColor: isRed ? 'rgba(239,68,68,0.3)' : 'rgba(234,179,8,0.3)',
+                      boxShadow:   isRed ? '0 0 16px rgba(239,68,68,0.08)' : '0 0 16px rgba(234,179,8,0.08)',
                     } : {}}
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <span className="text-xs font-semibold text-zinc-300">
-                        Measure {seg.measure_index + 1}
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.6)', fontFamily: 'ui-monospace,monospace' }}>
+                        M{seg.measure_index + 1}
                       </span>
                       <div className="flex items-center gap-1.5">
                         <span
-                          className="text-xs px-2 py-0.5 rounded-full font-medium"
-                          style={
-                            seg.star === 'bass'
-                              ? { background: 'rgba(59,130,246,0.15)', color: '#60a5fa' }
-                              : { background: 'rgba(244,63,94,0.15)', color: '#fb7185' }
-                          }
+                          className="text-[9px] px-2 py-0.5 rounded-full font-bold tracking-wide"
+                          style={seg.star === 'bass'
+                            ? { background: 'rgba(59,130,246,0.12)', color: '#60a5fa' }
+                            : { background: 'rgba(244,63,94,0.12)', color: '#fb7185' }}
                         >
                           ★ {seg.star}
                         </span>
                         {isFlagged && (
                           <span
-                            className="text-xs px-2 py-0.5 rounded-full font-medium"
-                            style={isRedFlag
-                              ? { background: 'rgba(239,68,68,0.15)', color: '#f87171' }
-                              : { background: 'rgba(234,179,8,0.15)', color: '#fde047' }
-                            }
+                            className="text-[9px] px-2 py-0.5 rounded-full font-bold"
+                            style={isRed
+                              ? { background: 'rgba(239,68,68,0.12)', color: '#f87171' }
+                              : { background: 'rgba(234,179,8,0.12)', color: '#fde047' }}
                           >
-                            {isRedFlag ? '⚠ Low fidelity' : '⚠ Review'}
+                            {isRed ? '⚠ Low' : '⚠ Review'}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    <p className="text-xs text-zinc-600">
-                      {seg.start_time.toFixed(2)}s – {seg.end_time.toFixed(2)}s &nbsp;·&nbsp; {seg.time_signature}
+                    <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.22)', fontFamily: 'ui-monospace,monospace' }}>
+                      {seg.start_time.toFixed(2)}s – {seg.end_time.toFixed(2)}s · {seg.time_signature}
                     </p>
 
-                    <div className="mt-2 flex gap-4">
-                      <div>
-                        <p className="text-[10px] text-zinc-600 uppercase tracking-wide">Bass JS</p>
-                        <p className="text-xs font-medium text-zinc-300">{seg.js_scores.bass.toFixed(3)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-zinc-600 uppercase tracking-wide">Melody JS</p>
-                        <p className="text-xs font-medium text-zinc-300">{seg.js_scores.melody.toFixed(3)}</p>
-                      </div>
-                      {flagInfo && (
-                        <div>
-                          <p className="text-[10px] text-zinc-600 uppercase tracking-wide">Fidelity</p>
-                          <p className={`text-xs font-medium ${isRedFlag ? 'text-red-400' : 'text-yellow-400'}`}>
-                            {Math.round(flagInfo.segment_fidelity * 100)}%
+                    <div className="mt-2.5 flex gap-5">
+                      {[
+                        { label: 'BASS JS',   val: seg.js_scores.bass.toFixed(3) },
+                        { label: 'MELODY JS', val: seg.js_scores.melody.toFixed(3) },
+                        ...(flagInfo ? [{ label: 'FIDELITY', val: `${Math.round(flagInfo.segment_fidelity * 100)}%`, color: isRed ? '#f87171' : '#fde047' }] : []),
+                      ].map(({ label, val, color }) => (
+                        <div key={label}>
+                          <p style={{ fontSize: 8, color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', fontFamily: 'ui-monospace,monospace', marginBottom: 2 }}>
+                            {label}
+                          </p>
+                          <p style={{ fontSize: 11, fontWeight: 600, color: color || 'rgba(255,255,255,0.55)', fontFamily: 'ui-monospace,monospace' }}>
+                            {val}
                           </p>
                         </div>
-                      )}
+                      ))}
                     </div>
                   </GlassCard>
                 )

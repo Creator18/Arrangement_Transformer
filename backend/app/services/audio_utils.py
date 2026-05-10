@@ -46,7 +46,8 @@ def compute_mel_spectrogram(wav_path: Path, sr: int = 22050) -> np.ndarray:
 
 def compute_mel_from_array(y: np.ndarray, sr: int = 22050) -> np.ndarray:
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
-    return librosa.power_to_db(mel, ref=np.max)
+    ref = float(mel.max())
+    return librosa.power_to_db(mel, ref=max(ref, 1e-10))
 
 
 def detect_tempo_and_beats(wav_path: Path):
