@@ -171,6 +171,72 @@ def transform_notes(
     return transformed
 
 
+def enforce_uniform_tempo(
+    notes: List[Dict],
+    beat_times: Optional[np.ndarray],
+    tempo: float,
+    subdivisions: int = 12,
+) -> List[Dict]:
+    """
+    Re-time merged notes onto a strict uniform-tempo grid while preserving
+    each note's rhythmic position relative to the original audio's beat grid.
+
+    For each note (assumed to be on the original-audio timeline in seconds):
+      1. Find its fractional beat position in the supplied beat_times grid
+         (linear interpolation between beats; linear extrapolation outside).
+      2. Snap that fractional beat position to the nearest 1/subdivisions.
+         12 subdivisions per beat (LCM of 4 and 3) accommodates duplet 16ths,
+         triplet 8ths, and compound meters without time-signature detection.
+      3. Convert the snapped beat position to seconds at the uniform tempo.
+
+    The pass is deterministic and idempotent — running it again on the result
+    produces the same output, so a single invocation is enough to smooth the
+    entire piece.  Notes are returned sorted by (onset, pitch) and any
+    zero/negative durations are bumped to one subdivision.
+    """
+    if not notes:
+        return notes
+
+    spb   = 60.0 / max(tempo, 1.0)            # uniform seconds per beat
+    sub_s = spb / subdivisions                # seconds per subdivision
+    bt = (np.asarray(beat_times, dtype=float)
+          if beat_times is not None and len(beat_times) >= 2 else None)
+
+    def _to_uniform(t: float) -> float:
+        t = float(t)
+        if bt is None:
+            sub_idx = round(t / sub_s)
+            return max(0.0, sub_idx * sub_s)
+        N = len(bt)
+        if t <= bt[0]:
+            dt   = bt[1] - bt[0]
+            frac = (t - bt[0]) / dt if dt > 0 else 0.0
+            i    = 0
+        elif t >= bt[-1]:
+            dt   = bt[-1] - bt[-2]
+            frac = (t - bt[-1]) / dt if dt > 0 else 0.0
+            i    = N - 1
+        else:
+            i    = int(np.searchsorted(bt, t, side='right')) - 1
+            i    = min(i, N - 2)
+            dt   = bt[i + 1] - bt[i]
+            frac = (t - bt[i]) / dt if dt > 0 else 0.0
+        beat_pos = i + frac
+        sub_idx  = round(beat_pos * subdivisions)
+        return max(0.0, sub_idx * sub_s)
+
+    out: List[Dict] = []
+    for n in notes:
+        onset_u  = _to_uniform(float(n['onset']))
+        offset_u = _to_uniform(float(n.get('offset', float(n['onset']) + spb / 4.0)))
+        if offset_u <= onset_u:
+            offset_u = onset_u + sub_s
+        out.append({**n, 'onset': round(onset_u, 4), 'offset': round(offset_u, 4)})
+
+    out.sort(key=lambda x: (float(x['onset']), int(x['pitch'])))
+    return out
+
+
 def notes_to_pretty_midi(
     notes: List[Dict],
     tempo: float = 120.0,

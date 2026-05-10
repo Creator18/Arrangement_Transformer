@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from app.services.session import get_session_dir
-from app.services.transformation import notes_to_pretty_midi
+from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
 from app.services.nmf_voice_leading import (
     BASS_MAX, MELODY_MIN,
     compress_notes_to_range, post_process_notes,
@@ -74,6 +74,20 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if "star" in seg and "measure_index" in seg
     }
 
+    # Actual beat positions (seconds) from separation — drives walking-bass placement
+    # and the post-merge uniform-tempo enforcement pass.
+    beat_times_arr: Optional[np.ndarray] = None
+    try:
+        with open(session_dir / "components.json") as _f:
+            _comp = json.load(_f)
+        _frames = _comp.get("beat_frames", [])
+        _sr     = float(_comp.get("sr", 22050))
+        _hop    = float(_comp.get("hop_length", 512))
+        if _frames:
+            beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
+    except Exception:
+        pass
+
     # ── pattern extraction on the original pre-labeled transcription ──────────
     layers       = None
     export_notes = None
@@ -117,6 +131,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                     tempo                 = tempo,
                     lo                    = bass_lo,
                     hi                    = bass_hi,
+                    beat_times            = beat_times_arr,
                 )
                 if walking_bass:
                     # Shift generated walking bass by the bass register's feel so
@@ -144,6 +159,12 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             bass_hi    = bass_hi,
         )
 
+        # Final pass: smooth the entire piece onto a strict uniform-tempo grid
+        # using the original beat_times.  All notes (transcribed + walking bass)
+        # are now on the same original-audio timeline, so this remaps them
+        # together with no relative drift.
+        merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
+
         export_notes = merged
 
     except Exception:
@@ -158,6 +179,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             export_notes = quantize_notes(export_notes, tempo)
             export_notes = remove_beat_outliers(export_notes, tempo)
             export_notes = snap_to_chord_tones(export_notes, tempo)
+            export_notes = enforce_uniform_tempo(export_notes, beat_times_arr, tempo)
             root, scale_name, _ = detect_scale(export_notes)
             scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
         except Exception:
@@ -168,21 +190,9 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if p.exists():
             p.unlink()
 
-    # Load actual beat positions (seconds) for tick-aligned MIDI export.
-    # beat_frames were saved during separation; convert frame indices → seconds.
-    beat_times_arr = None
-    try:
-        with open(session_dir / "components.json") as _f:
-            _comp = json.load(_f)
-        _frames = _comp.get("beat_frames", [])
-        _sr     = float(_comp.get("sr", 22050))
-        _hop    = float(_comp.get("hop_length", 512))
-        if _frames:
-            beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
-    except Exception:
-        pass
-
-    pm        = notes_to_pretty_midi(export_notes, tempo, beat_times=beat_times_arr)
+    # Notes are already on a uniform-tempo timeline after enforce_uniform_tempo,
+    # so MIDI export just does a direct seconds→tick conversion (no beat grid).
+    pm        = notes_to_pretty_midi(export_notes, tempo)
     midi_path = session_dir / "transformed.mid"
     pm.write(str(midi_path))
 

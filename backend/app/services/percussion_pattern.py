@@ -311,6 +311,7 @@ def generate_walking_bass(
     hi: int = BASS_HI_DEFAULT,
     resolution: int = RESOLUTION,
     add_passing_tones: bool = True,
+    beat_times: Optional[np.ndarray] = None,
 ) -> List[Dict]:
     """
     Generate a walking bass line driven by the kick drum pattern and chord map.
@@ -329,6 +330,30 @@ def generate_walking_bass(
 
     measure_dur = (60.0 / tempo) * 4
     slot_dur    = measure_dur / resolution
+
+    # When the original beat grid is supplied, place every walking-bass note at
+    # its actual seconds-position in the source recording rather than at a
+    # synthetic uniform-tempo offset.  This keeps the generated bass on the same
+    # timeline as the transcribed notes; downstream tempo enforcement then
+    # remaps both to a single uniform grid in one consistent pass.
+    bt = (np.asarray(beat_times, dtype=float)
+          if beat_times is not None and len(beat_times) >= 2 else None)
+
+    def _slot_to_time(mi: int, slot: int) -> float:
+        # Slot 0..resolution maps onto 4 beats — slots-per-beat = resolution/4
+        beat_pos = mi * 4.0 + slot * 4.0 / resolution
+        if bt is None:
+            return beat_pos * (60.0 / tempo)
+        N = len(bt)
+        i_floor = int(np.floor(beat_pos))
+        frac    = beat_pos - i_floor
+        if i_floor < 0:
+            dt = bt[1] - bt[0]
+            return float(bt[0] + (i_floor + frac) * dt)
+        if i_floor >= N - 1:
+            dt = bt[-1] - bt[-2]
+            return float(bt[-1] + (i_floor - (N - 1) + frac) * dt)
+        return float(bt[i_floor] + frac * (bt[i_floor + 1] - bt[i_floor]))
 
     all_measures = set(chord_map.keys()) | set(measure_kick_patterns.keys())
     if not all_measures:
@@ -371,14 +396,16 @@ def generate_walking_bass(
         # Emit note events
         for idx, slot in enumerate(hit_slots):
             pitch = anchor[slot]
-            t0    = mi * measure_dur + slot * slot_dur
+            t0    = _slot_to_time(mi, slot)
 
             # Duration = gap to next hit (or end of measure)
             if idx + 1 < len(hit_slots):
                 next_slot = hit_slots[idx + 1]
+                t_next    = _slot_to_time(mi, next_slot)
             else:
                 next_slot = resolution
-            dur = (next_slot - slot) * slot_dur
+                t_next    = _slot_to_time(mi + 1, 0)
+            dur = max(slot_dur, t_next - t0)
 
             # Velocity by beat position
             vel = _SLOT_VEL.get(slot, 60)
@@ -395,8 +422,9 @@ def generate_walking_bass(
                         if tones:
                             mid_p = min(tones, key=lambda p: abs(p - mid_p))
                         mid_p = max(lo, min(hi, mid_p))
-                        pt0   = mi * measure_dur + pass_slot * slot_dur
-                        pt_dur = (next_slot - pass_slot) * slot_dur
+                        pt0    = _slot_to_time(mi, pass_slot)
+                        pt_end = _slot_to_time(mi, next_slot) if next_slot < resolution else _slot_to_time(mi + 1, 0)
+                        pt_dur = max(slot_dur, pt_end - pt0)
                         notes.append({
                             "pitch":      mid_p,
                             "pitch_name": librosa.midi_to_note(mid_p),
