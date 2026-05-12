@@ -135,14 +135,38 @@ revisiting the architecture months from now.
 
 ### Why Basic Pitch (and not Onsets & Frames) for now
 
-We tried O&F in phase 4b.  The arrangements got noisier.  Initial diagnosis:
-"O&F is too sensitive for our inputs."  Later (correct) diagnosis: O&F is
-fine; the failure point is that `pattern_extraction.py` falls back to
-cycle-mining when notes are unlabeled, and cycle-mining's repetition signal
-degrades with note density.  Basic Pitch's lower recall happens to keep
-note density inside cycle-mining's working range.  The principled fix is
-item #1 in the active queue — get a real per-note classifier so density
-stops being a problem.
+We tried O&F in phase 4b — arrangements got noisier.  Initial diagnosis:
+"O&F is too sensitive for our inputs."  Later (corrected) diagnosis:
+`pattern_extraction.py` fell back to cycle-mining when notes were
+unlabeled, and cycle-mining's repetition signal degrades with note
+density.  Basic Pitch's lower recall kept density inside cycle-mining's
+working range.
+
+Phase 7 built the per-note pattern classifier specifically to solve this:
+trained model labels every upper-register note with 'pattern' or 'melody',
+so `pattern_extraction.py` routes by label rather than re-inferring from
+repetition.  We then re-enabled O&F to test the hypothesis.
+
+Result: still didn't pay off in practice.  On real audio the arrangement
+quality with O&F + classifier wasn't meaningfully better than Basic Pitch
++ classifier, and was sometimes worse.  Two probable contributors:
+
+  1. The pattern classifier hit 100 % training accuracy because it just
+     learned to reproduce the label heuristic; it's essentially a fast
+     wrapper around the heuristic rather than an independent signal that
+     compensates for transcriber differences.
+
+  2. Basic Pitch's "less aggressive" output may be a feature, not a bug,
+     for arrangement: extra notes captured by O&F often *do* exist in the
+     audio but aren't part of the musical foreground we want in a
+     reduction.
+
+The O&F code is still in `services/transcription.py` behind a
+`USE_OF_TRANSCRIBER` flag (currently `False`) so future experiments are
+a one-line change.  Don't expect a different result without also changing
+something upstream — different feature set in the classifier, a richer
+training signal that uses the actual audio context, or a different
+treatment of the extra notes downstream rather than trying to label them.
 
 ### Why NMF was removed
 

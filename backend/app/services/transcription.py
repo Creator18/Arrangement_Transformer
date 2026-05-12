@@ -140,6 +140,101 @@ def _basic_pitch_notes(wav_path: Path) -> List[Dict[str, Any]]:
     return notes
 
 
+# ── Onsets & Frames upper transcription (PyTorch port of Magenta) ────────────
+# Higher recall + sharper onsets + meaningful velocity vs Basic Pitch.  Phase 7
+# is what makes this safe — its trained pattern classifier labels every note,
+# so the density jump doesn't overwhelm the cycle-mining classifier that
+# pattern_extraction.py would otherwise fall back to.
+
+_of_transcriptor = None
+_OF_CKPT_URL = (
+    "https://zenodo.org/record/4034264/files/"
+    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
+)
+_OF_CKPT_FILENAME = "note_F1=0.9677_pedal_F1=0.9186.pth"
+_OF_CKPT_MIN_BYTES = int(1.6e8)
+
+
+def _ensure_of_checkpoint() -> Path:
+    """
+    Download the Onsets & Frames checkpoint into the package's expected cache
+    path using urllib (so this works on Windows — the upstream package
+    auto-downloader shells out to `wget`, which isn't on PATH there).
+    Idempotent: an existing file of the expected size is left alone.
+    """
+    import urllib.request
+    from pathlib import Path as _P
+    ckpt_dir = _P.home() / "piano_transcription_inference_data"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / _OF_CKPT_FILENAME
+
+    if ckpt_path.exists() and ckpt_path.stat().st_size >= _OF_CKPT_MIN_BYTES:
+        return ckpt_path
+
+    tmp_path = ckpt_path.with_suffix(ckpt_path.suffix + ".part")
+    print(f"[onsets_frames] downloading checkpoint to {ckpt_path} (~165 MB)…")
+    with urllib.request.urlopen(_OF_CKPT_URL) as resp, open(tmp_path, "wb") as out:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        chunk = 1 << 20
+        while True:
+            buf = resp.read(chunk)
+            if not buf:
+                break
+            out.write(buf)
+            downloaded += len(buf)
+            if total:
+                print(f"\r[onsets_frames] {downloaded // (1<<20)} / {total // (1<<20)} MiB",
+                      end="", flush=True)
+        print()
+    tmp_path.replace(ckpt_path)
+    return ckpt_path
+
+
+def _get_of_transcriptor():
+    """Construct (or fetch) the Onsets & Frames transcriber. Lazy + cached."""
+    global _of_transcriptor
+    if _of_transcriptor is not None:
+        return _of_transcriptor
+    import torch
+    from piano_transcription_inference import PianoTranscription
+    ckpt_path = _ensure_of_checkpoint()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _of_transcriptor = PianoTranscription(device=device, checkpoint_path=str(ckpt_path))
+    return _of_transcriptor
+
+
+def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
+    """Run Onsets & Frames on a WAV file, return raw note list (88-key range)."""
+    from piano_transcription_inference import sample_rate as OF_SR
+
+    audio, _ = librosa.load(str(wav_path), sr=OF_SR, mono=True)
+    if audio.size == 0:
+        return []
+
+    transcriptor = _get_of_transcriptor()
+    result = transcriptor.transcribe(audio.astype(np.float32), midi_path=None)
+
+    notes: List[Dict[str, Any]] = []
+    for ev in result.get("est_note_events", []):
+        pitch = int(ev["midi_note"])
+        if pitch < 21 or pitch > 108:
+            continue
+        onset  = float(ev["onset_time"])
+        offset = float(ev["offset_time"])
+        if offset <= onset:
+            continue
+        notes.append({
+            "pitch":      pitch,
+            "pitch_name": librosa.midi_to_note(pitch),
+            "onset":      onset,
+            "offset":     offset,
+            "velocity":   max(1, min(127, int(ev["velocity"]))),
+        })
+    notes.sort(key=lambda n: (n["onset"], n["pitch"]))
+    return notes
+
+
 # ── post-processing: refine note list ─────────────────────────────────────────
 
 def refine_notes(notes: List[Dict], tempo: float) -> List[Dict]:
@@ -342,14 +437,15 @@ def transcribe_components(
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
-    # ── upper: Basic Pitch ────────────────────────────────────────────────────
-    # Phase 7 — once trained, the pattern classifier (app.ml.pattern_classifier)
-    # stamps each upper note's `layer` field with 'pattern' or 'melody'.
-    # pattern_extraction.py then routes by label instead of falling back to
-    # cycle-mining (which degraded on higher-density transcribers).  No-op
-    # when the checkpoint isn't trained yet — notes ship unlabeled and the
-    # rule-based cycle-miner takes over, same as the pre-phase-7 path.
-    upper_notes = _basic_pitch_notes(upper_path)
+    # ── upper transcription ───────────────────────────────────────────────────
+    # We tried Onsets & Frames with the Phase 7 classifier labelling the
+    # output; on real audio the gains weren't worth the change relative to
+    # Basic Pitch, so we're on Basic Pitch by default.  Flip
+    # USE_OF_TRANSCRIBER to True to re-enable the O&F path — the model
+    # weights download is already cached on disk, so it's just a flag swap.
+    USE_OF_TRANSCRIBER = False
+    upper_notes = (_onsets_frames_notes(upper_path)
+                   if USE_OF_TRANSCRIBER else _basic_pitch_notes(upper_path))
     try:
         from app.ml.pattern_classifier import classify_notes, model_available
         if model_available():
