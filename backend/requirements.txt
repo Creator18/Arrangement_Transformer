@@ -20,3 +20,8 @@ torch>=2.2,<2.6
 torchaudio>=2.2,<2.6
 # Source separation at inference time — Demucs replaces NMF
 demucs>=4.0.1
+# Beat + downbeat tracking — madmom replaces librosa.beat.beat_track for
+# more accurate tempo curves and explicit measure boundaries on real music.
+# On Python 3.11 / Windows the PyPI wheel may not be available — if pip
+# install fails, install from source:  pip install git+https://github.com/CPJKU/madmom
+madmom>=0.16.1
