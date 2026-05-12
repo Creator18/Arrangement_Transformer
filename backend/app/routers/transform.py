@@ -22,6 +22,14 @@ from app.services.percussion_pattern import (
     generate_walking_bass,
 )
 
+# ML inference path — disabled by default via config.USE_ML_PIPELINE.  Once a
+# checkpoint exists at PATHS.default_ckpt AND the flag is flipped, the
+# Transformer generator takes over from extract_layers().  Everything else
+# (compression, walking bass, voice leading, tempo enforcement) still runs
+# on top as the deterministic safety layer.
+from app.ml.config       import USE_ML_PIPELINE
+from app.ml.inference    import model_available, transform_with_model
+
 router = APIRouter()
 
 _OCTAVE_BOUNDS = {
@@ -88,27 +96,50 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     except Exception:
         pass
 
-    # ── pattern extraction on the original pre-labeled transcription ──────────
+    # ── ML or rule-based transformation ────────────────────────────────────
+    # Both paths land at the same `merged` shape so downstream post-processing
+    # (compress, walking-bass, voice-leading, tempo enforcement) is shared.
     layers       = None
     export_notes = None
     scale_info   = {}
+    method       = "pattern_extraction"
 
     try:
-        layers = extract_layers(
-            notes,
-            chord_map,
-            tempo,
-            audio_path if audio_path.exists() else None,
-            dominance_map=dominance_map,
-            upper_feel=upper_feel,
-        )
-
-        merged = layers[0].pop("_merged_notes", None)
-        if merged is None:
-            merged = sorted(
-                (n for layer in layers for n in layer["notes"]),
-                key=lambda n: (float(n["onset"]), int(n["pitch"])),
+        if USE_ML_PIPELINE and model_available():
+            # ── ML path ───────────────────────────────────────────────────
+            method = "ml"
+            # Estimate piece duration from the latest note offset (+1s tail).
+            duration_s = (
+                max(float(n.get("offset", n["onset"] + 0.5)) for n in notes) + 1.0
+                if notes else 1.0
             )
+            merged = transform_with_model(
+                notes     = notes,
+                chord_map = chord_map,
+                tempo     = tempo,
+                duration  = duration_s,
+            )
+            # The ML adapter returns notes already in the 5-octave target
+            # range, so we skip extract_layers entirely.  We still run
+            # compress_notes_to_range below as a clamp, which is a no-op
+            # when notes are already in-range.
+        else:
+            # ── Rule-based path (current default) ─────────────────────────
+            layers = extract_layers(
+                notes,
+                chord_map,
+                tempo,
+                audio_path if audio_path.exists() else None,
+                dominance_map=dominance_map,
+                upper_feel=upper_feel,
+            )
+
+            merged = layers[0].pop("_merged_notes", None)
+            if merged is None:
+                merged = sorted(
+                    (n for layer in layers for n in layer["notes"]),
+                    key=lambda n: (float(n["onset"]), int(n["pitch"])),
+                )
 
         # Compress into target octave range
         merged = compress_notes_to_range(merged, tgt_low, tgt_high)
@@ -173,6 +204,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             quantize_notes, apply_voice_leading,
             remove_beat_outliers, snap_to_chord_tones,
         )
+        method = "fallback"
         try:
             export_notes = compress_notes_to_range(notes, tgt_low, tgt_high)
             export_notes = apply_voice_leading(export_notes)
@@ -198,7 +230,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
 
     result = {
         "session_id":             session_id,
-        "method":                 "pattern_extraction",
+        "method":                 method,
         "source_octave_range":    source_span,
         "target_octave_range":    body.target_octave_range,
         "nmf_components":         body.nmf_components,

@@ -1,20 +1,15 @@
 """
-Per-component transcription for piano-only recordings.
+Per-component transcription.
 
-After separation.py has split the audio into bass and upper component groups:
+After separation.py (Demucs) has split the audio into a bass-register and
+upper-register stem:
 
-  bass.wav  → pYIN monophonic pitch tracking → bass notes
-  upper.wav → Basic Pitch polyphonic model  → upper notes
+  bass.wav  → pYIN monophonic pitch tracking → bass notes (layer='bass')
+  upper.wav → Basic Pitch polyphonic model  → upper notes (no layer label)
 
-Each note is labeled with a 'layer' field using the NMF activation matrix H:
-  - At each note onset, find which NMF component is dominant in H
-  - If that component has is_pattern=True → layer = 'pattern'
-  - Otherwise                            → layer = 'melody'
-  - Bass notes always get layer = 'bass' (register-defined)
-
-This connects the audio-domain pattern detection (Option B) to the
-note domain, so pattern_extraction.py receives pre-labeled notes
-with a reliable chord map (from segmentation's chroma analysis).
+Upper notes carry no `layer` field — pattern_extraction.py classifies them
+via cycle-based repetition mining instead of the old NMF-component-based
+labeling, which is no longer available after the Demucs swap.
 """
 from __future__ import annotations
 
@@ -109,47 +104,11 @@ def _pyin_to_notes(
     return notes
 
 
-# ── NMF-based layer labeling ──────────────────────────────────────────────────
-
-def _label_upper_notes(
-    notes: List[Dict],
-    H: np.ndarray,
-    upper_indices: List[int],
-    component_meta: List[Dict],
-    sr: int,
-    hop_length: int,
-) -> List[Dict]:
-    """
-    For each upper note, find the dominant NMF component at its onset time
-    and label it 'pattern' or 'melody' accordingly.
-
-    H shape: (K_total, T)  — full activation matrix from separation
-    upper_indices: which columns of H belong to upper components
-    """
-    if not upper_indices or H is None:
-        # No component info — default all upper notes to melody
-        return [{**n, 'layer': 'melody'} for n in notes]
-
-    # Build a lookup: component index k → is_pattern bool
-    pattern_set = {c['k'] for c in component_meta if c['is_pattern']}
-
-    labeled = []
-    for n in notes:
-        onset_frame = min(int(float(n['onset']) * sr / hop_length), H.shape[1] - 1)
-        # Activations of upper components at this frame
-        activations = H[upper_indices, onset_frame]
-        if activations.sum() < 1e-8:
-            layer = 'melody'
-        else:
-            dominant_local = int(np.argmax(activations))
-            dominant_k     = upper_indices[dominant_local]
-            layer          = 'pattern' if dominant_k in pattern_set else 'melody'
-        labeled.append({**n, 'layer': layer})
-
-    return labeled
-
-
 # ── Basic Pitch upper transcription ───────────────────────────────────────────
+# (NMF-component-based layer labeling was removed when separation switched
+# to Demucs.  pattern_extraction.py now classifies unlabeled upper notes via
+# cycle mining, which works on register-mixed input without needing a
+# precomputed NMF activation matrix.)
 
 def _basic_pitch_notes(wav_path: Path) -> List[Dict[str, Any]]:
     """Run Basic Pitch on a wav file, return raw note list."""
@@ -360,7 +319,6 @@ def transcribe_components(
     comp_dir   = session_dir / 'components'
     bass_path  = comp_dir / 'bass.wav'
     upper_path = comp_dir / 'upper.wav'
-    h_path     = comp_dir / 'H.npy'
     meta_path  = session_dir / 'components.json'
 
     if not bass_path.exists() or not upper_path.exists():
@@ -369,11 +327,9 @@ def transcribe_components(
     with open(meta_path) as f:
         meta = json.load(f)
 
-    tempo         = float(meta.get('tempo_bpm', 120.0))
-    hop_length    = int(meta.get('hop_length', 512))
-    sr_comp       = int(meta.get('sr', 22050))
-    comp_list     = meta.get('components', [])
-    upper_indices = meta['groups']['upper']['indices']
+    tempo      = float(meta.get('tempo_bpm', 120.0))
+    hop_length = int(meta.get('hop_length', 512))
+    sr_comp    = int(meta.get('sr', 22050))
 
     # Actual beat positions saved during separation for beat-adaptive quantization
     raw_beat_frames = meta.get('beat_frames', [])
@@ -382,19 +338,16 @@ def transcribe_components(
         if raw_beat_frames else np.array([])
     )
 
-    # Load H matrix for layer labeling
-    H = np.load(str(h_path)) if h_path.exists() else None
-
     # ── bass: pYIN ────────────────────────────────────────────────────────────
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
     # ── upper: Basic Pitch ────────────────────────────────────────────────────
-    upper_notes_raw = _basic_pitch_notes(upper_path)
-
-    upper_notes = _label_upper_notes(
-        upper_notes_raw, H, upper_indices, comp_list, sr_comp, hop_length
-    )
+    # No more NMF-component-based labeling — Demucs separation doesn't produce
+    # an H matrix.  Upper notes carry no `layer` field; pattern_extraction.py
+    # falls back to its cycle-mining classifier on unlabeled notes, which is
+    # exactly what we want for register-mixed input.
+    upper_notes = _basic_pitch_notes(upper_path)
 
     # ── measure per-layer feel before any quantization ────────────────────────
     # Raw pYIN and Basic Pitch onsets reveal how far ahead/behind the beat each
