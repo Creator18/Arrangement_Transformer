@@ -68,19 +68,53 @@ graph are wired correctly.
 
 ## Training
 
-Two CLI modes — pick whichever applies:
+### 1. Get the data
+
+MAESTRO MIDI-only is ~80 MB compressed / ~250 MB extracted (1276
+performances).  A bundled downloader handles this:
 
 ```bash
-# Smoke test — no MAESTRO required.  Verifies the full forward + backward
-# + loss + checkpoint round-trip end-to-end with synthetic rolls.
 cd backend
+python -m scripts.download_maestro
+```
+
+Extracts into `<repo-root>/data/maestro-v3.0.0/` — the path
+`app.ml.config.PATHS.maestro_root` expects.  Re-running is a no-op.
+
+### 2. Run training
+
+```bash
+# (a) Smoke test — no MAESTRO required.  Verifies forward + backward +
+#     loss + checkpoint round-trip end-to-end with synthetic rolls.
 python -m scripts.train --synthetic --steps 200
 
-# Real training against MAESTRO v3.0.0.
-# Download from https://magenta.tensorflow.org/datasets/maestro and
-# extract under <repo-root>/data/maestro-v3.0.0/ first.
+# (b) Short verification run on real data (~10 min on CPU).
+#     Confirms loss decreases on actual music.
+python -m scripts.train --steps 200 --no-resume
+
+# (c) Full training run.
+#     CPU: ~3 s/step → 50 000 steps ≈ 42 hours.
+#     CUDA (single consumer GPU): ~10× faster → ~4 hours.
 python -m scripts.train --steps 50000
 ```
+
+Checkpoints land in `<repo-root>/checkpoints/generator_latest.pt`.
+The loop resumes from this file automatically on subsequent runs;
+pass `--no-resume` to force a fresh start.
+
+### 3. Flip the switch
+
+After training:
+
+```python
+# in app/ml/config.py
+USE_ML_PIPELINE = True
+```
+
+The `/transform` route will now call `transform_with_model(...)` from
+`app.ml.inference` instead of the rule-based `extract_layers` path.
+Post-processing (compress, walking bass, voice leading, tempo
+enforcement) still runs on top of the ML output as the safety layer.
 
 Checkpoints land in `<repo-root>/checkpoints/generator_latest.pt`. The
 loop resumes from this file automatically — `--no-resume` forces a fresh

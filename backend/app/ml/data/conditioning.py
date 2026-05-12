@@ -104,9 +104,13 @@ def build_conditioning_from_roll(
     """
     chroma = _roll_to_chroma(roll)
     chroma = _smooth_chroma(chroma, smooth_half_window)
-    # Per-frame max-normalise to [0, 1] (silent frames stay all-zero)
+    # Per-frame max-normalise to [0, 1] (silent frames stay all-zero).  np.where
+    # masks the divide-by-zero in the silent-frame case but numpy still
+    # *computes* both branches and emits a RuntimeWarning unless we tell it
+    # this divide is intentional and the result will be discarded.
     maxes = chroma.max(axis=-1, keepdims=True)
-    chroma_n = np.where(maxes > 1e-6, chroma / maxes, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        chroma_n = np.where(maxes > 1e-6, chroma / maxes, 0.0)
 
     root_chroma = _bass_biased_root(roll)
     root_chroma = _smooth_chroma(root_chroma, smooth_half_window)
