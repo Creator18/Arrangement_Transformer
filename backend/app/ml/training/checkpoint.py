@@ -83,9 +83,21 @@ def load_checkpoint(
         optimizer.load_state_dict(state["optimizer"])
     if scheduler is not None and state.get("scheduler") is not None:
         scheduler.load_state_dict(state["scheduler"])
+
+    # RNG state restoration is best-effort.  A checkpoint saved under a
+    # CPU torch build and loaded under CUDA (or vice versa) may carry an
+    # incompatible RNG blob — torch.set_rng_state raises rather than
+    # converts.  Reproducibility is a nice-to-have here, not a correctness
+    # requirement, so we warn and continue.
     if "rng" in state:
-        torch.set_rng_state(state["rng"])
+        try:
+            torch.set_rng_state(state["rng"])
+        except Exception as e:
+            print(f"[checkpoint] could not restore CPU RNG state ({e}); continuing")
     if state.get("cuda_rng") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda_rng"])
+        try:
+            torch.cuda.set_rng_state_all(state["cuda_rng"])
+        except Exception as e:
+            print(f"[checkpoint] could not restore CUDA RNG state ({e}); continuing")
 
     return int(state.get("step", 0))

@@ -138,6 +138,9 @@ PATHS       = Paths()
 
 
 # ── Inference toggle ──────────────────────────────────────────────────────────
-# When True, /transform uses the trained generator.  Stays False until a
-# checkpoint is produced and validated.
-USE_ML_PIPELINE = False
+# When True, /transform uses the trained generator for the 88→61 transformation.
+# The 88-key transcription itself is always produced by the rule-based pipeline
+# (pYIN + Basic Pitch in services/transcription.py) regardless of this flag.
+# Falls back gracefully to the rule-based 88→61 path if either the flag is
+# False OR no checkpoint is found at PATHS.default_ckpt.
+USE_ML_PIPELINE = True
