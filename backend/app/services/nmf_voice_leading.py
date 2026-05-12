@@ -582,6 +582,8 @@ HAND_TOTAL_NOTES      = 10
 HAND_SPLIT_PITCH      = 60      # MIDI C4 — coarse fallback when ambiguous
 HAND_COMFORT_SPAN     = 8       # comfort soft-limit — costs ramp up past this
 HAND_PHRASE_WINDOW_S  = 0.25    # within this many seconds → still in the phrase
+HAND_FINGER_WINDOW_S  = 0.25    # how long a finger physically presses before
+                                # the pedal takes over the sustain (phase 6d)
 
 
 def _span(active: set, pitches: Dict[int, int]) -> int:
@@ -735,6 +737,8 @@ def _resolve_hand_overlaps(
     overlap_threshold:  int = 4,
     max_notes_per_hand: int = HAND_MAX_NOTES,
     max_span_per_hand:  int = HAND_MAX_SPAN,
+    pedal_enabled:      bool = True,
+    finger_window_s:    float = HAND_FINGER_WINDOW_S,
 ) -> List[Dict]:
     """
     Second pass over hand-assigned notes that detects pitch-overlap between
@@ -770,10 +774,18 @@ def _resolve_hand_overlaps(
     pitches = {i: int(n["pitch"])                                    for i, n in enumerate(sorted_notes)}
     offsets = {i: float(n.get("offset", float(n["onset"]) + 0.25))  for i, n in enumerate(sorted_notes)}
 
+    # Phase 6d — pedal modelling: an "active" note for constraint purposes is
+    # one whose FINGER is still on the key.  When pedal_enabled, the finger
+    # releases after `finger_window_s` and the pedal sustains the sound; the
+    # note no longer counts toward the per-hand finger budget or the span.
+    # When pedal_enabled is False, finger == sustain (phase 6a/6b/6c behaviour).
     events: List[tuple] = []
     for i, n in enumerate(sorted_notes):
-        events.append((float(n["onset"]), 1, i, "on"))
-        events.append((offsets[i],         0, i, "off"))
+        onset = float(n["onset"])
+        finger_release = (min(onset + finger_window_s, offsets[i])
+                          if pedal_enabled else offsets[i])
+        events.append((onset,          1, i, "on"))
+        events.append((finger_release, 0, i, "off"))
     events.sort()
 
     dropped: set = set()
@@ -877,6 +889,8 @@ def enforce_hand_constraints(
     comfort_span:           int = HAND_COMFORT_SPAN,
     phrase_window_s:        float = HAND_PHRASE_WINDOW_S,
     overlap_threshold:      int = 4,
+    pedal_enabled:          bool = True,
+    finger_window_s:        float = HAND_FINGER_WINDOW_S,
 ) -> List[Dict]:
     """
     Stamp each note with a `hand` field ('lh' / 'rh') and drop/truncate notes
@@ -926,10 +940,20 @@ def enforce_hand_constraints(
     offsets  = {i: float(n.get("offset", float(n["onset"]) + 0.25))  for i, n in enumerate(sorted_notes)}
     importance = _note_importances(sorted_notes, beat_times, downbeat_times)
 
+    # Phase 6d — pedal modelling: with pedal_enabled, an "off" event fires
+    # when the FINGER releases (after finger_window_s), not when the sound
+    # actually stops.  After finger-release the note's sustain is held by the
+    # pedal — it keeps ringing for the output but no longer counts toward the
+    # per-hand finger budget or the hand-span constraint.  Lets long-sustained
+    # notes coexist with new attacks without forcing drops.  When pedal is
+    # disabled, finger-release == offset (phase 6a/6b/6c behaviour preserved).
     events: List[tuple] = []
     for i, n in enumerate(sorted_notes):
-        events.append((float(n["onset"]), 1, i, "on"))
-        events.append((offsets[i],         0, i, "off"))
+        onset = float(n["onset"])
+        finger_release = (min(onset + finger_window_s, offsets[i])
+                          if pedal_enabled else offsets[i])
+        events.append((onset,          1, i, "on"))
+        events.append((finger_release, 0, i, "off"))
     events.sort()
 
     dropped: set = set()
@@ -1045,6 +1069,8 @@ def enforce_hand_constraints(
             overlap_threshold = overlap_threshold,
             max_notes_per_hand= max_notes_per_hand,
             max_span_per_hand = max_span_per_hand,
+            pedal_enabled     = pedal_enabled,
+            finger_window_s   = finger_window_s,
         )
 
     return result
