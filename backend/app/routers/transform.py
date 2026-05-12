@@ -12,6 +12,7 @@ from app.services.nmf_voice_leading import (
     detect_scale, _NOTE_NAMES,
     TARGET_LOW, TARGET_HIGH,
     apply_feel_offset,
+    enforce_hand_constraints,
 )
 from app.services.segmentation import _chord_map_from_json
 from app.services.pattern_extraction import extract_layers
@@ -196,6 +197,11 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         # together with no relative drift.
         merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
+        # Phase 6a — physical-playability hard constraints: ≤5 notes/hand,
+        # ≤1-octave span/hand, ≤10 notes total.  Stamps each note with a
+        # `hand` field and drops/truncates anything that would violate.
+        merged = enforce_hand_constraints(merged)
+
         export_notes = merged
 
     except Exception:
@@ -212,6 +218,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             export_notes = remove_beat_outliers(export_notes, tempo)
             export_notes = snap_to_chord_tones(export_notes, tempo)
             export_notes = enforce_uniform_tempo(export_notes, beat_times_arr, tempo)
+            export_notes = enforce_hand_constraints(export_notes)
             root, scale_name, _ = detect_scale(export_notes)
             scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
         except Exception:

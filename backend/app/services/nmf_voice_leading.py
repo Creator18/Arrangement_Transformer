@@ -568,3 +568,161 @@ def post_process_notes(
     except Exception:
         pass
     return notes
+
+
+# ── Phase 6a: hand-aware playability hard constraints ────────────────────────
+
+# Defaults reflect a normal-sized hand on a typical piano:
+#   • 5 fingers per hand
+#   • thumb-to-pinky spread ≤ 1 octave (12 semitones, C to C)
+#   • 10 fingers total
+# Left hand owns < HAND_SPLIT_PITCH, right hand owns ≥ HAND_SPLIT_PITCH.
+HAND_MAX_NOTES   = 5
+HAND_MAX_SPAN    = 12        # semitones, exclusive of own pitch
+HAND_TOTAL_NOTES = 10
+HAND_SPLIT_PITCH = 60        # MIDI C4 — anything lower is LH by default
+
+
+def _hand_for_pitch(pitch: int) -> str:
+    """Default per-pitch hand assignment (phase 6a — coarse split by pitch)."""
+    return "lh" if pitch < HAND_SPLIT_PITCH else "rh"
+
+
+def _span(active: set, pitches: Dict[int, int]) -> int:
+    """Span (in semitones) of the pitches of all notes currently in `active`."""
+    if len(active) < 2:
+        return 0
+    ps = [pitches[i] for i in active]
+    return max(ps) - min(ps)
+
+
+def _drop_for_count(active: set, output: List[Dict]) -> int:
+    """Pick the lowest-velocity note in `active` to drop for a count violation."""
+    return min(active, key=lambda i: int(output[i].get("velocity", 80)))
+
+
+def _drop_for_span(active: set, pitches: Dict[int, int]) -> int:
+    """Pick the outermost note (farthest from median pitch) to drop for span."""
+    ordered = sorted(pitches[i] for i in active)
+    median  = ordered[len(ordered) // 2]
+    return max(active, key=lambda i: abs(pitches[i] - median))
+
+
+def enforce_hand_constraints(
+    notes:             List[Dict],
+    max_notes_per_hand:int  = HAND_MAX_NOTES,
+    max_span_per_hand: int  = HAND_MAX_SPAN,
+    max_total_notes:   int  = HAND_TOTAL_NOTES,
+    split_pitch:       int  = HAND_SPLIT_PITCH,
+) -> List[Dict]:
+    """
+    Stamp each note with a `hand` field ('lh' / 'rh') and drop/truncate notes
+    that violate the physical hard constraints of two-hand piano playing:
+
+        • at most `max_notes_per_hand` notes simultaneously per hand
+        • at most `max_span_per_hand` semitones from low to high per hand
+        • at most `max_total_notes` notes total at any instant
+
+    Resolution policy when a new note onset would cause a violation:
+
+        • count violation → drop the lowest-velocity note in the affected set
+        • span violation  → drop the outermost note (farthest from median)
+        • total violation → drop the lowest-velocity note across both hands
+
+    "Drop" means: if the offending note is the *new* onset, it never appears
+    in the output.  If it's an *already-active* note, its offset is truncated
+    to the current time so the existing note simply ends early.  This keeps
+    the rest of that note's playback intact and doesn't introduce gaps.
+
+    Phase 6a — hard constraints only, no comfort optimisation.  The pitch
+    split at C4 is a coarse default; phase 6b will replace this with a
+    movement-aware assignment that tracks each hand's thumb position over time.
+    """
+    if not notes:
+        return notes
+
+    # Stable order: by onset, then pitch.  We mutate a deepcopy so the caller's
+    # list (and any other reference) is untouched.
+    sorted_notes = sorted(
+        ({**n} for n in notes),
+        key=lambda n: (float(n["onset"]), int(n["pitch"])),
+    )
+    pitches  = {i: int(n["pitch"])               for i, n in enumerate(sorted_notes)}
+    offsets  = {i: float(n.get("offset",
+                              float(n["onset"]) + 0.25)) for i, n in enumerate(sorted_notes)}
+
+    # Build interleaved event list.  At identical timestamps, an off-event
+    # fires before an on-event so a note that ends exactly when another starts
+    # frees its finger slot first (matches real piano behaviour).
+    events: List[tuple] = []
+    for i, n in enumerate(sorted_notes):
+        events.append((float(n["onset"]), 1, i, "on"))
+        events.append((offsets[i],         0, i, "off"))
+    events.sort()
+
+    dropped: set = set()    # indices that never appear in output (new-note drops)
+    lh_active: set = set()
+    rh_active: set = set()
+
+    for t, _typ_rank, idx, typ in events:
+        if idx in dropped:
+            continue
+
+        if typ == "off":
+            lh_active.discard(idx)
+            rh_active.discard(idx)
+            continue
+
+        # ── on-event ───────────────────────────────────────────────────────
+        # If the note's offset was truncated below the current time by an
+        # earlier drop, it's effectively gone before its onset fired — skip.
+        if offsets[idx] <= t:
+            continue
+
+        hand   = _hand_for_pitch(pitches[idx])
+        active = lh_active if hand == "lh" else rh_active
+        active.add(idx)
+        sorted_notes[idx]["hand"] = hand
+
+        # Resolve per-hand violations.  Each iteration removes the worst note
+        # in the offending hand and re-checks; halts when both constraints are
+        # satisfied or the new note has been dropped.
+        while True:
+            count_violation = len(active) > max_notes_per_hand
+            span_violation  = _span(active, pitches) > max_span_per_hand
+            if not count_violation and not span_violation:
+                break
+            worst = (_drop_for_count(active, sorted_notes)
+                     if count_violation
+                     else _drop_for_span(active, pitches))
+            active.discard(worst)
+            if worst == idx:
+                dropped.add(idx)
+                break
+            offsets[worst] = t
+            sorted_notes[worst]["offset"] = round(t, 4)
+
+        if idx in dropped:
+            continue
+
+        # Resolve total-polyphony budget across both hands.
+        while len(lh_active) + len(rh_active) > max_total_notes:
+            both  = lh_active | rh_active
+            worst = _drop_for_count(both, sorted_notes)
+            lh_active.discard(worst)
+            rh_active.discard(worst)
+            if worst == idx:
+                dropped.add(idx)
+                break
+            offsets[worst] = t
+            sorted_notes[worst]["offset"] = round(t, 4)
+
+    # Emit only notes that survived (and whose truncated offset is still > onset).
+    result: List[Dict] = []
+    for i, n in enumerate(sorted_notes):
+        if i in dropped:
+            continue
+        if float(n.get("offset", n["onset"])) <= float(n["onset"]):
+            continue
+        result.append(n)
+    return result
