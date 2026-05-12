@@ -84,10 +84,12 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     }
 
     # Actual beat / downbeat positions (seconds) from separation.  Used by
-    # walking-bass placement, enforce_uniform_tempo, and Phase 6b's importance
-    # scoring (downbeat-proximate notes are harder to drop than offbeat ones).
+    # walking-bass placement, enforce_uniform_tempo, Phase 6b's importance
+    # scoring, and Phase 6c's measure-boundary lookups (for overlap
+    # resolution).
     beat_times_arr:     Optional[np.ndarray] = None
     downbeat_times_arr: Optional[np.ndarray] = None
+    beats_per_bar:      int                  = 4
     try:
         with open(session_dir / "components.json") as _f:
             _comp = json.load(_f)
@@ -95,6 +97,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         _dbf    = _comp.get("downbeat_frames", [])
         _sr     = float(_comp.get("sr", 22050))
         _hop    = float(_comp.get("hop_length", 512))
+        beats_per_bar = int(_comp.get("beats_per_bar", 4))
         if _frames:
             beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
         if _dbf:
@@ -202,14 +205,19 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         # together with no relative drift.
         merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
-        # Phase 6b — physical-playability constraints + comfort layer.
-        # Hard limits: ≤5 notes/hand, ≤1-octave span/hand, ≤10 total.
-        # Soft costs prefer hand movement over spread, keep phrases on a
-        # single hand, and drop weak-beat notes first when forced.
+        # Phase 6a/6b/6c — physical playability:
+        #   6a: hard constraints (≤5/hand, ≤1-octave span/hand, ≤10 total)
+        #   6b: comfort-aware assignment (movement vs spread, phrase coherence,
+        #       weak-beat-first drop using downbeat data)
+        #   6c: cross-hand overlap resolution using per-measure dominance data
+        #       (overlap zone routes to the segment's dominant voice's hand)
         merged = enforce_hand_constraints(
             merged,
             beat_times     = beat_times_arr.tolist()     if beat_times_arr     is not None else None,
             downbeat_times = downbeat_times_arr.tolist() if downbeat_times_arr is not None else None,
+            dominance_map  = dominance_map,
+            tempo          = tempo,
+            beats_per_bar  = beats_per_bar,
         )
 
         export_notes = merged
@@ -232,6 +240,9 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                 export_notes,
                 beat_times     = beat_times_arr.tolist()     if beat_times_arr     is not None else None,
                 downbeat_times = downbeat_times_arr.tolist() if downbeat_times_arr is not None else None,
+                dominance_map  = dominance_map,
+                tempo          = tempo,
+                beats_per_bar  = beats_per_bar,
             )
             root, scale_name, _ = detect_scale(export_notes)
             scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}

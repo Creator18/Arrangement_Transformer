@@ -727,16 +727,156 @@ def _resolve_per_hand(
         sorted_notes[worst]["offset"] = round(t, 4)
 
 
+def _resolve_hand_overlaps(
+    notes:              List[Dict],
+    dominance_map:      Dict[int, str],
+    tempo:              float,
+    beats_per_bar:      int = 4,
+    overlap_threshold:  int = 4,
+    max_notes_per_hand: int = HAND_MAX_NOTES,
+    max_span_per_hand:  int = HAND_MAX_SPAN,
+) -> List[Dict]:
+    """
+    Second pass over hand-assigned notes that detects pitch-overlap between
+    LH and RH active sets and re-routes the overlap to the dominant voice's
+    hand for each measure.
+
+    "Overlap" is defined as `min(rh_pitches) - max(lh_pitches) < overlap_threshold` —
+    i.e. the two hands are reaching into the same pitch zone simultaneously.
+    When detected at any onset, look up that measure's dominant voice in
+    `dominance_map` (segmentation's per-measure `star`: 'bass' → LH dominant,
+    'melody' → RH dominant) and resolve:
+
+        • non-dominant-hand notes inside the overlap zone are *moved* to the
+          dominant hand if the dominant hand can fit them (count + span allow)
+        • otherwise they're dropped (truncated to the current time, same
+          semantics as the hard-constraint enforcer)
+
+    The dominant hand's own notes are never touched.  Non-overlap-zone notes
+    in the non-dominant hand are also left in place — the "free hand" is only
+    cleared in the overlap region, so it stays available for whatever other
+    content it was playing.
+
+    No-op when `dominance_map` is empty (no per-measure data available).
+    """
+    if not notes or not dominance_map:
+        return notes
+
+    measure_dur = (60.0 / max(tempo, 1.0)) * max(beats_per_bar, 1)
+    sorted_notes = sorted(
+        ({**n} for n in notes),
+        key=lambda n: (float(n["onset"]), int(n["pitch"])),
+    )
+    pitches = {i: int(n["pitch"])                                    for i, n in enumerate(sorted_notes)}
+    offsets = {i: float(n.get("offset", float(n["onset"]) + 0.25))  for i, n in enumerate(sorted_notes)}
+
+    events: List[tuple] = []
+    for i, n in enumerate(sorted_notes):
+        events.append((float(n["onset"]), 1, i, "on"))
+        events.append((offsets[i],         0, i, "off"))
+    events.sort()
+
+    dropped: set = set()
+    lh_active: set = set()
+    rh_active: set = set()
+
+    def _dom_can_accept(dom_active: set, pitch: int) -> bool:
+        """Does the dominant hand have room for an additional note at `pitch`?"""
+        if len(dom_active) >= max_notes_per_hand:
+            return False
+        if not dom_active:
+            return True
+        ps = [pitches[i] for i in dom_active] + [pitch]
+        return (max(ps) - min(ps)) <= max_span_per_hand
+
+    for t, _typ_rank, idx, typ in events:
+        if idx in dropped:
+            continue
+
+        if typ == "off":
+            lh_active.discard(idx)
+            rh_active.discard(idx)
+            continue
+
+        if offsets[idx] <= t:
+            continue
+
+        # Trust the upstream hand assignment (set by 6a/6b)
+        hand = sorted_notes[idx].get("hand", "rh" if pitches[idx] >= HAND_SPLIT_PITCH else "lh")
+        if hand == "lh": lh_active.add(idx)
+        else:            rh_active.add(idx)
+
+        # Overlap is only meaningful when both hands have content
+        if not lh_active or not rh_active:
+            continue
+
+        lh_pitches = [pitches[i] for i in lh_active]
+        rh_pitches = [pitches[i] for i in rh_active]
+        gap = min(rh_pitches) - max(lh_pitches)
+        if gap >= overlap_threshold:
+            continue       # well separated, nothing to do
+
+        # ── Conflict resolution ────────────────────────────────────────────
+        # Look up dominance for the measure this event lives in
+        m_idx     = int(t / measure_dur) if measure_dur > 0 else 0
+        dom_voice = dominance_map.get(m_idx, "melody")
+        dom_hand  = "lh" if dom_voice == "bass" else "rh"
+
+        if dom_hand == "lh":
+            # Keep LH overlap; resolve RH overlap-zone notes
+            cutoff   = max(lh_pitches) + overlap_threshold
+            losers   = sorted((i for i in rh_active if pitches[i] <= cutoff),
+                              key=lambda i: pitches[i])  # lowest pitch first
+            target_active = rh_active
+            other_active  = lh_active
+        else:
+            # Keep RH overlap; resolve LH overlap-zone notes
+            cutoff   = min(rh_pitches) - overlap_threshold
+            losers   = sorted((i for i in lh_active if pitches[i] >= cutoff),
+                              key=lambda i: -pitches[i])  # highest pitch first
+            target_active = lh_active
+            other_active  = rh_active
+
+        for loser in losers:
+            if _dom_can_accept(other_active, pitches[loser]):
+                # Move to dominant hand
+                target_active.discard(loser)
+                other_active.add(loser)
+                sorted_notes[loser]["hand"] = dom_hand
+            else:
+                # Drop / truncate
+                target_active.discard(loser)
+                if loser == idx:
+                    dropped.add(loser)
+                else:
+                    offsets[loser] = t
+                    sorted_notes[loser]["offset"] = round(t, 4)
+
+    # Emit survivors
+    result: List[Dict] = []
+    for i, n in enumerate(sorted_notes):
+        if i in dropped:
+            continue
+        if float(n.get("offset", n["onset"])) <= float(n["onset"]):
+            continue
+        result.append(n)
+    return result
+
+
 def enforce_hand_constraints(
     notes:                  List[Dict],
     beat_times:             Optional[List[float]] = None,
     downbeat_times:         Optional[List[float]] = None,
+    dominance_map:          Optional[Dict[int, str]] = None,
+    tempo:                  Optional[float] = None,
+    beats_per_bar:          int = 4,
     max_notes_per_hand:     int = HAND_MAX_NOTES,
     max_span_per_hand:      int = HAND_MAX_SPAN,
     max_total_notes:        int = HAND_TOTAL_NOTES,
     split_pitch:            int = HAND_SPLIT_PITCH,
     comfort_span:           int = HAND_COMFORT_SPAN,
     phrase_window_s:        float = HAND_PHRASE_WINDOW_S,
+    overlap_threshold:      int = 4,
 ) -> List[Dict]:
     """
     Stamp each note with a `hand` field ('lh' / 'rh') and drop/truncate notes
@@ -890,4 +1030,21 @@ def enforce_hand_constraints(
         if float(n.get("offset", n["onset"])) <= float(n["onset"]):
             continue
         result.append(n)
+
+    # ── Phase 6c: cross-hand overlap resolution ────────────────────────────
+    # When both hands have notes in the same pitch zone simultaneously, route
+    # the overlap to the dominant voice's hand based on per-measure dominance
+    # data.  No-op when dominance_map or tempo isn't supplied — the caller
+    # falls back to whatever 6a/6b produced.
+    if dominance_map and tempo is not None:
+        result = _resolve_hand_overlaps(
+            result,
+            dominance_map     = dominance_map,
+            tempo             = tempo,
+            beats_per_bar     = beats_per_bar,
+            overlap_threshold = overlap_threshold,
+            max_notes_per_hand= max_notes_per_hand,
+            max_span_per_hand = max_span_per_hand,
+        )
+
     return result
