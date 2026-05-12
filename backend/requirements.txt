@@ -12,3 +12,11 @@ music21==9.1.0
 soundfile==0.12.1
 resampy>=0.2.2,<0.4.3
 pydantic==2.7.1
+
+# ── ML transformation core (backend/app/ml) ──────────────────────────────────
+# CPU wheels work for local development; the training loop auto-detects CUDA.
+# For GPU training, install matching CUDA wheels from pytorch.org instead.
+torch>=2.2,<2.6
+torchaudio>=2.2,<2.6
+# Source separation at inference time — Demucs replaces NMF
+demucs>=4.0.1
