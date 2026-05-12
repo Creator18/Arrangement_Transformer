@@ -114,6 +114,10 @@ class MaestroDataset(IterableDataset):
                 seg = sample_segment(roll, self.segment_frames, rng=rng)
                 if seg is None:
                     continue
+                # Cache hits return bool memmap; force a small float32 copy of
+                # just the segment so downstream conditioning / noise / stacking
+                # all see a consistent dtype regardless of cache state.
+                seg = np.asarray(seg, dtype=np.float32)
                 semis = rng.randint(-self.transpose_range, self.transpose_range)
                 seg = self._transpose(seg, semis)
                 cond = build_conditioning_from_roll(seg)

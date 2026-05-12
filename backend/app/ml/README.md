@@ -92,20 +92,38 @@ python -m scripts.download_maestro
 Extracts into `<repo-root>/data/maestro-v3.0.0/` — the path
 `app.ml.config.PATHS.maestro_root` expects.  Re-running is a no-op.
 
-### 2. Run training
+### 2. Pre-render the piano-roll cache (one-time, ~3 min, ~6 GB)
+
+Parsing 1276 MIDI files through pretty_midi every training step costs
+~2 s/step and dominates total training time.  A one-time prerender
+writes each piece's bool piano roll to disk; training then mmap-slices
+each segment in milliseconds:
+
+```bash
+python -m scripts.prerender_maestro
+```
+
+Files land next to their source MIDIs as `*.roll.<frame_hz>.npy`.
+Re-running is idempotent (skips pieces whose cache already exists).
+Pass `--force` to re-render everything.
+
+Net effect: ~21× faster training steps (0.16 s/step vs 3.3 s/step on
+the same CPU/GPU), making 50 000 steps a ~2-3 hour run instead of an
+overnight one.
+
+### 3. Run training
 
 ```bash
 # (a) Smoke test — no MAESTRO required.  Verifies forward + backward +
 #     loss + checkpoint round-trip end-to-end with synthetic rolls.
 python -m scripts.train --synthetic --steps 200
 
-# (b) Short verification run on real data (~10 min on CPU).
-#     Confirms loss decreases on actual music.
+# (b) Short verification run on real cached data (~30 s on RTX 4070).
 python -m scripts.train --steps 200 --no-resume
 
-# (c) Full training run.
-#     CPU: ~3 s/step → 50 000 steps ≈ 42 hours.
-#     CUDA (single consumer GPU): ~10× faster → ~4 hours.
+# (c) Full training run on cached MAESTRO.
+#     CPU + cache: ~0.5 s/step → 50 000 steps ≈ 7 hours.
+#     CUDA + cache (RTX 4070 Laptop): ~0.16 s/step → ~2.2 hours.
 python -m scripts.train --steps 50000
 ```
 

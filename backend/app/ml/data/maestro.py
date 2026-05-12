@@ -79,15 +79,48 @@ def list_maestro(root: Path, split: Optional[str] = "train") -> List[MaestroEntr
 
 # ── MIDI → roll ───────────────────────────────────────────────────────────────
 
-def load_piano_roll(midi_path: Path, frame_hz: int = FRAME_RATE_HZ) -> np.ndarray:
+def cached_roll_path(midi_path: Path, frame_hz: int = FRAME_RATE_HZ) -> Path:
     """
-    Load a MIDI file and rasterise its notes onto an 88-key roll at
-    `frame_hz` frames/second.  Velocity is collapsed to binary 1.0 (the
-    Transformer is trained to predict presence; velocity restoration is a
-    separate concern handled at post-processing).
+    The on-disk cache location for a MIDI's pre-rendered piano roll.
 
-    Returns (T, 88) float32.
+    We co-locate the cache next to the source MIDI (foo.midi → foo.roll.<hz>.npy)
+    so there's no global cache directory to track, the cache moves with the
+    data tree, and `git clean`-style operations stay simple.
     """
+    return midi_path.with_suffix(f".roll.{frame_hz}.npy")
+
+
+def load_piano_roll(
+    midi_path: Path,
+    frame_hz: int = FRAME_RATE_HZ,
+    allow_cache: bool = True,
+) -> np.ndarray:
+    """
+    Load a MIDI file and return its rasterised 88-key piano roll at
+    `frame_hz` frames/second.  Velocity is collapsed to binary 1.0 (the
+    Transformer learns note presence; velocity restoration is handled in
+    post-processing).
+
+    Fast path
+    ---------
+    If a cache file exists next to the MIDI (see cached_roll_path), it's
+    mmap-loaded as `bool_` — only the byte ranges actually accessed by
+    downstream slicing land in RAM.  Callers should `.astype(np.float32)`
+    on whatever slice they retain.
+
+    Slow path
+    ---------
+    No cache → parse the MIDI via pretty_midi and rasterise.  Returns
+    float32 directly (older callers depended on this dtype).
+
+    Returns (T, 88).  Dtype is bool on the fast path, float32 on the slow.
+    """
+    if allow_cache:
+        cache = cached_roll_path(midi_path, frame_hz)
+        if cache.exists():
+            # mmap_mode='r' → read-only memmap; sliceable like a normal array
+            return np.load(str(cache), mmap_mode="r")
+
     import pretty_midi
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     if not pm.instruments:
