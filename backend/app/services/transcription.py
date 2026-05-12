@@ -404,10 +404,12 @@ def transcribe_components(
       timing_feel  — {'bass': float, 'upper': float} median offset in seconds
                      from the nearest beat for each register (positive = behind beat)
     """
-    comp_dir   = session_dir / 'components'
-    bass_path  = comp_dir / 'bass.wav'
-    upper_path = comp_dir / 'upper.wav'
-    meta_path  = session_dir / 'components.json'
+    comp_dir     = session_dir / 'components'
+    bass_path    = comp_dir / 'bass.wav'
+    upper_path   = comp_dir / 'upper.wav'
+    pattern_path = comp_dir / 'pattern.wav'
+    melody_path  = comp_dir / 'melody.wav'
+    meta_path    = session_dir / 'components.json'
 
     if not bass_path.exists() or not upper_path.exists():
         raise FileNotFoundError('Component audio files missing. Run /separate first.')
@@ -429,16 +431,30 @@ def transcribe_components(
     # ── bass: pYIN ────────────────────────────────────────────────────────────
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
+    # bass_notes already carry layer='bass' from _pyin_to_notes
 
-    # ── upper: Onsets & Frames (PyTorch port of Magenta) ──────────────────────
-    # Sharper onsets and richer velocity than Basic Pitch; no `layer` field —
-    # pattern_extraction.py classifies unlabeled notes via cycle mining.
-    upper_notes = _onsets_frames_notes(upper_path)
+    # ── upper: split into pattern + melody via REPET, transcribe separately ──
+    # pattern.wav / melody.wav are produced by separation.py.  Each is run
+    # through Onsets & Frames independently and the resulting notes get
+    # pre-labeled — pattern_extraction.py reads these labels to decide which
+    # bucket each note belongs to without falling back to cycle mining.
+    if pattern_path.exists() and melody_path.exists():
+        pattern_notes = _onsets_frames_notes(pattern_path)
+        for n in pattern_notes:
+            n['layer'] = 'pattern'
+        melody_notes  = _onsets_frames_notes(melody_path)
+        for n in melody_notes:
+            n['layer'] = 'melody'
+        upper_notes = pattern_notes + melody_notes
+    else:
+        # Backwards compatibility for sessions produced before phase 5c —
+        # fall back to transcribing the combined upper.wav with no labels.
+        upper_notes = _onsets_frames_notes(upper_path)
 
     # ── measure per-layer feel before any quantization ────────────────────────
-    # Raw pYIN and Basic Pitch onsets reveal how far ahead/behind the beat each
-    # register tends to land.  This is applied to generated notes later so that
-    # walking bass and pYIN fill inherit the same timing character.
+    # Raw pYIN and Onsets & Frames onsets reveal how far ahead/behind the beat
+    # each register tends to land.  Applied later to generated notes (walking
+    # bass, pYIN fill) so they inherit the same timing character.
     bass_feel  = _compute_feel(bass_notes,  beat_times)
     upper_feel = _compute_feel(upper_notes, beat_times)
 

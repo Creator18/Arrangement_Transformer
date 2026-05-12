@@ -62,14 +62,43 @@ _separator = None
 
 
 def _get_separator():
-    """Construct (or fetch) the Demucs separator.  Lazy + cached."""
+    """
+    Construct (or fetch) the Demucs htdemucs model.  Lazy + cached.
+
+    We use the low-level get_model / apply_model API rather than
+    demucs.api.Separator because the api.py module wasn't shipped in
+    demucs 4.0.1 (latest on PyPI at time of writing); the high-level
+    wrapper only exists on main.  The low-level API is stable across
+    versions and gives us finer control over device placement.
+    """
     global _separator
     if _separator is not None:
         return _separator
-    # `htdemucs` is the current default — 4-source, hybrid model.
-    from demucs.api import Separator
-    _separator = Separator(model="htdemucs")
+    import torch
+    from demucs.pretrained import get_model
+    model = get_model("htdemucs")
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+    _separator = model
     return _separator
+
+
+def _demucs_separate(audio_44k_stereo, model):
+    """
+    Run the cached Demucs model over a (2, samples) tensor at 44100 Hz.
+    Returns dict {source_name: (channels, samples) numpy float32}.
+    """
+    import torch
+    from demucs.apply import apply_model
+
+    device = next(model.parameters()).device
+    mix = audio_44k_stereo.to(device)
+    with torch.no_grad():
+        # apply_model expects a (batch, channels, samples) tensor.
+        stems = apply_model(model, mix.unsqueeze(0))
+    stems = stems[0].cpu().numpy()                   # (4, 2, samples)
+    return {name: stems[i] for i, name in enumerate(model.sources)}
 
 
 # Lazy globals for madmom processors — building these is non-trivial (each
@@ -210,18 +239,27 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
         session_dir/components/upper.wav
         session_dir/components.json
     """
-    sep = _get_separator()
+    import torch
+    import torchaudio
 
-    # ── 1. Demucs separation ──────────────────────────────────────────────
-    # The Separator handles loading, resampling, and chunked inference for us.
-    # Returns (origin, stems_dict).  Each stem is a torch tensor shaped
-    # (channels, samples) at the model's native sample rate.
-    origin, stems = sep.separate_audio_file(str(wav_path))
-    sr_model = int(sep.samplerate)
+    model = _get_separator()
+    sr_model = int(model.samplerate)
+    n_channels = int(model.audio_channels)
+
+    # ── 1. Load audio at Demucs's native sample rate (44.1 kHz, stereo) ───
+    audio, orig_sr = torchaudio.load(str(wav_path))            # (channels, samples)
+    if orig_sr != sr_model:
+        audio = torchaudio.functional.resample(audio, orig_sr, sr_model)
+    if audio.shape[0] == 1:
+        audio = audio.repeat(n_channels, 1)                    # mono → stereo
+    elif audio.shape[0] > n_channels:
+        audio = audio[:n_channels]
+
+    # ── 2. Run Demucs ──────────────────────────────────────────────────────
+    stems = _demucs_separate(audio, model)                     # {name: (2, samples)}
 
     def _stem_np(name: str) -> np.ndarray:
-        t = stems[name].cpu().numpy()
-        return _to_mono(t)
+        return _to_mono(stems[name])
 
     # ── 2. Drop drums; keep harmonic content ───────────────────────────────
     # Vocals carry melody in real songs, so they stay.  Drums add transients
@@ -250,17 +288,34 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     # confusing onset detection.
     beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(harmonic, SR)
 
-    # ── 6. Write outputs ──────────────────────────────────────────────────
+    # ── 6. REPET split of upper register into pattern / melody ────────────
+    # This restores the pattern-vs-melody distinction the old NMF pipeline
+    # produced.  REPET separates "what repeats at the measure period" from
+    # "what doesn't"; the former is the accompaniment ostinato, the latter
+    # is the melodic line.  Pre-labels downstream transcription so
+    # pattern_extraction.py can put each note in the right bucket without
+    # falling back to cycle-mining.
+    from app.services.pattern_separation import repet_separate
+    beat_times_arr = np.array(beat_frames, dtype=float) * HOP / SR if beat_frames else None
+    y_pattern, y_melody = repet_separate(y_upper, SR, beat_times=beat_times_arr)
+    y_pattern = _normalise(y_pattern)
+    y_melody  = _normalise(y_melody)
+
+    # ── 7. Write outputs ──────────────────────────────────────────────────
     comp_dir = session_dir / "components"
     comp_dir.mkdir(exist_ok=True)
 
-    bass_path  = comp_dir / "bass.wav"
-    upper_path = comp_dir / "upper.wav"
-    sf.write(str(bass_path),  y_bass,  SR, subtype="PCM_16")
-    sf.write(str(upper_path), y_upper, SR, subtype="PCM_16")
+    bass_path    = comp_dir / "bass.wav"
+    upper_path   = comp_dir / "upper.wav"      # full upper register, kept for fallback/debug
+    pattern_path = comp_dir / "pattern.wav"    # REPET repeating component
+    melody_path  = comp_dir / "melody.wav"     # REPET non-repeating component
+    sf.write(str(bass_path),    y_bass,    SR, subtype="PCM_16")
+    sf.write(str(upper_path),   y_upper,   SR, subtype="PCM_16")
+    sf.write(str(pattern_path), y_pattern, SR, subtype="PCM_16")
+    sf.write(str(melody_path),  y_melody,  SR, subtype="PCM_16")
 
     metadata: Dict[str, Any] = {
-        "method":           "demucs+madmom",
+        "method":           "demucs+madmom+repet",
         "tempo_bpm":        round(tempo, 1),
         "hop_length":       HOP,
         "sr":               SR,
@@ -269,8 +324,10 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
         "beats_per_bar":    int(beats_per_bar),
         "band_split_hz":    BAND_SPLIT_HZ,
         "groups": {
-            "bass":  {"path": str(bass_path),  "indices": []},  # kept for back-compat
-            "upper": {"path": str(upper_path), "indices": []},
+            "bass":    {"path": str(bass_path),    "indices": []},
+            "upper":   {"path": str(upper_path),   "indices": []},
+            "pattern": {"path": str(pattern_path), "indices": []},
+            "melody":  {"path": str(melody_path),  "indices": []},
         },
         # Legacy fields kept as empty/zero so old transcription.py code that
         # peeks at them doesn't KeyError.  Phase-3 transcription.py update
