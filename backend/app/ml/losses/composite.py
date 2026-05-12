@@ -46,6 +46,11 @@ def _schedule_factor(name: str, step: int) -> float:
     """
     Linearly ramp a term in over a short window starting at its intro_step.
     Returns a multiplier in [0, 1].
+
+    Terms with intro_step == 0 are fully active from step 0 — no ramp.  This
+    matches the spec ("begin training with high α only"): spectral and
+    sparsity push from the start, the other three slot in once the
+    spectrogram match has stabilised.
     """
     intro = {
         "spectral": 0,                              # active from step 0
@@ -54,6 +59,8 @@ def _schedule_factor(name: str, step: int) -> float:
         "contour":  SCHEDULE.contour_intro_step,
         "tempo":    SCHEDULE.tempo_intro_step,
     }[name]
+    if intro == 0:
+        return 1.0
     if step < intro:
         return 0.0
     ramp_end = min(intro + 1_000, SCHEDULE.fully_active_step)

@@ -20,6 +20,17 @@ ffmpeg-8.1.1-full_build-shared/
 
 # Session temp data
 backend/temp_sessions/
+backend/temp/
+
+# ML artefacts
+checkpoints/
+training_logs/
+data/maestro-v3.0.0/
+*.pt
+*.ckpt
+
+# Soundfont (large binary, distributed separately)
+*.sf2
 
 # Claude internal
 .claude/

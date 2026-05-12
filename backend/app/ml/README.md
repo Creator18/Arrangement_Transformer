@@ -66,20 +66,41 @@ print(breakdown)
 If that prints a `LossBreakdown` and doesn't crash, the network and loss
 graph are wired correctly.
 
-## Training (phase 2)
+## Training
 
-A real `train(...)` call expects an iterable of `Batch(roll, cond, noise)`
-tuples. The MAESTRO loader is planned for phase 2; until then the loop is
-testable with any synthetic generator that yields the right shapes.
+Two CLI modes — pick whichever applies:
 
-```python
-from app.ml.training import train
+```bash
+# Smoke test — no MAESTRO required.  Verifies the full forward + backward
+# + loss + checkpoint round-trip end-to-end with synthetic rolls.
+cd backend
+python -m scripts.train --synthetic --steps 200
 
-train(my_dataset_iterator, total_steps=50_000)
+# Real training against MAESTRO v3.0.0.
+# Download from https://magenta.tensorflow.org/datasets/maestro and
+# extract under <repo-root>/data/maestro-v3.0.0/ first.
+python -m scripts.train --steps 50000
 ```
 
-Checkpoints land in `checkpoints/generator_latest.pt`. The loop resumes
-automatically if a checkpoint of the matching architecture is found.
+Checkpoints land in `<repo-root>/checkpoints/generator_latest.pt`. The
+loop resumes from this file automatically — `--no-resume` forces a fresh
+start.
+
+The dataset is an `IterableDataset`; it yields `Batch(roll, cond, noise)`
+tuples indefinitely, so the `--steps` argument is what controls run length
+(not "epochs").
+
+### Loss breakdown logging
+
+Every `TRAIN.log_every` steps you'll see a line like:
+
+```
+[step    150] lr=2.00e-04 total=0.4231 spec=0.4188 rhy=0.0000 con=0.0000 spa=0.0043 tem=0.0000
+```
+
+`spec` and `spa` are non-zero from step 0; the other three ramp in per the
+schedule below.  When debugging plateaus this breakdown is the first place
+to look.
 
 ## Integration with `/transform`
 

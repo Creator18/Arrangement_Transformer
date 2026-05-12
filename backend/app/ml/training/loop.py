@@ -44,7 +44,7 @@ class TrainState:
 
 def train(
     dataset:     Iterable[Batch],
-    device:      str | torch.device = "cuda" if torch.cuda.is_available() else "cpu",
+    device:      str | torch.device | None = None,
     total_steps: int = TRAIN.total_steps,
     resume:      bool = True,
     ckpt_path:   Path = PATHS.default_ckpt,
@@ -57,8 +57,13 @@ def train(
     batches.
 
     Resumes from `ckpt_path` if it exists and `resume=True`.
+
+    `device=None` (default) auto-detects CUDA → falls back to CPU.
     """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
+    print(f"[train] device = {device}")
     torch.manual_seed(TRAIN.seed)
 
     # ── Model / loss / optimizer ────────────────────────────────────────────
