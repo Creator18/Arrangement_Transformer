@@ -37,9 +37,20 @@ cd backend
 pip install -r requirements.txt
 ```
 
-The default `torch` install is CPU-only. For GPU training, install the
-matching CUDA build from <https://pytorch.org/get-started/locally/>
-*before* `pip install -r requirements.txt` so it doesn't get downgraded.
+The default install pulls **CPU-only** torch wheels. For GPU training,
+swap them for a matching CUDA build:
+
+```bash
+pip uninstall torch torchaudio -y
+pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+```
+
+`cu124` covers everything from Ampere through Ada Lovelace (RTX 30/40
+series, A100, H100).  Verify with:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
+```
 
 ## Smoke-test (no real data)
 

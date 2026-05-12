@@ -13,8 +13,11 @@ resampy>=0.2.2,<0.4.3
 pydantic==2.7.1
 
 # ── ML transformation core (backend/app/ml) ──────────────────────────────────
-# CPU wheels work for local development; the training loop auto-detects CUDA.
-# For GPU training, install matching CUDA wheels from pytorch.org instead.
+# Default `pip install -r requirements.txt` pulls CPU-only torch wheels.
+# For GPU training, install the matching CUDA build BEFORE running this file:
+#   pip uninstall torch torchaudio -y
+#   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+# (cu124 supports Ampere through Ada Lovelace cards including the RTX 4070.)
 torch>=2.2,<2.6
 torchaudio>=2.2,<2.6
 # Source separation at inference time — Demucs replaces NMF

@@ -211,8 +211,14 @@ def crop_mel_to_band(
 
     The slice is a hard boundary in bin index space (cheap, lossless).
     """
-    lo_idx = int(torch.searchsorted(mel_centre_hz, torch.tensor(f_lo_hz)).item())
-    hi_idx = int(torch.searchsorted(mel_centre_hz, torch.tensor(f_hi_hz)).item())
+    # Build the query tensor on the same device as mel_centre_hz so this works
+    # on CUDA without device-mismatch errors.  The result is a scalar long we
+    # immediately .item() out, so the device of the searchsorted output is
+    # incidental — only the input device must match.
+    f_lo_t = torch.tensor(f_lo_hz, device=mel_centre_hz.device)
+    f_hi_t = torch.tensor(f_hi_hz, device=mel_centre_hz.device)
+    lo_idx = int(torch.searchsorted(mel_centre_hz, f_lo_t).item())
+    hi_idx = int(torch.searchsorted(mel_centre_hz, f_hi_t).item())
     lo_idx = max(0, min(lo_idx, mel.shape[1] - 1))
     hi_idx = max(lo_idx + 1, min(hi_idx, mel.shape[1]))
     return mel[:, lo_idx:hi_idx, :]
