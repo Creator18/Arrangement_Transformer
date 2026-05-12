@@ -343,11 +343,19 @@ def transcribe_components(
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
     # ── upper: Basic Pitch ────────────────────────────────────────────────────
-    # No more NMF-component-based labeling — Demucs separation doesn't produce
-    # an H matrix.  Upper notes carry no `layer` field; pattern_extraction.py
-    # falls back to its cycle-mining classifier on unlabeled notes, which is
-    # exactly what we want for register-mixed input.
+    # Phase 7 — once trained, the pattern classifier (app.ml.pattern_classifier)
+    # stamps each upper note's `layer` field with 'pattern' or 'melody'.
+    # pattern_extraction.py then routes by label instead of falling back to
+    # cycle-mining (which degraded on higher-density transcribers).  No-op
+    # when the checkpoint isn't trained yet — notes ship unlabeled and the
+    # rule-based cycle-miner takes over, same as the pre-phase-7 path.
     upper_notes = _basic_pitch_notes(upper_path)
+    try:
+        from app.ml.pattern_classifier import classify_notes, model_available
+        if model_available():
+            upper_notes = classify_notes(upper_notes, tempo=tempo)
+    except Exception as e:
+        print(f"[transcription] pattern_classifier skipped: {e}")
 
     # ── measure per-layer feel before any quantization ────────────────────────
     # Raw pYIN and Basic Pitch onsets reveal how far ahead/behind the beat each
