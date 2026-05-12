@@ -1,11 +1,18 @@
 """
 Per-component transcription.
 
-After separation.py (Demucs) has split the audio into a bass-register and
-upper-register stem:
+After separation.py (Demucs + bandpass) has split the audio into a bass-
+register and upper-register stem:
 
-  bass.wav  → pYIN monophonic pitch tracking → bass notes (layer='bass')
-  upper.wav → Basic Pitch polyphonic model  → upper notes (no layer label)
+  bass.wav  → pYIN monophonic pitch tracking           → bass notes (layer='bass')
+  upper.wav → Onsets & Frames polyphonic transcription → upper notes (no layer label)
+
+Onsets & Frames runs via piano-transcription-inference (the PyTorch port of
+Magenta's MAESTRO-trained model).  Sharper onsets and richer velocity than
+the previous Basic Pitch implementation — the user-perceived "feel" of the
+resulting arrangement depends almost entirely on the upper transcriber's
+onset precision, so this swap is one of the biggest single quality wins
+in the pipeline.
 
 Upper notes carry no `layer` field — pattern_extraction.py classifies them
 via cycle-based repetition mining instead of the old NMF-component-based
@@ -104,39 +111,120 @@ def _pyin_to_notes(
     return notes
 
 
-# ── Basic Pitch upper transcription ───────────────────────────────────────────
-# (NMF-component-based layer labeling was removed when separation switched
-# to Demucs.  pattern_extraction.py now classifies unlabeled upper notes via
-# cycle mining, which works on register-mixed input without needing a
-# precomputed NMF activation matrix.)
+# ── Upper-register transcription via Magenta's Onsets & Frames ────────────────
+# Uses the PyTorch port (piano-transcription-inference) of the MAESTRO-trained
+# O&F model.  Significantly tighter onsets and more meaningful velocity than
+# Basic Pitch — at the cost of being piano-specialised, which is fine for us
+# because Demucs already strips drums and vocals upstream.
+#
+# (NMF-component-based layer labeling was removed when separation switched to
+# Demucs.  pattern_extraction.py classifies unlabeled upper notes via cycle
+# mining, which works on register-mixed input without needing the precomputed
+# NMF activation matrix.)
 
-def _basic_pitch_notes(wav_path: Path) -> List[Dict[str, Any]]:
-    """Run Basic Pitch on a wav file, return raw note list."""
-    from basic_pitch.inference import predict
-    from basic_pitch import ICASSP_2022_MODEL_PATH
+# Lazy global so the ~170 MB checkpoint loads once per worker, not per call.
+_of_transcriptor = None
 
-    _, midi_data, _ = predict(
-        str(wav_path),
-        ICASSP_2022_MODEL_PATH,
-        onset_threshold=0.55,
-        frame_threshold=0.35,
-        minimum_note_length=60,
-        minimum_frequency=float(librosa.note_to_hz('C2')),
-        maximum_frequency=float(librosa.note_to_hz('C8')),
-        melodia_trick=True,
-    )
+
+# Zenodo URL the upstream package would shell out to wget — we download it
+# directly via Python so the code works on Windows (no wget binary required).
+_OF_CKPT_URL = (
+    "https://zenodo.org/record/4034264/files/"
+    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
+)
+_OF_CKPT_FILENAME = "note_F1=0.9677_pedal_F1=0.9186.pth"
+_OF_CKPT_MIN_BYTES = int(1.6e8)   # ~160 MB — same sanity check the package uses
+
+
+def _ensure_of_checkpoint() -> Path:
+    """
+    Download the Onsets & Frames checkpoint into the same cache path the
+    upstream package looks for (~/piano_transcription_inference_data/) using
+    urllib so we don't depend on a `wget` binary being on PATH.
+
+    Returns the local checkpoint path.  Idempotent: a checkpoint already
+    present at the expected size is left alone.
+    """
+    import urllib.request
+    from pathlib import Path as _P
+    ckpt_dir = _P.home() / "piano_transcription_inference_data"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / _OF_CKPT_FILENAME
+
+    if ckpt_path.exists() and ckpt_path.stat().st_size >= _OF_CKPT_MIN_BYTES:
+        return ckpt_path
+
+    tmp_path = ckpt_path.with_suffix(ckpt_path.suffix + ".part")
+    print(f"[onsets_frames] downloading checkpoint to {ckpt_path} (~165 MB)…")
+    with urllib.request.urlopen(_OF_CKPT_URL) as resp, open(tmp_path, "wb") as out:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        chunk = 1 << 20   # 1 MiB
+        while True:
+            buf = resp.read(chunk)
+            if not buf:
+                break
+            out.write(buf)
+            downloaded += len(buf)
+            if total:
+                print(f"\r[onsets_frames] {downloaded // (1<<20)} / {total // (1<<20)} MiB", end="", flush=True)
+        print()
+    tmp_path.replace(ckpt_path)
+    return ckpt_path
+
+
+def _get_of_transcriptor():
+    """Construct (or fetch) the Onsets & Frames transcriber.  Lazy + cached.
+
+    First call downloads the MAESTRO-trained checkpoint (~170 MB) via urllib
+    and caches it under ~/piano_transcription_inference_data/.  Subsequent
+    calls reuse the cached file.  Device auto-detects CUDA → falls back to CPU.
+    """
+    global _of_transcriptor
+    if _of_transcriptor is not None:
+        return _of_transcriptor
+    import torch
+    from piano_transcription_inference import PianoTranscription
+    ckpt_path = _ensure_of_checkpoint()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _of_transcriptor = PianoTranscription(device=device, checkpoint_path=str(ckpt_path))
+    return _of_transcriptor
+
+
+def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
+    """Run Magenta-O&F (PyTorch port) on a WAV file, return raw note list.
+
+    Output is in our standard note-dict format with floating-point onset/offset
+    in seconds, integer velocity 0–127, and pitch clamped to the 88-key
+    range (MIDI 21–108).
+    """
+    from piano_transcription_inference import sample_rate as OF_SR
+
+    # Model expects 16 kHz mono audio.
+    audio, _ = librosa.load(str(wav_path), sr=OF_SR, mono=True)
+    if audio.size == 0:
+        return []
+
+    transcriptor = _get_of_transcriptor()
+    result = transcriptor.transcribe(audio.astype(np.float32), midi_path=None)
 
     notes: List[Dict[str, Any]] = []
-    if not midi_data.instruments:
-        return notes
-    for note in midi_data.instruments[0].notes:
+    for ev in result.get("est_note_events", []):
+        pitch = int(ev["midi_note"])
+        if pitch < 21 or pitch > 108:           # clamp to 88-key range
+            continue
+        onset  = float(ev["onset_time"])
+        offset = float(ev["offset_time"])
+        if offset <= onset:                      # discard zero-length artefacts
+            continue
         notes.append({
-            'pitch':      int(note.pitch),
-            'pitch_name': librosa.midi_to_note(int(note.pitch)),
-            'onset':      float(note.start),
-            'offset':     float(note.end),
-            'velocity':   int(note.velocity),
+            "pitch":      pitch,
+            "pitch_name": librosa.midi_to_note(pitch),
+            "onset":      onset,
+            "offset":     offset,
+            "velocity":   max(1, min(127, int(ev["velocity"]))),
         })
+    notes.sort(key=lambda n: (n["onset"], n["pitch"]))
     return notes
 
 
@@ -342,12 +430,10 @@ def transcribe_components(
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
-    # ── upper: Basic Pitch ────────────────────────────────────────────────────
-    # No more NMF-component-based labeling — Demucs separation doesn't produce
-    # an H matrix.  Upper notes carry no `layer` field; pattern_extraction.py
-    # falls back to its cycle-mining classifier on unlabeled notes, which is
-    # exactly what we want for register-mixed input.
-    upper_notes = _basic_pitch_notes(upper_path)
+    # ── upper: Onsets & Frames (PyTorch port of Magenta) ──────────────────────
+    # Sharper onsets and richer velocity than Basic Pitch; no `layer` field —
+    # pattern_extraction.py classifies unlabeled notes via cycle mining.
+    upper_notes = _onsets_frames_notes(upper_path)
 
     # ── measure per-layer feel before any quantization ────────────────────────
     # Raw pYIN and Basic Pitch onsets reveal how far ahead/behind the beat each

@@ -2,7 +2,6 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 librosa==0.10.1
-basic-pitch==0.3.3
 ffmpeg-python==0.2.0
 numpy==1.26.4
 scipy==1.13.0
@@ -25,3 +24,8 @@ demucs>=4.0.1
 # On Python 3.11 / Windows the PyPI wheel may not be available — if pip
 # install fails, install from source:  pip install git+https://github.com/CPJKU/madmom
 madmom>=0.16.1
+# Upper-register transcription — PyTorch port of Magenta's Onsets & Frames,
+# MAESTRO-trained.  Sharper onsets and richer velocity than Basic Pitch.
+# First call downloads ~170 MB of weights into the torch cache directory.
+piano-transcription-inference>=0.0.6
+torchlibrosa>=0.1.0
