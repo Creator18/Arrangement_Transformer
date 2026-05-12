@@ -83,17 +83,22 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if "star" in seg and "measure_index" in seg
     }
 
-    # Actual beat positions (seconds) from separation — drives walking-bass placement
-    # and the post-merge uniform-tempo enforcement pass.
-    beat_times_arr: Optional[np.ndarray] = None
+    # Actual beat / downbeat positions (seconds) from separation.  Used by
+    # walking-bass placement, enforce_uniform_tempo, and Phase 6b's importance
+    # scoring (downbeat-proximate notes are harder to drop than offbeat ones).
+    beat_times_arr:     Optional[np.ndarray] = None
+    downbeat_times_arr: Optional[np.ndarray] = None
     try:
         with open(session_dir / "components.json") as _f:
             _comp = json.load(_f)
         _frames = _comp.get("beat_frames", [])
+        _dbf    = _comp.get("downbeat_frames", [])
         _sr     = float(_comp.get("sr", 22050))
         _hop    = float(_comp.get("hop_length", 512))
         if _frames:
             beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
+        if _dbf:
+            downbeat_times_arr = np.array(_dbf, dtype=float) * _hop / _sr
     except Exception:
         pass
 
@@ -197,10 +202,15 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         # together with no relative drift.
         merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
-        # Phase 6a — physical-playability hard constraints: ≤5 notes/hand,
-        # ≤1-octave span/hand, ≤10 notes total.  Stamps each note with a
-        # `hand` field and drops/truncates anything that would violate.
-        merged = enforce_hand_constraints(merged)
+        # Phase 6b — physical-playability constraints + comfort layer.
+        # Hard limits: ≤5 notes/hand, ≤1-octave span/hand, ≤10 total.
+        # Soft costs prefer hand movement over spread, keep phrases on a
+        # single hand, and drop weak-beat notes first when forced.
+        merged = enforce_hand_constraints(
+            merged,
+            beat_times     = beat_times_arr.tolist()     if beat_times_arr     is not None else None,
+            downbeat_times = downbeat_times_arr.tolist() if downbeat_times_arr is not None else None,
+        )
 
         export_notes = merged
 
@@ -218,7 +228,11 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             export_notes = remove_beat_outliers(export_notes, tempo)
             export_notes = snap_to_chord_tones(export_notes, tempo)
             export_notes = enforce_uniform_tempo(export_notes, beat_times_arr, tempo)
-            export_notes = enforce_hand_constraints(export_notes)
+            export_notes = enforce_hand_constraints(
+                export_notes,
+                beat_times     = beat_times_arr.tolist()     if beat_times_arr     is not None else None,
+                downbeat_times = downbeat_times_arr.tolist() if downbeat_times_arr is not None else None,
+            )
             root, scale_name, _ = detect_scale(export_notes)
             scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
         except Exception:

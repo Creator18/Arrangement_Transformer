@@ -16,7 +16,7 @@ import numpy as np
 import librosa
 from sklearn.decomposition import NMF
 from scipy.optimize import linear_sum_assignment
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from pathlib import Path
 
@@ -570,22 +570,18 @@ def post_process_notes(
     return notes
 
 
-# ── Phase 6a: hand-aware playability hard constraints ────────────────────────
+# ── Phase 6b: hand-aware playability with comfort-aware assignment ───────────
 
-# Defaults reflect a normal-sized hand on a typical piano:
+# Hard constraints reflect a normal hand on a piano:
 #   • 5 fingers per hand
-#   • thumb-to-pinky spread ≤ 1 octave (12 semitones, C to C)
+#   • thumb-to-pinky spread ≤ 1 octave (12 semitones)
 #   • 10 fingers total
-# Left hand owns < HAND_SPLIT_PITCH, right hand owns ≥ HAND_SPLIT_PITCH.
-HAND_MAX_NOTES   = 5
-HAND_MAX_SPAN    = 12        # semitones, exclusive of own pitch
-HAND_TOTAL_NOTES = 10
-HAND_SPLIT_PITCH = 60        # MIDI C4 — anything lower is LH by default
-
-
-def _hand_for_pitch(pitch: int) -> str:
-    """Default per-pitch hand assignment (phase 6a — coarse split by pitch)."""
-    return "lh" if pitch < HAND_SPLIT_PITCH else "rh"
+HAND_MAX_NOTES        = 5
+HAND_MAX_SPAN         = 12      # absolute upper bound (semitones)
+HAND_TOTAL_NOTES      = 10
+HAND_SPLIT_PITCH      = 60      # MIDI C4 — coarse fallback when ambiguous
+HAND_COMFORT_SPAN     = 8       # comfort soft-limit — costs ramp up past this
+HAND_PHRASE_WINDOW_S  = 0.25    # within this many seconds → still in the phrase
 
 
 def _span(active: set, pitches: Dict[int, int]) -> int:
@@ -596,73 +592,216 @@ def _span(active: set, pitches: Dict[int, int]) -> int:
     return max(ps) - min(ps)
 
 
-def _drop_for_count(active: set, output: List[Dict]) -> int:
-    """Pick the lowest-velocity note in `active` to drop for a count violation."""
-    return min(active, key=lambda i: int(output[i].get("velocity", 80)))
+def _thumb_pitch(hand: str, active: set, pitches: Dict[int, int]) -> int | None:
+    """
+    The thumb is the *inner* finger of a piano hand: the highest pitch the
+    LEFT hand is playing, or the lowest pitch the RIGHT hand is playing.
+    Returns None when the hand is idle (no active notes).
+    """
+    if not active:
+        return None
+    ps = [pitches[i] for i in active]
+    return max(ps) if hand == "lh" else min(ps)
 
 
-def _drop_for_span(active: set, pitches: Dict[int, int]) -> int:
-    """Pick the outermost note (farthest from median pitch) to drop for span."""
-    ordered = sorted(pitches[i] for i in active)
-    median  = ordered[len(ordered) // 2]
-    return max(active, key=lambda i: abs(pitches[i] - median))
+def _note_importances(
+    notes:           List[Dict],
+    beat_times:      Optional[List[float]],
+    downbeat_times:  Optional[List[float]],
+) -> Dict[int, float]:
+    """
+    Per-note importance score in roughly [0, 3].  Higher = harder to drop.
+
+    Composed from:
+        • velocity / 127            — louder notes are more important
+        • +1.0 within 50 ms of a downbeat  (strong beat → harmonic anchor)
+        • +0.5 within 100 ms of a downbeat
+        • +0.3 within 50 ms of a beat (any kind)
+        • +0.15 within 100 ms of a beat
+
+    Falls back to velocity alone when beat data isn't supplied.
+    """
+    db = list(downbeat_times) if downbeat_times is not None else []
+    bt = list(beat_times)     if beat_times     is not None else []
+    out: Dict[int, float] = {}
+    for i, n in enumerate(notes):
+        score  = float(n.get("velocity", 80)) / 127.0
+        onset  = float(n["onset"])
+        if db:
+            d = min(abs(onset - x) for x in db)
+            if   d < 0.05: score += 1.0
+            elif d < 0.10: score += 0.5
+        if bt:
+            d = min(abs(onset - x) for x in bt)
+            if   d < 0.05: score += 0.3
+            elif d < 0.10: score += 0.15
+        out[i] = score
+    return out
+
+
+def _assignment_cost(
+    pitch:            int,
+    active:           set,
+    pitches:          Dict[int, int],
+    last_thumb:       int | None,
+    t:                float,
+    last_onset:       float,
+    max_count:        int,
+    max_span:         int,
+    comfort_span:     int,
+    phrase_window_s:  float,
+) -> float:
+    """
+    Cost of adding `pitch` to this hand at time `t`.
+
+    Returns:
+        infinity if it would violate a hard constraint (caller should reject);
+        otherwise a finite cost combining
+            • spread cost — quadratic ramp above `comfort_span`
+            • movement cost — distance from previous thumb position when idle
+            • phrase coherence — discount when within phrase_window_s of the
+              hand's most recent onset
+    """
+    if len(active) >= max_count:
+        return float("inf")
+
+    if active:
+        # Hand is anchored by sustained notes — span is fixed by them + new pitch.
+        ps = [pitches[i] for i in active] + [pitch]
+        new_span = max(ps) - min(ps)
+        if new_span > max_span:
+            return float("inf")
+        cost = max(0, new_span - comfort_span) ** 2 * 0.5
+    else:
+        # Hand idle — can move freely; cost grows with distance moved.
+        if last_thumb is None:
+            cost = 0.0
+        else:
+            cost = abs(pitch - last_thumb) * 0.02
+
+    # Phrase coherence: a note immediately following another in this hand
+    # gets a 50 % discount on its assignment cost.
+    if last_onset >= 0 and (t - last_onset) < phrase_window_s:
+        cost *= 0.5
+
+    return cost
+
+
+def _resolve_per_hand(
+    active:        set,
+    pitches:       Dict[int, int],
+    importance:    Dict[int, float],
+    offsets:       Dict[int, float],
+    sorted_notes:  List[Dict],
+    dropped:       set,
+    new_idx:       int,
+    t:             float,
+    max_count:     int,
+    max_span:      int,
+) -> bool:
+    """
+    Drop/truncate notes in `active` until count + span constraints hold.
+    Returns True if the *new* note (new_idx) survived, False if it was dropped.
+    """
+    while True:
+        count_violation = len(active) > max_count
+        span_violation  = _span(active, pitches) > max_span
+        if not count_violation and not span_violation:
+            return True
+
+        # Pick the worst note based on importance, biased by violation type
+        if span_violation:
+            # For a span violation: prefer dropping outermost-and-least-important
+            ordered = sorted(pitches[i] for i in active)
+            median  = ordered[len(ordered) // 2]
+            worst   = max(active, key=lambda i: (abs(pitches[i] - median), -importance[i]))
+        else:
+            # Pure count: drop the least important
+            worst = min(active, key=lambda i: importance[i])
+
+        active.discard(worst)
+        if worst == new_idx:
+            dropped.add(new_idx)
+            return False
+        offsets[worst] = t
+        sorted_notes[worst]["offset"] = round(t, 4)
 
 
 def enforce_hand_constraints(
-    notes:             List[Dict],
-    max_notes_per_hand:int  = HAND_MAX_NOTES,
-    max_span_per_hand: int  = HAND_MAX_SPAN,
-    max_total_notes:   int  = HAND_TOTAL_NOTES,
-    split_pitch:       int  = HAND_SPLIT_PITCH,
+    notes:                  List[Dict],
+    beat_times:             Optional[List[float]] = None,
+    downbeat_times:         Optional[List[float]] = None,
+    max_notes_per_hand:     int = HAND_MAX_NOTES,
+    max_span_per_hand:      int = HAND_MAX_SPAN,
+    max_total_notes:        int = HAND_TOTAL_NOTES,
+    split_pitch:            int = HAND_SPLIT_PITCH,
+    comfort_span:           int = HAND_COMFORT_SPAN,
+    phrase_window_s:        float = HAND_PHRASE_WINDOW_S,
 ) -> List[Dict]:
     """
     Stamp each note with a `hand` field ('lh' / 'rh') and drop/truncate notes
-    that violate the physical hard constraints of two-hand piano playing:
+    that violate the physical hard constraints of two-hand piano playing.
+    The assignment is *comfort-aware*: it minimises hand movement and only
+    spreads when necessary, prefers staying on the same hand within a phrase,
+    and uses beat / downbeat data to drop weak-beat notes first when forced.
 
-        • at most `max_notes_per_hand` notes simultaneously per hand
-        • at most `max_span_per_hand` semitones from low to high per hand
-        • at most `max_total_notes` notes total at any instant
+    Hard constraints (unconditional, drops or truncates if violated):
+        • ≤ max_notes_per_hand notes simultaneously per hand
+        • ≤ max_span_per_hand semitones from low to high per hand
+        • ≤ max_total_notes notes total at any instant
 
-    Resolution policy when a new note onset would cause a violation:
+    Soft optimisation goals (factored into the assignment cost):
+        • prefer hand movement over spread     (`movement` < `spread` cost)
+        • prefer the previously-active hand within `phrase_window_s` of an
+          onset in the same hand                (`phrase coherence`)
+        • free hand naturally helps a stretched hand because its movement cost
+          is small and the other hand's spread cost is large
 
-        • count violation → drop the lowest-velocity note in the affected set
-        • span violation  → drop the outermost note (farthest from median)
-        • total violation → drop the lowest-velocity note across both hands
+    Drop priority (when forced):
+        • span violation → outermost note in the offending hand, tie-broken by
+          lowest importance
+        • count violation → lowest-importance note in the affected set
+        • total violation → lowest-importance note across both hands
 
-    "Drop" means: if the offending note is the *new* onset, it never appears
-    in the output.  If it's an *already-active* note, its offset is truncated
-    to the current time so the existing note simply ends early.  This keeps
-    the rest of that note's playback intact and doesn't introduce gaps.
+    "Importance" = velocity + bonus for proximity to a downbeat (strong harmonic
+    anchor) + smaller bonus for proximity to any beat.  Downbeat / beat times
+    can be left None — then importance reduces to velocity alone.
 
-    Phase 6a — hard constraints only, no comfort optimisation.  The pitch
-    split at C4 is a coarse default; phase 6b will replace this with a
-    movement-aware assignment that tracks each hand's thumb position over time.
+    "Drop" means: if the offending note is the new onset, it never appears in
+    the output.  If it's an already-active note, its offset is truncated to
+    the current time — the note ends early but cleanly, no gap or glitch.
+
+    Phase 6b — adds the comfort layer over 6a's hard constraints.  Phase 6c
+    will add cross-hand overlap detection and merging; phase 6d will model the
+    sustain pedal so per-hand finger budgets relax on sustained content.
     """
     if not notes:
         return notes
 
-    # Stable order: by onset, then pitch.  We mutate a deepcopy so the caller's
-    # list (and any other reference) is untouched.
     sorted_notes = sorted(
         ({**n} for n in notes),
         key=lambda n: (float(n["onset"]), int(n["pitch"])),
     )
-    pitches  = {i: int(n["pitch"])               for i, n in enumerate(sorted_notes)}
-    offsets  = {i: float(n.get("offset",
-                              float(n["onset"]) + 0.25)) for i, n in enumerate(sorted_notes)}
+    pitches  = {i: int(n["pitch"])                                    for i, n in enumerate(sorted_notes)}
+    offsets  = {i: float(n.get("offset", float(n["onset"]) + 0.25))  for i, n in enumerate(sorted_notes)}
+    importance = _note_importances(sorted_notes, beat_times, downbeat_times)
 
-    # Build interleaved event list.  At identical timestamps, an off-event
-    # fires before an on-event so a note that ends exactly when another starts
-    # frees its finger slot first (matches real piano behaviour).
     events: List[tuple] = []
     for i, n in enumerate(sorted_notes):
         events.append((float(n["onset"]), 1, i, "on"))
         events.append((offsets[i],         0, i, "off"))
     events.sort()
 
-    dropped: set = set()    # indices that never appear in output (new-note drops)
+    dropped: set = set()
     lh_active: set = set()
     rh_active: set = set()
+    # Hand state for movement modelling — thumb position is retained even
+    # while the hand is idle so the next onset's movement cost reflects how
+    # far the hand has to actually travel.
+    lh_thumb: int | None = None
+    rh_thumb: int | None = None
+    lh_last_onset = -1e9
+    rh_last_onset = -1e9
 
     for t, _typ_rank, idx, typ in events:
         if idx in dropped:
@@ -671,46 +810,72 @@ def enforce_hand_constraints(
         if typ == "off":
             lh_active.discard(idx)
             rh_active.discard(idx)
+            # Refresh thumb only if the hand still has active notes; otherwise
+            # keep the last-known thumb position as the hand's "rest" anchor.
+            new_thumb = _thumb_pitch("lh", lh_active, pitches)
+            if new_thumb is not None: lh_thumb = new_thumb
+            new_thumb = _thumb_pitch("rh", rh_active, pitches)
+            if new_thumb is not None: rh_thumb = new_thumb
             continue
 
-        # ── on-event ───────────────────────────────────────────────────────
-        # If the note's offset was truncated below the current time by an
-        # earlier drop, it's effectively gone before its onset fired — skip.
         if offsets[idx] <= t:
             continue
 
-        hand   = _hand_for_pitch(pitches[idx])
-        active = lh_active if hand == "lh" else rh_active
+        # ── Cost-based hand assignment ─────────────────────────────────────
+        p = pitches[idx]
+
+        lh_cost = _assignment_cost(
+            p, lh_active, pitches, lh_thumb, t, lh_last_onset,
+            max_notes_per_hand, max_span_per_hand,
+            comfort_span, phrase_window_s,
+        )
+        rh_cost = _assignment_cost(
+            p, rh_active, pitches, rh_thumb, t, rh_last_onset,
+            max_notes_per_hand, max_span_per_hand,
+            comfort_span, phrase_window_s,
+        )
+
+        # Pitch bias: bass register prefers LH, treble prefers RH.  Small but
+        # nonzero so that ambiguous-zone notes don't flip-flop randomly.
+        if p < split_pitch:
+            rh_cost += 3.0
+        else:
+            lh_cost += 3.0
+
+        # Pick the lower-cost hand.  If both are inf, the note can't fit
+        # anywhere without first dropping something else — we tentatively
+        # assign to the better default (pitch-based) and let _resolve_per_hand
+        # handle the drop using importance.
+        if lh_cost == float("inf") and rh_cost == float("inf"):
+            chosen = "lh" if p < split_pitch else "rh"
+        else:
+            chosen = "lh" if lh_cost <= rh_cost else "rh"
+
+        active = lh_active if chosen == "lh" else rh_active
         active.add(idx)
-        sorted_notes[idx]["hand"] = hand
+        sorted_notes[idx]["hand"] = chosen
 
-        # Resolve per-hand violations.  Each iteration removes the worst note
-        # in the offending hand and re-checks; halts when both constraints are
-        # satisfied or the new note has been dropped.
-        while True:
-            count_violation = len(active) > max_notes_per_hand
-            span_violation  = _span(active, pitches) > max_span_per_hand
-            if not count_violation and not span_violation:
-                break
-            worst = (_drop_for_count(active, sorted_notes)
-                     if count_violation
-                     else _drop_for_span(active, pitches))
-            active.discard(worst)
-            if worst == idx:
-                dropped.add(idx)
-                break
-            offsets[worst] = t
-            sorted_notes[worst]["offset"] = round(t, 4)
-
-        if idx in dropped:
+        survived = _resolve_per_hand(
+            active, pitches, importance, offsets, sorted_notes,
+            dropped, idx, t,
+            max_notes_per_hand, max_span_per_hand,
+        )
+        if not survived:
             continue
+
+        # Update hand state on a successful onset
+        if chosen == "lh":
+            lh_last_onset = t
+            lh_thumb = _thumb_pitch("lh", lh_active, pitches)
+        else:
+            rh_last_onset = t
+            rh_thumb = _thumb_pitch("rh", rh_active, pitches)
 
         # Resolve total-polyphony budget across both hands.
         while len(lh_active) + len(rh_active) > max_total_notes:
             both  = lh_active | rh_active
-            worst = _drop_for_count(both, sorted_notes)
-            lh_active.discard(worst)
-            rh_active.discard(worst)
+            worst = min(both, key=lambda i: importance[i])
+            lh_active.discard(worst); rh_active.discard(worst)
             if worst == idx:
                 dropped.add(idx)
                 break
