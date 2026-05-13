@@ -11,6 +11,7 @@ export default defineConfig({
       '/separate': 'http://localhost:8000',
       '/segment': 'http://localhost:8000',
       '/transform': 'http://localhost:8000',
+      '/previews': 'http://localhost:8000',
       '/score': 'http://localhost:8000',
       '/export': 'http://localhost:8000',
       '/cleanup': 'http://localhost:8000',
