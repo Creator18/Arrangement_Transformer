@@ -10,7 +10,8 @@ Processing order (all adjustments are at most a few semitones):
   3. avoid_parallel_motion      — parallel 5ths / octaves between bass & melody
   4. resolve_tendency_tones     — leading-tone and ♭7 obligations in melody
   5. avoid_augmented_second     — aug 2nd in minor keys
-  6. apply_music_theory         — orchestrates 1-5
+  6. snap_strays_to_scale       — final guardrail: nudge stragglers to scale tones
+  7. apply_music_theory         — orchestrates 1-6
 """
 from __future__ import annotations
 
@@ -524,6 +525,256 @@ def enforce_hand_limits(notes: List[Dict]) -> List[Dict]:
 
 # ── orchestrator ──────────────────────────────────────────────────────────────
 
+# ── 6. Final scale guardrail ──────────────────────────────────────────────────
+
+# Scale-degree pitch classes (intervals from tonic).  Covers the modes we
+# care about for pop/classical piano transcriptions.
+_SCALE_PCS = {
+    "major":            (0, 2, 4, 5, 7, 9, 11),
+    "ionian":           (0, 2, 4, 5, 7, 9, 11),
+    "minor":            (0, 2, 3, 5, 7, 8, 10),   # natural minor
+    "natural minor":    (0, 2, 3, 5, 7, 8, 10),
+    "harmonic minor":   (0, 2, 3, 5, 7, 8, 11),
+    "melodic minor":    (0, 2, 3, 5, 7, 9, 11),
+    "dorian":           (0, 2, 3, 5, 7, 9, 10),
+    "phrygian":         (0, 1, 3, 5, 7, 8, 10),
+    "lydian":           (0, 2, 4, 6, 7, 9, 11),
+    "mixolydian":       (0, 2, 4, 5, 7, 9, 10),
+    "locrian":          (0, 1, 3, 5, 6, 8, 10),
+}
+
+
+def _scale_pitch_classes(key_root: int, scale_name: str) -> set:
+    """
+    Return the set of allowed pitch classes for (key_root, scale_name).
+    Falls back to major when scale_name is unrecognised.
+    """
+    intervals = _SCALE_PCS.get((scale_name or "major").lower().strip(),
+                               _SCALE_PCS["major"])
+    return {(key_root + i) % 12 for i in intervals}
+
+
+def _choose_nudge(
+    pitch:        int,
+    candidates:   List[Tuple[int, int, int]],   # list of (|d|, d, cand_pitch)
+    prev_pitch:   Optional[int],
+    next_pitch:   Optional[int],
+    chord_pcs:    Optional[set],
+) -> int:
+    """
+    Pick one nudge from the equal-distance candidates.
+
+    Tiebreak order (only invoked when ≥2 candidates share the minimum |d|):
+      1. Chord-tone preference — if exactly one candidate sits on a current
+         chord tone, prefer it.  Keeps the nudge consistent with the local
+         harmony where possible.
+      2. Melodic contour — if (prev_pitch, next_pitch) define an ascending
+         or descending line through this note, prefer the candidate that
+         preserves that direction.  This is the "fit the original melody"
+         rule: the strayed note is presumed to be an off-by-one transcription
+         error of a passing/neighbour tone, so the line's contour is the
+         best evidence of which direction it was meant to go.
+      3. Lower-Hz neighbour — when there's no contour info (edge of voice,
+         flat trend), fall back to the candidate with the lower MIDI value.
+         In Hz a downward semitone is closer than an upward one (~6 cents),
+         so this is the deterministic frequency-distance answer.
+
+    The first rule that yields a unique winner returns it; otherwise we fall
+    through to the next rule.
+    """
+    # 1. Chord-tone preference
+    if chord_pcs:
+        chord_matches = [c for c in candidates if (c[2] % 12) in chord_pcs]
+        if len(chord_matches) == 1:
+            return chord_matches[0][2]
+        if len(chord_matches) >= 2:
+            candidates = chord_matches    # narrow the field and continue tiebreaking
+
+    # 2. Melodic contour from local neighbours
+    trend = 0
+    if prev_pitch is not None and next_pitch is not None:
+        trend = next_pitch - prev_pitch
+    elif next_pitch is not None:
+        trend = next_pitch - pitch
+    elif prev_pitch is not None:
+        trend = pitch - prev_pitch
+
+    if trend > 0:
+        ups = [c for c in candidates if c[1] > 0]
+        if ups:
+            return ups[0][2]
+    elif trend < 0:
+        downs = [c for c in candidates if c[1] < 0]
+        if downs:
+            return downs[0][2]
+
+    # 3. Lower MIDI value (frequency-closer)
+    candidates_sorted = sorted(candidates, key=lambda c: c[1])
+    return candidates_sorted[0][2]
+
+
+def snap_strays_to_scale(
+    notes:      List[Dict],
+    chord_map:  Dict[int, tuple],
+    measure_dur: float,
+    key_root:   int,
+    scale_name: str,
+    max_nudge:  int = 1,
+) -> List[Dict]:
+    """
+    Final guardrail: any note that's both (a) outside the detected scale AND
+    (b) outside the current measure's chord tones gets nudged to the closest
+    scale tone within `max_nudge` semitones.  Notes that are scale tones,
+    chord tones, or too far from any scale tone to nudge safely are left
+    alone — we don't want to fight legitimate borrowed chords or chromatic
+    passing tones from a confident chord-tone-snap upstream.
+
+    Tiebreak (when ±d both land on scale tones at equal distance):
+        chord-tone preference → melodic contour → lower-Hz neighbour.
+        See _choose_nudge for the full rule order.
+
+    Why max_nudge=1 by default
+    --------------------------
+    The most common straggler is a transcription error of ±1 semitone
+    (pYIN locking onto a strong harmonic, Basic Pitch confusing F/F#).
+    Capping at 1 catches those without warping intentional accidentals or
+    blues notes (e.g. ♭3 over a major chord), which are typically further
+    from a scale tone than that.
+
+    Note ordering
+    -------------
+    Internally we sort by onset so the melodic-contour tiebreak can look
+    at prev / next notes in the same voice.  The output list is in onset
+    order; callers (apply_music_theory) re-sort by (onset, pitch) anyway.
+    """
+    if not notes:
+        return notes
+
+    scale_pcs = _scale_pitch_classes(key_root, scale_name)
+    if not scale_pcs:
+        return notes
+
+    # Sort by onset so neighbour lookups for the contour tiebreak are correct
+    sorted_notes = sorted(notes, key=lambda n: float(n["onset"]))
+
+    out: List[Dict] = []
+    for i, n in enumerate(sorted_notes):
+        pitch = int(n["pitch"])
+        pc    = pitch % 12
+
+        if pc in scale_pcs:
+            out.append(n); continue
+
+        # Check chord-tone exemption for this measure
+        t  = float(n["onset"])
+        mi = int(t / measure_dur) if measure_dur > 0 else 0
+        chord_info = (chord_map.get(mi)
+                      or chord_map.get(mi - 1)
+                      or chord_map.get(mi + 1))
+        chord_pcs: Optional[set] = None
+        if chord_info is not None:
+            _, chord_pcs = chord_info
+            if pc in chord_pcs:
+                # Genuine chord-tone outside the scale (borrowed chord etc.) — keep it
+                out.append(n); continue
+
+        # Collect ALL candidates at the minimum |d|.  d=0 is excluded since
+        # the in-scale early-return above already handled that case.
+        all_cands: List[Tuple[int, int, int]] = []   # (|d|, d, cand_pitch)
+        for d in range(-max_nudge, max_nudge + 1):
+            if d == 0:
+                continue
+            cand = pitch + d
+            if 0 <= cand <= 127 and (cand % 12) in scale_pcs:
+                all_cands.append((abs(d), d, cand))
+
+        if not all_cands:
+            out.append(n); continue
+
+        min_d = min(c[0] for c in all_cands)
+        tied  = [c for c in all_cands if c[0] == min_d]
+
+        prev_pitch = int(sorted_notes[i - 1]["pitch"]) if i > 0 else None
+        next_pitch = (int(sorted_notes[i + 1]["pitch"])
+                      if i + 1 < len(sorted_notes) else None)
+
+        if len(tied) == 1:
+            best_p = tied[0][2]
+        else:
+            best_p = _choose_nudge(pitch, tied, prev_pitch, next_pitch, chord_pcs)
+
+        if best_p == pitch:
+            out.append(n); continue
+
+        nudged = {**n, "pitch": int(best_p),
+                  "pitch_name": librosa.midi_to_note(int(best_p))}
+        out.append(nudged)
+
+    return out
+
+
+def apply_chord_and_scale_snap(
+    notes:      List[Dict],
+    chord_map:  Dict[int, tuple],
+    tempo:      float,
+    key_root:   int,
+    scale_name: str,
+    bass_lo:    int = BASS_LO_DEFAULT,
+    bass_hi:    int = BASS_HI_DEFAULT,
+) -> List[Dict]:
+    """
+    Cleanup pass on the ORIGINAL transcription view (pre-transform).
+
+    Applies:
+      - snap_strays_to_scale       (scale-floor on everything; the chord-tone
+                                    exemption *inside* this pass still keeps
+                                    legitimate borrowed-chord notes from
+                                    being snapped)
+      - enforce_hand_limits        (≤5 per hand, ≤15-semitone span,
+                                    ≤10 total — drops outlier notes that
+                                    couldn't be played by a human)
+
+    Deliberately skips:
+      - smooth_bass_voice_leading — chord-tone snapping was too aggressive
+        on the original bass (it re-pitches every bass note to root/3rd/5th
+        of the per-measure chord, which on the 88-key transcription
+        flattens real bass-line motion).  The scale-snap alone catches
+        off-by-one transcription errors without rewriting the line.
+      - prepare_cadences, avoid_parallel_motion, resolve_tendency_tones,
+        avoid_augmented_second — stylistic / re-voicing edits, appropriate
+        only for the transformed 5-octave arrangement.
+
+    Note `chord_map` is still accepted (and used inside snap_strays_to_scale
+    for the borrowed-chord exemption) — only the standalone bass chord-tone
+    snap is removed.
+
+    enforce_hand_limits is destructive (it can drop notes), so the ORIGINAL
+    list shrinks if the raw transcription had simultaneity outliers (e.g.
+    Basic Pitch false positives that produced 6+ note clusters).
+
+    Idempotent in pitch: a second pass leaves pitches unchanged.  Returns a
+    new sorted-by-(onset, pitch) list; input is not mutated.
+
+    Function name kept as `apply_chord_and_scale_snap` for caller
+    compatibility — "chord" here refers to the chord-tone *exemption*
+    inside snap_strays_to_scale rather than the dropped bass chord snap.
+    """
+    if not notes or tempo <= 0:
+        return notes
+
+    measure_dur = (60.0 / tempo) * 4
+    bass, upper = _split_voices(notes)
+
+    # 1 — Scale-floor on both voices (with chord-tone exemption inside)
+    bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
+    upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
+
+    # 2 — Hand-rule pruning (per the user's explicit request)
+    merged = sorted(bass + upper,
+                    key=lambda n: (float(n["onset"]), int(n["pitch"])))
+    return enforce_hand_limits(merged)
+
+
 def apply_music_theory(
     notes:      List[Dict],
     chord_map:  Dict[int, tuple],
@@ -575,6 +826,12 @@ def apply_music_theory(
     # 5 — Augmented 2nd avoidance (minor keys only)
     upper = avoid_augmented_second(upper, key_root, scale_name)
 
-    # 6 — Physical hand limits (≤ 5 per hand, ≤ 15-semitone span, ≤ 10 total)
+    # 6 — Scale-floor guardrail (catches stragglers that escape steps 1–5,
+    #     typically bass notes in measures where chord_map.get(mi) is None
+    #     and a transcription-noise pitch slipped through unchanged)
+    bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
+    upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
+
+    # 7 — Physical hand limits (≤ 5 per hand, ≤ 15-semitone span, ≤ 10 total)
     merged = sorted(bass + upper, key=lambda n: (float(n["onset"]), int(n["pitch"])))
     return enforce_hand_limits(merged)
