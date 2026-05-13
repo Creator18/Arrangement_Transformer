@@ -7,11 +7,26 @@ import FidelityBadge from '../components/FidelityBadge'
 import CdefView from '../components/CdefView'
 import PianoRollPlayer from '../components/PianoRollPlayer'
 import SheetMusicView from '../components/SheetMusicView'
-import { getCdefText, getMidiUrl, getCdefUrl, getMusicXmlUrl, getPartAudioUrl, getOriginalAudioUrl, getTranscriptionAudioUrl, getTransformedAudioUrl } from '../utils/api'
+import { getCdefText, getMidiUrl, getCdefUrl, getMusicXmlUrl, getPartAudioUrl, getLayerAudioUrl, getOriginalAudioUrl, getTranscriptionAudioUrl, getTransformedAudioUrl, getPatternClusters, getPatternClusterAudioUrl } from '../utils/api'
 import AudioPlayer from '../components/AudioPlayer'
 import AudioBars from '../components/AudioBars'
 
-const TABS = ['Piano Roll', 'Sheet Music', 'CDEF']
+const TABS = ['Piano Roll', 'Layers', 'Sheet Music', 'CDEF']
+
+// Audio-level / classifier-level layers we expose as their own piano roll for
+// reviewing what the pipeline actually captured per stem.  Order matches the
+// natural register stack low→high.
+// Four base layers from REPET-SIM-on-both-bands + pYIN-with-mask.
+// 'bass' is shown as a fallback when REPET hasn't run on bass (no mask).
+const LAYER_VIEWS = [
+  { key: 'bass_pattern', label: 'Bass Pattern', desc: 'pYIN notes where REPET bass mask ≥ 0.5 (recurring bass figure)', color: '#1d4ed8', keyboardStart: 24, octaves: 4, hasClusters: true  },
+  { key: 'bass_melody',  label: 'Bass Melody',  desc: 'pYIN notes where REPET bass mask < 0.5 (free bass line)',         color: '#60a5fa', keyboardStart: 24, octaves: 4, hasClusters: false },
+  { key: 'pattern',      label: 'Pattern',      desc: 'Basic Pitch on pattern.wav (recurring upper-register figures)',   color: '#a78bfa', keyboardStart: 36, octaves: 5, hasClusters: true  },
+  { key: 'melody',       label: 'Melody',       desc: 'Basic Pitch on melody.wav (free/lead voice)',                     color: '#f87171', keyboardStart: 36, octaves: 5, hasClusters: false },
+]
+
+// Cluster row palette — variations of the parent layer color
+const CLUSTER_PALETTE = ['#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#5b21b6']
 
 // ── Static fallback parts (used when API returns no dynamic layers) ────────────
 const STATIC_PARTS = [
@@ -175,6 +190,7 @@ export default function ResultsPage() {
   const [cdef,             setCdef]             = useState('')
   const [loading,          setLoading]          = useState(true)
   const [activePart,       setActivePart]       = useState('all')
+  const [patternClusters,  setPatternClusters]  = useState({})
 
   useEffect(() => {
     async function load() {
@@ -191,6 +207,13 @@ export default function ResultsPage() {
         setSegmentData(segmentRes)
         const cdefText = await getCdefText(sessionId)
         setCdef(cdefText)
+        try {
+          const clusters = await getPatternClusters(sessionId)
+          setPatternClusters(clusters || {})
+        } catch (e) {
+          // Endpoint is best-effort — empty {} just means no clusters to show
+          setPatternClusters({})
+        }
       } catch (e) {
         console.error('Failed to load results', e)
       } finally {
@@ -413,11 +436,104 @@ export default function ResultsPage() {
                   </motion.div>
                 )}
                 {tab === 1 && (
+                  <motion.div
+                    key="layers"
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="space-y-6"
+                  >
+                    <p style={{
+                      fontSize: 11,
+                      color: 'rgba(255,255,255,0.5)',
+                      lineHeight: 1.5,
+                    }}>
+                      Each layer below is the slice of the 88-key transcription routed
+                      to it by the pipeline.  REPET-SIM runs independently on bass.wav
+                      and upper.wav, producing four layers: <em>bass pattern</em>,
+                      <em> bass melody</em>, <em>pattern</em>, <em>melody</em>.  Pattern
+                      layers are further broken into <em>Pattern 1…N</em> by agglomerative
+                      clustering on chroma + onset-shape per bar — each is a distinct
+                      recurring figure detected by the separator.
+                    </p>
+                    {LAYER_VIEWS.map((lv, i) => {
+                      const layerNotes = originalNotes.filter(n => n.layer === lv.key)
+                      const clusterMeta = lv.hasClusters ? (patternClusters?.[lv.key] ?? null) : null
+                      const nClusters = clusterMeta?.n_clusters ?? 0
+                      return (
+                        <div key={lv.key}>
+                          {i > 0 && (
+                            <div style={{ height: 1, background: 'rgba(255,255,255,0.04)', marginBottom: 16 }} />
+                          )}
+                          <div className="flex items-baseline gap-3 mb-1.5 px-1">
+                            <span style={{
+                              fontSize: 11, fontWeight: 700, letterSpacing: '0.14em',
+                              color: lv.color,
+                            }}>
+                              {lv.label.toUpperCase()}
+                            </span>
+                            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.30)' }}>
+                              {layerNotes.length} note{layerNotes.length === 1 ? '' : 's'}
+                            </span>
+                            {nClusters > 0 && (
+                              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.30)' }}>
+                                · {nClusters} cluster{nClusters === 1 ? '' : 's'}
+                                {clusterMeta?.granularity === 'half-bar' ? ' (½-bar)' : ''}
+                              </span>
+                            )}
+                            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.20)', marginLeft: 'auto' }}>
+                              {lv.desc}
+                            </span>
+                          </div>
+                          <PianoRollPlayer
+                            notes={layerNotes}
+                            getPartUrl={() => getLayerAudioUrl(sessionId, lv.key)}
+                            label={lv.label}
+                            tempo={segmentData?.tempo_bpm ?? 120}
+                            keyboardStart={lv.keyboardStart}
+                            keyboardOctaves={lv.octaves}
+                            defaultPart="all"
+                          />
+                          {/* Per-cluster sub-rows: Pattern 1, Pattern 2, … */}
+                          {nClusters > 1 && Array.from({ length: nClusters }).map((_, ci) => {
+                            const clusterNotes = layerNotes.filter(n => Number(n.pattern_idx) === ci)
+                            const barCount = clusterMeta?.cluster_bar_counts?.[String(ci)] ?? 0
+                            const accent = CLUSTER_PALETTE[ci % CLUSTER_PALETTE.length]
+                            return (
+                              <div key={`${lv.key}-${ci}`} style={{ marginTop: 12, paddingLeft: 16, borderLeft: `2px solid ${accent}40` }}>
+                                <div className="flex items-baseline gap-3 mb-1.5 px-1">
+                                  <span style={{
+                                    fontSize: 10, fontWeight: 700, letterSpacing: '0.14em',
+                                    color: accent,
+                                  }}>
+                                    {lv.label.toUpperCase()} {ci + 1}
+                                  </span>
+                                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.30)' }}>
+                                    {clusterNotes.length} note{clusterNotes.length === 1 ? '' : 's'} · {barCount} bar{barCount === 1 ? '' : 's'}
+                                  </span>
+                                </div>
+                                <PianoRollPlayer
+                                  notes={clusterNotes}
+                                  getPartUrl={() => getPatternClusterAudioUrl(sessionId, lv.key, ci)}
+                                  label={`${lv.label} ${ci + 1}`}
+                                  tempo={segmentData?.tempo_bpm ?? 120}
+                                  keyboardStart={lv.keyboardStart}
+                                  keyboardOctaves={lv.octaves}
+                                  defaultPart="all"
+                                />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                  </motion.div>
+                )}
+                {tab === 2 && (
                   <motion.div key="sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
                     <SheetMusicView xmlUrl={getMusicXmlUrl(sessionId)} />
                   </motion.div>
                 )}
-                {tab === 2 && (
+                {tab === 3 && (
                   <motion.div key="cdef" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
                     <CdefView cdef={cdef} />
                   </motion.div>

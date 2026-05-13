@@ -7,7 +7,7 @@ from typing import List, Dict, Any
 
 from app.services.session import get_session_dir, cleanup_session
 from app.services.cdef_format import notes_to_cdef
-from app.services.sf2_sampler import render_notes_sf2 as render_notes_to_audio
+from app.services.sampler import render_notes as render_notes_to_audio
 
 router = APIRouter()
 
@@ -79,6 +79,145 @@ async def export_transformed_audio(session_id: str):
 
     return FileResponse(str(audio_path), media_type="audio/wav",
                         filename="arrangement_preview.wav")
+
+
+# ── per-layer audio (bass / pattern / melody, by `layer` field) ──────────────
+# Different from /audio/{arrangement}/{part} which filters by pitch range.
+# This endpoint filters by the per-note `layer` label produced by pYIN
+# (bass) and the pattern_classifier (pattern / melody).  When a real
+# audio-level stem exists on disk (bass.wav, pattern.wav, melody.wav) we
+# serve that directly; otherwise the per-layer notes are synthesised via
+# the SF2 sampler.  Used by ResultsPage's "Layers" review tab.
+
+_LAYER_NAMES = ("bass", "bass_pattern", "bass_melody",
+                "pattern", "melody")
+
+# Which layers correspond to which REPET-SIM cluster-bearing stems.  Used
+# by the cluster endpoints to find the right entry in pattern_clusters.json.
+_CLUSTER_LAYERS = {
+    "pattern":      "pattern",
+    "bass_pattern": "bass_pattern",
+}
+
+
+@router.get("/export/{session_id}/audio/layer/{layer}")
+async def export_layer_audio(session_id: str, layer: str):
+    if layer not in _LAYER_NAMES:
+        raise HTTPException(400, f"layer must be one of {list(_LAYER_NAMES)}")
+
+    session_dir = get_session_dir(session_id)
+
+    # 1. Prefer real audio-level stem when present (REPET path)
+    components_dir = session_dir / "components"
+    stem_path = components_dir / f"{layer}.wav"
+    if stem_path.exists():
+        return FileResponse(str(stem_path), media_type="audio/wav",
+                            filename=f"{layer}.wav")
+
+    # 2. Fall back: synthesize from layer-labeled notes
+    transcription_file = session_dir / "transcription.json"
+    if not transcription_file.exists():
+        raise HTTPException(404, "Transcription not found.")
+
+    with open(transcription_file) as f:
+        transcription = json.load(f)
+
+    layer_notes = [n for n in transcription.get("notes", [])
+                   if n.get("layer") == layer]
+
+    cache_name = f"layer_{layer}.wav"
+    audio_path = session_dir / cache_name
+
+    if not audio_path.exists():
+        sr = 22050
+        audio = render_notes_to_audio(layer_notes, sr=sr)
+        sf.write(str(audio_path), audio, sr, subtype="PCM_16")
+
+    return FileResponse(str(audio_path), media_type="audio/wav",
+                        filename=cache_name)
+
+
+# ── pattern clusters (Pattern 1 … N per pattern stem) ─────────────────────────
+
+@router.get("/export/{session_id}/pattern-clusters")
+async def get_pattern_clusters(session_id: str):
+    """
+    Return per-stem cluster metadata so the UI knows how many Pattern-N
+    rows to render under each pattern layer.
+
+    Response shape:
+      {
+        "pattern":      {"n_clusters": 3, "granularity": "bar",
+                         "cluster_bar_counts": {"0": 12, "1": 4, "2": 2}},
+        "bass_pattern": {"n_clusters": 2, ...},
+      }
+    """
+    session_dir = get_session_dir(session_id)
+    clusters_file = session_dir / "pattern_clusters.json"
+    if not clusters_file.exists():
+        return {}
+    with open(clusters_file) as f:
+        data = json.load(f)
+    # Strip audio_paths (server-side absolute paths shouldn't leak to clients)
+    out = {}
+    for stem, meta in data.items():
+        out[stem] = {
+            "n_clusters":         int(meta.get("n_clusters", 0)),
+            "granularity":        meta.get("granularity", "bar"),
+            "cluster_bar_counts": meta.get("cluster_bar_counts", {}),
+        }
+    return out
+
+
+@router.get("/export/{session_id}/audio/pattern-cluster/{layer}/{cluster_idx}")
+async def export_pattern_cluster_audio(session_id: str, layer: str, cluster_idx: int):
+    """
+    Serve the audio for one cluster of one pattern stem.
+
+    Order of preference:
+      1. The concatenated real-audio slice written by separation.py
+         (`components/<layer>_cluster_<i>.wav`).  Already on disk after
+         separation — zero synthesis cost, instant response.
+      2. SF2/SFZ resynth from notes with matching pattern_idx.  Used only
+         when separation didn't produce the slice (older sessions, or a
+         cluster with too few bars).
+
+    The real-audio slice IS what REPET-SIM actually extracted for that
+    cluster, which is the most honest signal for review-tab purposes
+    anyway.  Synthesis adds latency without adding fidelity.
+    """
+    if layer not in _CLUSTER_LAYERS:
+        raise HTTPException(400, f"layer must be one of {list(_CLUSTER_LAYERS)}")
+
+    session_dir = get_session_dir(session_id)
+
+    # 1. Prefer the pre-written real-audio slice (instant — no synthesis)
+    components_dir = session_dir / "components"
+    wav_path = components_dir / f"{layer}_cluster_{cluster_idx}.wav"
+    if wav_path.exists():
+        return FileResponse(str(wav_path), media_type="audio/wav",
+                            filename=wav_path.name)
+
+    # 2. Fall back to SF2/SFZ resynth from layer + pattern_idx filtered notes
+    transcription_file = session_dir / "transcription.json"
+    if transcription_file.exists():
+        with open(transcription_file) as f:
+            transcription = json.load(f)
+        notes = [
+            n for n in transcription.get("notes", [])
+            if n.get("layer") == layer and int(n.get("pattern_idx", -1)) == cluster_idx
+        ]
+        if len(notes) >= 2:
+            cache_name = f"cluster_{layer}_{cluster_idx}.wav"
+            audio_path = session_dir / cache_name
+            if not audio_path.exists():
+                sr = 22050
+                audio = render_notes_to_audio(notes, sr=sr)
+                sf.write(str(audio_path), audio, sr, subtype="PCM_16")
+            return FileResponse(str(audio_path), media_type="audio/wav",
+                                filename=cache_name)
+
+    raise HTTPException(404, f"No audio for cluster {cluster_idx} of {layer}.")
 
 
 # ── per-part audio (bass / melody / voice / all) ─────────────────────────────

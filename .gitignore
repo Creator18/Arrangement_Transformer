@@ -34,6 +34,11 @@ data/maestro-v3.0.0/
 # Soundfont (large binary, distributed separately)
 *.sf2
 
+# SFZ sample libraries (large, downloaded locally, not vendored)
+SalamanderGrandPiano-master/
+*.sfz
+*.flac
+
 # Claude internal
 .claude/
 

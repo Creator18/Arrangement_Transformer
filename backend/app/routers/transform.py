@@ -277,4 +277,31 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     with open(session_dir / "transformed.json", "w") as f:
         json.dump(result, f)
 
+    # ── pre-render the two main previews so the user doesn't wait on
+    #    first-click of the Listen player.  Salamander render of a 5-min
+    #    arrangement is ~1–2 min — done synchronously inside the /transform
+    #    request because /transform is already a long-running call the user
+    #    is waiting on, and rendering here means by the time the Results
+    #    page mounts the WAVs are already cached on disk.
+    #
+    #    Failures here are non-fatal: the transform result itself is
+    #    already persisted to transformed.json, and a missing preview
+    #    will just be re-rendered lazily on first play.
+    try:
+        import soundfile as sf
+        from app.services.sampler import render_notes as _render
+        sr = 22050
+        transcription_file = session_dir / "transcription.json"
+        if transcription_file.exists():
+            with open(transcription_file) as f:
+                transcription = json.load(f)
+            audio = _render(transcription.get("notes", []), sr=sr)
+            sf.write(str(session_dir / "transcription_preview.wav"),
+                     audio, sr, subtype="PCM_16")
+        audio = _render(export_notes, sr=sr)
+        sf.write(str(session_dir / "arrangement_preview.wav"),
+                 audio, sr, subtype="PCM_16")
+    except Exception as e:
+        print(f"[transform] preview pre-render skipped: {e}")
+
     return result

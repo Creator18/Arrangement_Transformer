@@ -83,6 +83,35 @@ export function getPartAudioUrl(sessionId, arrangement, part) {
   return `${BASE}/export/${sessionId}/audio/${arrangement}/${part}`
 }
 
+/**
+ * Per-layer audio URL.  Serves the real audio stem when present on disk;
+ * otherwise the backend synthesizes the layer's notes via the SF2 sampler.
+ * @param {string} sessionId
+ * @param {'bass'|'bass_pattern'|'bass_melody'|'pattern'|'melody'} layer
+ */
+export function getLayerAudioUrl(sessionId, layer) {
+  return `${BASE}/export/${sessionId}/audio/layer/${layer}`
+}
+
+/**
+ * Fetch per-stem cluster metadata (how many Pattern-N rows to render under
+ * each pattern layer).  Returns {} if separation hasn't produced clusters.
+ */
+export async function getPatternClusters(sessionId) {
+  const { data } = await api.get(`/export/${sessionId}/pattern-clusters`)
+  return data
+}
+
+/**
+ * Audio URL for one cluster of one pattern stem.
+ * @param {string} sessionId
+ * @param {'pattern'|'bass_pattern'} layer
+ * @param {number} clusterIdx
+ */
+export function getPatternClusterAudioUrl(sessionId, layer, clusterIdx) {
+  return `${BASE}/export/${sessionId}/audio/pattern-cluster/${layer}/${clusterIdx}`
+}
+
 export function getCdefUrl(sessionId) {
   return `${BASE}/export/${sessionId}/cdef`
 }

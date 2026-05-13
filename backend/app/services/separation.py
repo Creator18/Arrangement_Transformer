@@ -282,7 +282,48 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     # confusing onset detection.
     beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(harmonic, SR)
 
-    # ── 6. Write outputs ──────────────────────────────────────────────────
+    # ── 6. REPET-SIM split on BOTH bands ──────────────────────────────────
+    # Upper band: pattern.wav + melody.wav (transcribed independently by
+    #   Basic Pitch in transcription.py).
+    # Bass  band: bass_pattern.wav + bass_melody.wav  (audio outputs for
+    #   the Layers tab) plus a per-frame pattern_strength array that
+    #   transcription.py uses to relabel pYIN notes as bass_pattern /
+    #   bass_melody — pYIN stays the bass transcriber (more reliable than
+    #   running Basic Pitch on bass), REPET only decides the labels.
+    #
+    # Running REPET independently on each band (rather than on the full
+    # mix) keeps the similarity matrix focused on the right register and
+    # avoids bass energy dominating the upper-band split.  See ROADMAP
+    # notes from phase 5c on why full-mix REPET failed.
+    from app.services.pattern_separation import repet_sim_separate
+
+    def _safe_norm(a):
+        peak = float(np.abs(a).max())
+        return (a / peak * 0.9).astype(np.float32) if peak > 1e-6 else a.astype(np.float32)
+
+    try:
+        y_pattern, y_melody = repet_sim_separate(y_upper, SR)
+        y_pattern = _safe_norm(y_pattern)
+        y_melody  = _safe_norm(y_melody)
+        upper_repet_ok = True
+    except Exception as e:
+        print(f"[separation] REPET-SIM (upper) failed ({e}); skipping pattern/melody split")
+        y_pattern, y_melody = None, None
+        upper_repet_ok = False
+
+    try:
+        y_bass_pattern, y_bass_melody, bass_pat_strength, bass_frame_times = \
+            repet_sim_separate(y_bass, SR, return_mask=True)
+        y_bass_pattern = _safe_norm(y_bass_pattern)
+        y_bass_melody  = _safe_norm(y_bass_melody)
+        bass_repet_ok = True
+    except Exception as e:
+        print(f"[separation] REPET-SIM (bass) failed ({e}); skipping bass-layer split")
+        y_bass_pattern, y_bass_melody = None, None
+        bass_pat_strength, bass_frame_times = None, None
+        bass_repet_ok = False
+
+    # ── 7. Write outputs ──────────────────────────────────────────────────
     comp_dir = session_dir / "components"
     comp_dir.mkdir(exist_ok=True)
 
@@ -291,8 +332,77 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     sf.write(str(bass_path),  y_bass,  SR, subtype="PCM_16")
     sf.write(str(upper_path), y_upper, SR, subtype="PCM_16")
 
+    groups: Dict[str, Any] = {
+        "bass":  {"path": str(bass_path),  "indices": []},
+        "upper": {"path": str(upper_path), "indices": []},
+    }
+
+    if upper_repet_ok:
+        pattern_path = comp_dir / "pattern.wav"
+        melody_path  = comp_dir / "melody.wav"
+        sf.write(str(pattern_path), y_pattern, SR, subtype="PCM_16")
+        sf.write(str(melody_path),  y_melody,  SR, subtype="PCM_16")
+        groups["pattern"] = {"path": str(pattern_path), "indices": []}
+        groups["melody"]  = {"path": str(melody_path),  "indices": []}
+
+    if bass_repet_ok:
+        bass_pattern_path = comp_dir / "bass_pattern.wav"
+        bass_melody_path  = comp_dir / "bass_melody.wav"
+        sf.write(str(bass_pattern_path), y_bass_pattern, SR, subtype="PCM_16")
+        sf.write(str(bass_melody_path),  y_bass_melody,  SR, subtype="PCM_16")
+        groups["bass_pattern"] = {"path": str(bass_pattern_path), "indices": []}
+        groups["bass_melody"]  = {"path": str(bass_melody_path),  "indices": []}
+
+        # Persist the bass pattern_strength array so transcription.py can label
+        # pYIN notes without re-running REPET.  Compact .npz alongside the WAVs.
+        np.savez(
+            comp_dir / "bass_pattern_mask.npz",
+            strength=bass_pat_strength.astype(np.float32),
+            times=bass_frame_times.astype(np.float32),
+        )
+
+    # ── 7b. Cluster each pattern stem into Pattern 1 … N ──────────────────
+    # Bar-windowed agglomerative clustering on chroma + onset-shape features.
+    # Lets the Layers UI present each recurring figure as its own piano roll
+    # for review.  See pattern_clustering.py for the algorithm.
+    from app.services.pattern_clustering import cluster_pattern_stem, write_cluster_audio
+
+    downbeat_times = (np.array(downbeat_frames, dtype=float) * HOP / SR) \
+        if downbeat_frames else np.array([])
+    cluster_results: Dict[str, Any] = {}
+
+    for stem_name, y_stem in (
+        ("pattern",      y_pattern      if upper_repet_ok else None),
+        ("bass_pattern", y_bass_pattern if bass_repet_ok else None),
+    ):
+        if y_stem is None or len(downbeat_times) < 2:
+            cluster_results[stem_name] = {"n_clusters": 0, "bars": [],
+                                          "granularity": "bar",
+                                          "cluster_bar_counts": {}}
+            continue
+        try:
+            cmeta = cluster_pattern_stem(y_stem, SR, downbeat_times)
+            paths = write_cluster_audio(y_stem, SR, cmeta, comp_dir, stem_name=stem_name)
+            cmeta["audio_paths"] = {str(k): str(v) for k, v in paths.items()}
+            cluster_results[stem_name] = cmeta
+            print(f"[separation] {stem_name}: {cmeta['n_clusters']} clusters "
+                  f"({cmeta['granularity']} granularity, "
+                  f"{len(cmeta['bars'])} windows)")
+        except Exception as e:
+            print(f"[separation] clustering failed for {stem_name}: {e}")
+            cluster_results[stem_name] = {"n_clusters": 0, "bars": [],
+                                          "granularity": "bar",
+                                          "cluster_bar_counts": {}}
+
+    with open(session_dir / "pattern_clusters.json", "w") as f:
+        json.dump(cluster_results, f)
+
+    method_parts = ["demucs", "madmom"]
+    if upper_repet_ok or bass_repet_ok:
+        method_parts.append("repet-sim")
+
     metadata: Dict[str, Any] = {
-        "method":           "demucs+madmom",
+        "method":           "+".join(method_parts),
         "tempo_bpm":        round(tempo, 1),
         "hop_length":       HOP,
         "sr":               SR,
@@ -300,13 +410,11 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
         "downbeat_frames":  [int(f) for f in downbeat_frames],
         "beats_per_bar":    int(beats_per_bar),
         "band_split_hz":    BAND_SPLIT_HZ,
-        "groups": {
-            "bass":  {"path": str(bass_path),  "indices": []},  # kept for back-compat
-            "upper": {"path": str(upper_path), "indices": []},
-        },
+        "groups":           groups,
+        "has_bass_repet":   bool(bass_repet_ok),
+        "has_upper_repet":  bool(upper_repet_ok),
         # Legacy fields kept as empty/zero so old transcription.py code that
-        # peeks at them doesn't KeyError.  Phase-3 transcription.py update
-        # removes those references entirely.
+        # peeks at them doesn't KeyError.
         "n_components":   0,
         "components":     [],
     }

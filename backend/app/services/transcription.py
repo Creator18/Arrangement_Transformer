@@ -75,6 +75,8 @@ def _pyin_to_notes(
             'onset':      round(onset, 4),
             'offset':     round(offset, 4),
             'velocity':   80,
+            # Provisional layer — relabelled to bass_pattern / bass_melody
+            # downstream using the REPET-SIM mask when one is available.
             'layer':      'bass',
         }
 
@@ -391,6 +393,79 @@ def _beat_adaptive_quantize(
     return result
 
 
+# ── layer relabelling helpers ─────────────────────────────────────────────────
+
+def _relabel_bass_via_mask(
+    notes:    List[Dict],
+    mask_npz: Path,
+    threshold: float = 0.5,
+) -> List[Dict]:
+    """
+    Use the REPET-SIM bass pattern_strength array to relabel each pYIN note
+    as either 'bass_pattern' (recurring figure) or 'bass_melody' (free line).
+
+    For each note, average the pattern_strength across the frames inside its
+    [onset, offset) window.  If mean >= threshold → bass_pattern, else
+    bass_melody.  Notes outside the mask's coverage (or with no overlapping
+    frames) default to bass_melody.
+    """
+    try:
+        npz = np.load(str(mask_npz))
+        strength = np.asarray(npz["strength"], dtype=np.float32)
+        times    = np.asarray(npz["times"],    dtype=np.float32)
+    except Exception as e:
+        print(f"[transcription] bass mask load failed ({e}); keeping layer='bass'")
+        return notes
+
+    if strength.size == 0 or times.size == 0:
+        return notes
+
+    out: List[Dict] = []
+    for n in notes:
+        onset  = float(n.get('onset',  0.0))
+        offset = float(n.get('offset', onset + 0.05))
+        i0 = int(np.searchsorted(times, onset,  side='left'))
+        i1 = int(np.searchsorted(times, offset, side='right'))
+        i0 = max(0, min(i0, strength.size - 1))
+        i1 = max(i0 + 1, min(i1, strength.size))
+        slab = strength[i0:i1]
+        m = float(slab.mean()) if slab.size else 0.0
+        relabelled = dict(n)
+        relabelled['layer'] = 'bass_pattern' if m >= threshold else 'bass_melody'
+        relabelled['_pattern_strength'] = round(m, 3)
+        out.append(relabelled)
+    return out
+
+
+def _stamp_pattern_idx(
+    notes:         List[Dict],
+    bars:          List[Dict],
+    layer_filter:  str,
+) -> List[Dict]:
+    """
+    Annotate each note in `layer_filter` with `pattern_idx` = the cluster
+    index of the bar it falls in (matched by onset time).  Notes in other
+    layers are passed through untouched.
+    """
+    if not bars:
+        return notes
+    # Pre-sort bars by start time for binary search
+    starts = np.array([float(b['start']) for b in bars], dtype=np.float32)
+    out: List[Dict] = []
+    for n in notes:
+        if n.get('layer') != layer_filter:
+            out.append(n); continue
+        onset = float(n.get('onset', 0.0))
+        idx = int(np.searchsorted(starts, onset, side='right')) - 1
+        if 0 <= idx < len(bars) and float(bars[idx]['end']) > onset:
+            nn = dict(n)
+            nn['pattern_idx'] = int(bars[idx]['cluster'])
+            out.append(nn)
+        else:
+            out.append(n)
+    return out
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def transcribe_components(
@@ -411,10 +486,12 @@ def transcribe_components(
       timing_feel  — {'bass': float, 'upper': float} median offset in seconds
                      from the nearest beat for each register (positive = behind beat)
     """
-    comp_dir   = session_dir / 'components'
-    bass_path  = comp_dir / 'bass.wav'
-    upper_path = comp_dir / 'upper.wav'
-    meta_path  = session_dir / 'components.json'
+    comp_dir     = session_dir / 'components'
+    bass_path    = comp_dir / 'bass.wav'
+    upper_path   = comp_dir / 'upper.wav'
+    pattern_path = comp_dir / 'pattern.wav'
+    melody_path  = comp_dir / 'melody.wav'
+    meta_path    = session_dir / 'components.json'
 
     if not bass_path.exists() or not upper_path.exists():
         raise FileNotFoundError('Component audio files missing. Run /separate first.')
@@ -437,6 +514,18 @@ def transcribe_components(
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
+    # If separation.py produced a REPET-SIM bass pattern_strength mask,
+    # relabel pYIN notes as bass_pattern / bass_melody instead of plain
+    # 'bass'.  pYIN remains the transcriber (rock-solid mono F0); REPET
+    # only decides layer.
+    bass_mask_path = comp_dir / "bass_pattern_mask.npz"
+    if bass_mask_path.exists():
+        bass_notes = _relabel_bass_via_mask(bass_notes, bass_mask_path)
+        n_p = sum(1 for n in bass_notes if n.get('layer') == 'bass_pattern')
+        n_m = sum(1 for n in bass_notes if n.get('layer') == 'bass_melody')
+        print(f"[transcription] bass-layer split via REPET mask: "
+              f"bass_pattern={n_p}, bass_melody={n_m}")
+
     # ── upper transcription ───────────────────────────────────────────────────
     # We tried Onsets & Frames with the Phase 7 classifier labelling the
     # output; on real audio the gains weren't worth the change relative to
@@ -444,14 +533,54 @@ def transcribe_components(
     # USE_OF_TRANSCRIBER to True to re-enable the O&F path — the model
     # weights download is already cached on disk, so it's just a flag swap.
     USE_OF_TRANSCRIBER = False
-    upper_notes = (_onsets_frames_notes(upper_path)
-                   if USE_OF_TRANSCRIBER else _basic_pitch_notes(upper_path))
-    try:
-        from app.ml.pattern_classifier import classify_notes, model_available
-        if model_available():
-            upper_notes = classify_notes(upper_notes, tempo=tempo)
-    except Exception as e:
-        print(f"[transcription] pattern_classifier skipped: {e}")
+    _upper_transcriber = (_onsets_frames_notes if USE_OF_TRANSCRIBER
+                          else _basic_pitch_notes)
+
+    # If separation.py wrote REPET-SIM pattern + melody stems, transcribe each
+    # independently and pre-label their notes.  pattern_extraction.py then
+    # routes by these audio-level labels rather than running the pattern
+    # classifier or cycle-mining on the merged upper.wav.  Falls back to the
+    # combined upper.wav + classifier path when the stems aren't present.
+    if pattern_path.exists() and melody_path.exists():
+        pattern_notes = _upper_transcriber(pattern_path)
+        for n in pattern_notes:
+            n['layer'] = 'pattern'
+        melody_notes_audio = _upper_transcriber(melody_path)
+        for n in melody_notes_audio:
+            n['layer'] = 'melody'
+        upper_notes = pattern_notes + melody_notes_audio
+        print(f"[transcription] audio-level layer split: "
+              f"pattern={len(pattern_notes)}, melody={len(melody_notes_audio)}")
+    else:
+        upper_notes = _upper_transcriber(upper_path)
+        try:
+            from app.ml.pattern_classifier import classify_notes, model_available
+            if model_available():
+                upper_notes = classify_notes(upper_notes, tempo=tempo)
+        except Exception as e:
+            print(f"[transcription] pattern_classifier skipped: {e}")
+
+    # ── stamp pattern_idx (cluster) on pattern + bass_pattern notes ───────────
+    # pattern_clusters.json was written by separation.py and maps each bar
+    # window to a cluster index (Pattern 1..N).  The frontend Layers tab
+    # uses pattern_idx to split each pattern layer into per-cluster rows.
+    clusters_path = session_dir / "pattern_clusters.json"
+    if clusters_path.exists():
+        try:
+            with open(clusters_path) as f:
+                cluster_data = json.load(f)
+            upper_notes = _stamp_pattern_idx(
+                upper_notes,
+                cluster_data.get("pattern", {}).get("bars", []),
+                layer_filter="pattern",
+            )
+            bass_notes = _stamp_pattern_idx(
+                bass_notes,
+                cluster_data.get("bass_pattern", {}).get("bars", []),
+                layer_filter="bass_pattern",
+            )
+        except Exception as e:
+            print(f"[transcription] pattern_idx stamping skipped: {e}")
 
     # ── measure per-layer feel before any quantization ────────────────────────
     # Raw pYIN and Basic Pitch onsets reveal how far ahead/behind the beat each

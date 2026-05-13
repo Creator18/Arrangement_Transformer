@@ -515,6 +515,24 @@ export default function PianoRollPlayer({
     e.preventDefault(); seekToY(e.touches[0].clientY)
   }, [seekToY])
 
+  // Progress-bar seek (transport-style horizontal scrub).  Sets audio time
+  // from the click's horizontal fraction across the bar and snaps the roll's
+  // scroll position to match, so the piano-roll content jumps to the new
+  // playhead too.  No-op until duration is known.
+  const seekByBar = useCallback((e) => {
+    const audio = audioRef.current
+    if (!audio || !(duration > 0)) return
+    const bar = e.currentTarget.getBoundingClientRect()
+    const fraction = Math.max(0, Math.min(1, (e.clientX - bar.left) / bar.width))
+    const t = fraction * duration
+    audio.currentTime = t
+    setCurrentTime(t)
+    if (rollRef.current) {
+      const target = (maxTime - t) * PX_PER_S + VIEWPORT_PAD - rollRef.current.clientHeight
+      rollRef.current.scrollTop = Math.max(0, target)
+    }
+  }, [duration, maxTime])
+
   // When NOT playing (initial mount, paused, end-of-track), keep the roll
   // pinned to `currentTime`.  Without this the roll would snap to scrollTop=0
   // (= the future-empty padding) on first render and the song would appear
@@ -574,13 +592,28 @@ export default function PianoRollPlayer({
           {fmt(currentTime)} <span className="text-zinc-700">/</span> {fmt(duration)}
         </span>
 
-        <div className="flex-1 h-0.5 rounded-full overflow-hidden min-w-[40px]"
-          style={{ background: 'rgba(255,255,255,0.07)' }}>
-          <div className="h-full rounded-full transition-none" style={{
-            width: `${pct}%`,
-            background: 'linear-gradient(90deg, #f59e0b, #d97706)',
-            boxShadow: pct > 0 ? '0 0 6px rgba(245,158,11,0.4)' : 'none',
-          }} />
+        <div
+          onClick={seekByBar}
+          className="flex-1 rounded-full min-w-[40px] cursor-pointer"
+          title="Click to seek"
+          style={{
+            background: 'rgba(255,255,255,0.07)',
+            // Bigger hit-target (12 px) wrapping a visually-thin (2 px) bar so
+            // the click area is generous without changing the layout's look.
+            height: 12,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 1px',
+          }}
+        >
+          <div className="h-0.5 w-full rounded-full overflow-hidden"
+               style={{ background: 'rgba(255,255,255,0.04)' }}>
+            <div className="h-full rounded-full transition-none" style={{
+              width: `${pct}%`,
+              background: 'linear-gradient(90deg, #f59e0b, #d97706)',
+              boxShadow: pct > 0 ? '0 0 6px rgba(245,158,11,0.4)' : 'none',
+            }} />
+          </div>
         </div>
       </div>
 
