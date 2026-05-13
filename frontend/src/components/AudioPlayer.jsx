@@ -59,7 +59,15 @@ export default function AudioPlayer({ tracks }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [loading, setLoading] = useState(false)
-  const audioRef = useRef(new Audio())
+  const audioRef = useRef((() => {
+    // preload='auto' means: as soon as src is set, start downloading the full
+    // file.  ProcessingPage pre-warms the HTTP cache for the main previews
+    // before navigating here, so this request is usually served from cache —
+    // first-click playback feels instant.
+    const a = new Audio()
+    a.preload = 'auto'
+    return a
+  })())
   const seekRef = useRef(null)
 
   const track = tracks[activeIdx]

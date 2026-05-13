@@ -5,7 +5,8 @@ import GradientOrbs from '../components/GradientOrbs'
 import AudioBars from '../components/AudioBars'
 import {
   transcribeAudio, separateStems, segmentAudio,
-  transformArrangement, scoreFidelity
+  transformArrangement, scoreFidelity, renderPreviews,
+  getTranscriptionAudioUrl, getTransformedAudioUrl,
 } from '../utils/api'
 
 const STEPS = [
@@ -14,6 +15,7 @@ const STEPS = [
   { key: 'transcribe', label: 'Transcribe', detail: 'Transcribing each component with pYIN and Basic Pitch…',   sym: '◈', color: '#a78bfa' },
   { key: 'segment',    label: 'Chords',     detail: 'Detecting chord progression from audio chroma…',           sym: '▪', color: '#34d399' },
   { key: 'transform',  label: 'Arrange',    detail: 'Pattern extraction, range compression, voice leading…',    sym: '▶', color: '#f87171' },
+  { key: 'previews',   label: 'Previews',   detail: 'Rendering original + transformed audio through Salamander…', sym: '♫', color: '#fbbf24' },
   { key: 'score',      label: 'Score',      detail: 'Comparing spectrograms for fidelity…',                     sym: '◉', color: '#e879f9' },
 ]
 
@@ -189,8 +191,26 @@ export default function ProcessingPage() {
       setCurrentStep(2); await transcribeAudio(sessionId)
       setCurrentStep(3); await segmentAudio(sessionId)
       setCurrentStep(4); await transformArrangement(sessionId, preset.octaves, preset.components)
-      setCurrentStep(5); await scoreFidelity(sessionId)
-      setCurrentStep(6)
+
+      // Render the two main listening tracks through Salamander.  This is
+      // the long synthesis pass (~1–2 min on a 5-min song).  Doing it here
+      // — with its own visible step — means the Results page lands with
+      // both WAVs already on disk; first-click on Listen is then just a
+      // file download.
+      setCurrentStep(5); await renderPreviews(sessionId)
+
+      // Pre-fetch the rendered WAVs into the browser's HTTP cache so even
+      // the file download is already done by the time the user clicks
+      // play.  fetch() with cache:'reload' makes the browser store the
+      // response in disk cache; failure here is silent — playback still
+      // works, it just streams instead of being instant.
+      await Promise.all([
+        fetch(getTranscriptionAudioUrl(sessionId), { cache: 'reload' }).catch(() => {}),
+        fetch(getTransformedAudioUrl(sessionId),   { cache: 'reload' }).catch(() => {}),
+      ])
+
+      setCurrentStep(6); await scoreFidelity(sessionId)
+      setCurrentStep(7)
       setTimeout(() => navigate(`/results/${sessionId}`), 900)
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || 'Pipeline failed.')

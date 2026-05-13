@@ -42,6 +42,18 @@ export async function scoreFidelity(sessionId) {
   return data
 }
 
+/**
+ * Render the two main listening tracks (original arrangement, transformed)
+ * synchronously.  Returns when both WAVs are on disk.  Run from the
+ * ProcessingPage after /transform so the Results page can play instantly.
+ */
+export async function renderPreviews(sessionId, force = false) {
+  const { data } = await api.post(`/previews/${sessionId}`, null, {
+    params: force ? { force: 1 } : undefined,
+  })
+  return data
+}
+
 export async function getCdefText(sessionId) {
   const { data } = await api.get(`/export/${sessionId}/cdef-text`)
   return data.cdef
