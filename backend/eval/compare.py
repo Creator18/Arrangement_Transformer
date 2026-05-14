@@ -67,16 +67,33 @@ def _notes_to_arrays(notes: List[Dict]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Convert a list of note-dicts to mir_eval's expected (intervals, pitches)
     format.  intervals is (N, 2) seconds; pitches is (N,) Hz.
+
+    Filters out malformed notes: missing pitch, NaN times, offset <= onset.
+    Beat-adaptive quantization downstream can occasionally produce inverted
+    intervals when a note's onset gets snapped past its offset; rather than
+    dropping them silently inside the pipeline (which would hide the bug),
+    we filter at the eval boundary and the count of dropped notes shows up
+    indirectly as a precision penalty.
     """
     if not notes:
         return np.zeros((0, 2)), np.zeros((0,))
-    intervals = np.array(
-        [[float(n["onset"]), float(n["offset"])] for n in notes],
-        dtype=float,
-    )
-    # mir_eval wants Hz; MIDI pitch p → 440 * 2^((p-69)/12)
-    midi = np.array([int(n["pitch"]) for n in notes], dtype=int)
-    pitches = 440.0 * np.power(2.0, (midi - 69) / 12.0)
+    valid = []
+    for n in notes:
+        try:
+            on  = float(n["onset"])
+            off = float(n["offset"])
+            p   = int(n["pitch"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # mir_eval rejects any negative value, not just non-positive duration
+        if (on >= 0 and off > on and 0 <= p <= 127
+                and np.isfinite(on) and np.isfinite(off)):
+            valid.append((on, off, p))
+    if not valid:
+        return np.zeros((0, 2)), np.zeros((0,))
+    intervals = np.array([[v[0], v[1]] for v in valid], dtype=float)
+    midi      = np.array([v[2] for v in valid], dtype=int)
+    pitches   = 440.0 * np.power(2.0, (midi - 69) / 12.0)
     return intervals, pitches
 
 
