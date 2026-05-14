@@ -231,6 +231,21 @@ async def export_part_audio(session_id: str, arrangement: str, part: str):
     """
     if arrangement not in ("transcription", "transformed"):
         raise HTTPException(400, "arrangement must be 'transcription' or 'transformed'.")
+
+    # Fast path: part='all' is identical to the main preview the LISTEN player
+    # already pre-renders during /previews — same note list, same SR.  Serving
+    # the cached preview WAV directly is instant (file response) instead of
+    # synthesising a duplicate render through Salamander on first click.
+    if part == "all":
+        session_dir = get_session_dir(session_id)
+        preview_name = ("transcription_preview.wav" if arrangement == "transcription"
+                        else "arrangement_preview.wav")
+        preview_path = session_dir / preview_name
+        if preview_path.exists():
+            return FileResponse(str(preview_path), media_type="audio/wav",
+                                filename=preview_name)
+        # If /previews hasn't run yet, fall through to the normal lazy path below.
+
     if part not in PART_RANGES:
         raise HTTPException(400, f"part must be one of {list(PART_RANGES)}")
 
