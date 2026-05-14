@@ -41,7 +41,7 @@ SalamanderGrandPiano-master/
 
 # Eval harness — keep code + manifest + baselines, drop large generated data
 backend/eval/data/audio/
-backend/eval/data/synth_log.txt
+backend/eval/data/*.txt
 backend/eval/runs/
 
 # Claude internal
