@@ -51,3 +51,4 @@ backend/eval/runs/
 # OS
 .DS_Store
 Thumbs.db
+backend/retrieval/corpus/
