@@ -26,6 +26,7 @@ backend/temp/
 checkpoints/
 training_logs/
 data/maestro-v3.0.0/
+data/asap-dataset/
 *.pt
 *.ckpt
 # Pre-rendered piano-roll cache files (sit next to .midi sources)
