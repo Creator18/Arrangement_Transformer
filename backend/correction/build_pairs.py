@@ -47,26 +47,44 @@ if not hasattr(scipy.signal, "hann"):
 from correction.align import BeatMap, align_notes, summarise_corrections
 
 
-def _prepare_audio(perf_midi: Path, dest: Path) -> bool:
+# A piece whose extraction stops early injects thousands of fake "missed
+# note" labels — the single most damaging thing that can happen to this
+# dataset, and it happens SILENTLY.  Observed on Bach/Fugue/bwv_848: our
+# extraction ended at 109.1s against a 138.6s performance, and the piece
+# still looked like an ordinary low-recall result (P=0.135) rather than a
+# broken one.  Re-running the same piece in isolation produced the full
+# 138.7s, so the cause is environmental (most likely GPU contention with
+# Demucs during a batch) rather than a logic error.  Since it cannot be
+# reproduced on demand it cannot be fixed by correcting code; it can only
+# be made loud.  Anything under this fraction of the source duration is
+# refused rather than written.
+MIN_COVERAGE = 0.95
+
+
+def _prepare_audio(perf_midi: Path, dest: Path) -> Optional[float]:
+    """Render the performance MIDI.  Returns the source's last-onset time."""
     import pretty_midi, soundfile as sf, warnings
     from app.services.sampler import render_notes
-    if dest.exists():
-        return True
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             pm = pretty_midi.PrettyMIDI(str(perf_midi))
     except Exception:
-        return False
+        return None
     notes = [{"pitch": int(n.pitch), "onset": float(n.start),
               "offset": float(n.end), "velocity": int(n.velocity)}
              for i in pm.instruments if not i.is_drum for n in i.notes]
     if not notes:
-        return False
-    audio = render_notes(notes, sr=22050)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(dest), audio, 22050, subtype="PCM_16")
-    return True
+        return None
+    last_onset = max(n["onset"] for n in notes)
+    if not dest.exists():
+        audio = render_notes(notes, sr=22050)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(dest), audio, 22050, subtype="PCM_16")
+        # Guard the render itself too, cheaply
+        if audio.size / 22050 < last_onset:
+            return None
+    return last_onset
 
 
 def _run_pipeline(session_dir: Path) -> Optional[List[Dict]]:
@@ -118,22 +136,47 @@ def main() -> None:
     pairs_path = OUT_DIR / "pairs.jsonl"
     if not args.report_only:
         WORK_DIR.mkdir(parents=True, exist_ok=True)
-        rows = {r["folder"]: r for r in
+        # Key by the PERFORMANCE, not the folder.  Folders hold up to nine
+        # performances of the same score by different pianists; a
+        # folder-keyed dict silently keeps only the last one, which meant
+        # rendering audio from one pianist and aligning it with another
+        # pianist's beat annotations.  That produced a perfect bimodal
+        # split — every single-performance folder scored P=0.86-0.91, every
+        # multi-performance folder P=0.12-0.27 — and also faked a
+        # "truncation" bug, because our extraction of a 109s performance was
+        # being compared against a different 138s one.
+        rows = {r["midi_performance"]: r for r in
                 csv.DictReader(open(ASAP_DIR / "metadata.csv", encoding="utf-8"))}
         out = open(pairs_path, "w", encoding="utf-8")
+        skipped: List[Dict] = []
         t0 = time.time()
         for i, p in enumerate(chosen, 1):
             folder = p["folder"]
-            meta = rows.get(folder)
+            meta = rows.get(p["perf_midi"])
             if meta is None:
                 continue
+            assert meta["folder"] == folder, "metadata row / performance mismatch"
             sess = WORK_DIR / folder.replace("/", "_")
             sess.mkdir(parents=True, exist_ok=True)
             print(f"[{i}/{len(chosen)}] {folder}")
-            if not _prepare_audio(ASAP_DIR / p["perf_midi"], sess / "audio.wav"):
+            src_last = _prepare_audio(ASAP_DIR / p["perf_midi"], sess / "audio.wav")
+            if src_last is None:
                 print("    no audio"); continue
             ours = _run_pipeline(sess)
             if not ours:
+                continue
+
+            # Coverage guard — see MIN_COVERAGE above.  Refuse the piece
+            # rather than emit a dataset entry whose tail is all fake
+            # "missed" labels.
+            ours_last = max(float(n["onset"]) for n in ours)
+            coverage = ours_last / max(1e-6, src_last)
+            if coverage < MIN_COVERAGE:
+                skipped.append({"folder": folder, "coverage": round(coverage, 3),
+                                "ours_last": round(ours_last, 1),
+                                "src_last": round(src_last, 1)})
+                print(f"    SKIPPED: extraction covers {coverage*100:.0f}% "
+                      f"of the piece ({ours_last:.0f}s of {src_last:.0f}s)")
                 continue
             try:
                 bm = BeatMap.for_performance(
@@ -159,6 +202,11 @@ def main() -> None:
         out.close()
         print(f"\nbuilt in {time.time()-t0:.0f}s -> "
               f"{pairs_path.relative_to(REPO_ROOT)}")
+        if skipped:
+            json.dump(skipped, open(OUT_DIR / "skipped.json", "w",
+                                    encoding="utf-8"), indent=2)
+            print(f"REFUSED {len(skipped)} piece(s) for incomplete coverage "
+                  f"(see data/skipped.json) — re-run to retry them")
 
     # ── report ────────────────────────────────────────────────────────────
     rows = [json.loads(l) for l in open(pairs_path, encoding="utf-8")]
