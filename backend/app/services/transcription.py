@@ -570,6 +570,94 @@ def _stamp_pattern_idx(
     return out
 
 
+# ── full-mix O&F path ─────────────────────────────────────────────────────────
+
+_BASS_SPLIT_PITCH = 56    # G#3 — matches music_theory.BASS_SPLIT
+
+
+def _transcribe_fullmix_of(
+    session_dir: Path,
+    comp_dir:    Path,
+    tempo:       float,
+    beat_times:  np.ndarray,
+    pyin_bass_notes: List[Dict],     # unused by design — see docstring
+) -> tuple:
+    """
+    'of_fullmix' architecture: ONE polyphonic transcriber (O&F) over the
+    original audio, hands/layers assigned symbolically afterwards.
+
+    Why not merge pYIN's bass in: the whole point of this mode is a single
+    timing character across the full range — mixing a second transcriber's
+    onsets back in would reintroduce the LH/RH inconsistency this mode
+    exists to fix.  pYIN's notes are accepted as a parameter only so the
+    caller doesn't need to know which mode consumes them.
+
+    Layer assignment (symbolic, replaces the audio-stem routing):
+      pitch < 56  → bass; relabelled bass_pattern / bass_melody via the
+                    REPET-SIM mask when separation produced one
+      pitch >= 56 → pattern / melody via the phase-7 classifier when its
+                    checkpoint exists, else 'melody'
+    """
+    audio_path = session_dir / 'audio.wav'
+    if not audio_path.exists():
+        raise FileNotFoundError('audio.wav missing for full-mix transcription.')
+
+    notes = _onsets_frames_notes(audio_path)
+    print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
+
+    bass_notes  = [dict(n, layer='bass') for n in notes
+                   if int(n['pitch']) < _BASS_SPLIT_PITCH]
+    upper_notes = [dict(n) for n in notes
+                   if int(n['pitch']) >= _BASS_SPLIT_PITCH]
+
+    bass_mask_path = comp_dir / "bass_pattern_mask.npz"
+    if bass_mask_path.exists():
+        bass_notes = _relabel_bass_via_mask(bass_notes, bass_mask_path)
+
+    try:
+        from app.ml.pattern_classifier import classify_notes, model_available
+        if model_available():
+            upper_notes = classify_notes(upper_notes, tempo=tempo)
+    except Exception as e:
+        print(f"[transcription] pattern_classifier skipped: {e}")
+    for n in upper_notes:
+        n.setdefault('layer', 'melody')
+
+    # pattern_idx stamping — same contract as the stem path
+    clusters_path = session_dir / "pattern_clusters.json"
+    if clusters_path.exists():
+        try:
+            with open(clusters_path) as f:
+                cluster_data = json.load(f)
+            upper_notes = _stamp_pattern_idx(
+                upper_notes, cluster_data.get("pattern", {}).get("bars", []),
+                layer_filter="pattern")
+            bass_notes = _stamp_pattern_idx(
+                bass_notes, cluster_data.get("bass_pattern", {}).get("bars", []),
+                layer_filter="bass_pattern")
+        except Exception as e:
+            print(f"[transcription] pattern_idx stamping skipped: {e}")
+
+    bass_feel  = _compute_feel(bass_notes,  beat_times)
+    upper_feel = _compute_feel(upper_notes, beat_times)
+
+    # Same post-processing tail as the stem path.  The cross-layer dedupe is
+    # unnecessary here (single transcriber can't double-emit across stems)
+    # but harmless, and keeping the tail identical makes mode comparisons
+    # apples-to-apples.
+    all_notes = sorted(bass_notes + upper_notes,
+                       key=lambda n: (float(n['onset']), int(n['pitch'])))
+    refined = refine_notes(all_notes, tempo)
+    refined = dedupe_octave_partials(refined)
+
+    if len(beat_times) >= 2:
+        quantized = _beat_adaptive_quantize(refined, beat_times, subdivisions=4)
+    else:
+        quantized = quantize_notes(refined, tempo, subdivisions=16)
+
+    return quantized, {'bass': round(bass_feel, 4), 'upper': round(upper_feel, 4)}
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def transcribe_components(
@@ -637,8 +725,26 @@ def transcribe_components(
     # (Basic Pitch doesn't) and was trained on MAESTRO — the eval's exact
     # domain — so it's the prime candidate for fixing our recall (24%
     # under-emission) and duration (COnPOff 0.10) weaknesses.
-    USE_OF_TRANSCRIBER = True
-    _upper_transcriber = (_onsets_frames_notes if USE_OF_TRANSCRIBER
+    # Transcriber architecture (measured on the N=50 eval harness):
+    #   'basic_pitch_stems' — Basic Pitch on the REPET pattern/melody stems +
+    #                         pYIN bass.  COnP 0.4085 (run-1 baseline family).
+    #   'of_stems'          — O&F on the same stems.  COnP 0.380 — REGRESSION.
+    #                         O&F is trained on full-mix piano; Wiener-masked
+    #                         stems are out-of-domain for it and it double-
+    #                         transcribes stem bleed (+8.6% over-emission).
+    #   'of_fullmix'        — O&F once over the original audio (its native
+    #                         domain), hands/layers assigned SYMBOLICALLY
+    #                         afterwards.  One transcriber = one timing
+    #                         character = coherent hands; also the fix for
+    #                         the audible LH/RH inconsistency.
+    TRANSCRIBER_MODE = 'of_fullmix'
+
+    if TRANSCRIBER_MODE == 'of_fullmix':
+        return _transcribe_fullmix_of(
+            session_dir, comp_dir, tempo, beat_times, bass_notes,
+        )
+
+    _upper_transcriber = (_onsets_frames_notes if TRANSCRIBER_MODE == 'of_stems'
                           else _basic_pitch_notes)
 
     # If separation.py wrote REPET-SIM pattern + melody stems, transcribe each
