@@ -274,6 +274,107 @@ def refine_notes(notes: List[Dict], tempo: float) -> List[Dict]:
     return deduped
 
 
+def dedupe_octave_partials(
+    notes:     List[Dict],
+    onset_tol: float = 0.04,
+    vel_ratio: float = 0.55,
+) -> List[Dict]:
+    """
+    Drop probable harmonic-partial hallucinations: a note exactly 12 or 24
+    semitones ABOVE another note at (nearly) the same onset, but clearly
+    weaker.  Piano partials at 2x/4x the fundamental frequency routinely
+    trip the transcriber into emitting a phantom note an octave (or two) up.
+
+    The velocity-ratio gate is what protects real octave doublings — an
+    intentional LH octave or octave-doubled melody line is struck with
+    comparable force on both pitches, so both notes carry similar velocity
+    and neither is dropped.  A transcribed partial inherits the (much
+    lower) energy of the harmonic, so it shows up well below the
+    fundamental's velocity.
+
+    Eval evidence (N=50 MAESTRO): at vel_ratio=0.8 this removed 2.6k octave
+    FPs but ALSO deleted ~1.3k real doublings (Basic Pitch's velocities
+    aren't calibrated enough to trust a loose gate) — net F1 flat.  The
+    default is therefore conservative (0.55): only drop notes at less than
+    ~half the fundamental's velocity, i.e. unambiguous partials.
+    """
+    if not notes:
+        return notes
+    notes_sorted = sorted(notes, key=lambda n: float(n['onset']))
+    onsets = np.array([float(n['onset']) for n in notes_sorted])
+    drop: set = set()
+
+    for i, n in enumerate(notes_sorted):
+        if i in drop:
+            continue
+        lo = int(np.searchsorted(onsets, onsets[i] - onset_tol, side='left'))
+        hi = int(np.searchsorted(onsets, onsets[i] + onset_tol, side='right'))
+        for j in range(lo, hi):
+            if j == i or j in drop:
+                continue
+            m = notes_sorted[j]
+            dp = int(m['pitch']) - int(n['pitch'])
+            if dp not in (12, 24):
+                continue
+            v_low = int(n.get('velocity', 80))
+            v_up  = int(m.get('velocity', 80))
+            if v_up <= vel_ratio * v_low:
+                drop.add(j)
+
+    kept = [n for k, n in enumerate(notes_sorted) if k not in drop]
+    if drop:
+        print(f"[transcription] octave-dedupe dropped {len(drop)} probable "
+              f"harmonic partials ({len(notes)} -> {len(kept)})")
+    return kept
+
+
+# Musical note values in beats (quarter-note = 1 beat): 16th, 8th-triplet,
+# dotted-16th, 8th, quarter-triplet, dotted-8th, quarter, dotted-quarter,
+# half, dotted-half, whole.
+_NOTE_VALUES_BEATS = (0.25, 1/3, 0.375, 0.5, 2/3, 0.75,
+                      1.0, 1.5, 2.0, 3.0, 4.0)
+
+
+def quantize_durations_to_note_values(
+    notes:      List[Dict],
+    beat_times: np.ndarray,
+) -> List[Dict]:
+    """
+    Snap each note's DURATION to the nearest standard musical value, using
+    the local beat period at the note's onset (so rubato/tempo drift is
+    handled the same way as the onset grid).
+
+    Onset quantization alone leaves durations at whatever the transcriber
+    emitted — 0.187 s of raw model output that corresponds to no note value.
+    That's the main reason sheet music renders with bizarre tied fragments,
+    and a contributor to the COnP >> COnPOff gap on the eval.
+
+    Durations beyond ~5 beats are left untouched: those are long pedal
+    tones where "snap to whole note" would be a bigger distortion than the
+    raw estimate.
+    """
+    if len(beat_times) < 2 or not notes:
+        return notes
+    bt = np.sort(np.asarray(beat_times, dtype=float))
+    out: List[Dict] = []
+    for n in notes:
+        onset  = float(n['onset'])
+        offset = float(n.get('offset', onset + 0.25))
+        i = min(max(int(np.searchsorted(bt, onset, side='right')) - 1, 0),
+                len(bt) - 2)
+        period = float(bt[i + 1] - bt[i])
+        if period <= 1e-3:
+            out.append(n)
+            continue
+        dur_beats = (offset - onset) / period
+        if dur_beats > _NOTE_VALUES_BEATS[-1] * 1.25:
+            out.append(n)
+            continue
+        snapped = min(_NOTE_VALUES_BEATS, key=lambda v: abs(v - dur_beats))
+        out.append({**n, 'offset': round(onset + snapped * period, 4)})
+    return out
+
+
 def get_octave_range(notes: List[Dict]) -> Dict[str, Any]:
     if not notes:
         return {'lowest': None, 'highest': None, 'octave_span': 0}
@@ -372,8 +473,11 @@ def _beat_adaptive_quantize(
 
     result = []
     for n in notes:
-        onset_s  = _snap(float(n['onset']))
-        offset_s = _snap(float(n.get('offset', float(n['onset']) + 0.25)))
+        # Clamp to zero — extrapolation before the first beat can snap an
+        # early onset negative, which downstream (mir_eval, MIDI export)
+        # rejects as a malformed interval.
+        onset_s  = max(0.0, _snap(float(n['onset'])))
+        offset_s = max(0.0, _snap(float(n.get('offset', float(n['onset']) + 0.25))))
 
         if offset_s <= onset_s:
             # Extend by one sub-beat using the local interval
@@ -527,12 +631,13 @@ def transcribe_components(
               f"bass_pattern={n_p}, bass_melody={n_m}")
 
     # ── upper transcription ───────────────────────────────────────────────────
-    # We tried Onsets & Frames with the Phase 7 classifier labelling the
-    # output; on real audio the gains weren't worth the change relative to
-    # Basic Pitch, so we're on Basic Pitch by default.  Flip
-    # USE_OF_TRANSCRIBER to True to re-enable the O&F path — the model
-    # weights download is already cached on disk, so it's just a flag swap.
-    USE_OF_TRANSCRIBER = False
+    # Transcriber selection.  The earlier "O&F didn't pay off" verdict was
+    # made by ear, before the eval harness existed; we're now re-testing it
+    # with measurement (see backend/eval/).  O&F has a dedicated offset head
+    # (Basic Pitch doesn't) and was trained on MAESTRO — the eval's exact
+    # domain — so it's the prime candidate for fixing our recall (24%
+    # under-emission) and duration (COnPOff 0.10) weaknesses.
+    USE_OF_TRANSCRIBER = True
     _upper_transcriber = (_onsets_frames_notes if USE_OF_TRANSCRIBER
                           else _basic_pitch_notes)
 
@@ -606,11 +711,26 @@ def transcribe_components(
 
     refined = refine_notes(deduped, tempo)
 
+    # ── octave-partial dedupe ─────────────────────────────────────────────────
+    # Runs after cross-layer dedupe so all layers' notes are visible to the
+    # +12/+24 semitone comparison.  Velocity-gated: real octave doublings
+    # survive, weak harmonic phantoms get dropped.
+    refined = dedupe_octave_partials(refined)
+
     # ── beat-adaptive quantization ────────────────────────────────────────────
     # Use actual beat frame positions (not a computed constant-tempo lattice) so
     # that tempo variation and rubato in the performance are handled correctly.
     if len(beat_times) >= 2:
         quantized = _beat_adaptive_quantize(refined, beat_times, subdivisions=4)
+        # Duration snap to musical note values: measured on the N=50 eval as
+        # F1-neutral-to-slightly-negative (COnPOff 0.100 -> 0.099) — the
+        # transcriber's durations are systematically short, so snapping a
+        # wrong duration to a clean note value keeps it wrong.  OFF by
+        # default; flip for sheet-music-focused rendering where visual note
+        # values matter more than offset accuracy.
+        QUANTIZE_DURATIONS = False
+        if QUANTIZE_DURATIONS:
+            quantized = quantize_durations_to_note_values(quantized, beat_times)
     else:
         quantized = quantize_notes(refined, tempo, subdivisions=16)
 

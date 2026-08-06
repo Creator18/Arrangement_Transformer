@@ -713,6 +713,40 @@ def snap_strays_to_scale(
     return out
 
 
+# ── accidental spelling ───────────────────────────────────────────────────────
+
+_SHARP_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+_FLAT_NAMES  = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
+
+# Major-key tonics whose key signatures live on the flat side of the circle
+# of fifths: F, Bb, Eb, Ab, Db, Gb.  (Gb-vs-F# is a tie at 6 accidentals;
+# flats read easier so we pick Gb.)  Minor keys defer to their relative major.
+_FLAT_MAJOR_ROOTS = {1, 3, 5, 6, 8, 10}
+
+
+def respell_pitch_names(
+    notes:      List[Dict],
+    key_root:   int,
+    scale_name: str,
+) -> List[Dict]:
+    """
+    Rewrite each note's `pitch_name` using the accidental set appropriate
+    for the detected key.  librosa.midi_to_note always spells sharps, which
+    is wrong in flat keys — G# in F major should read Ab.
+
+    Only `pitch_name` changes; the MIDI pitch integer is untouched, so this
+    is purely cosmetic for sheet music / CDEF / UI display.
+    """
+    name = (scale_name or "major").lower()
+    rel_major = key_root if "minor" not in name else (key_root + 3) % 12
+    table = _FLAT_NAMES if rel_major in _FLAT_MAJOR_ROOTS else _SHARP_NAMES
+    out: List[Dict] = []
+    for n in notes:
+        p = int(n["pitch"])
+        out.append({**n, "pitch_name": f"{table[p % 12]}{p // 12 - 1}"})
+    return out
+
+
 def apply_chord_and_scale_snap(
     notes:      List[Dict],
     chord_map:  Dict[int, tuple],
@@ -772,7 +806,11 @@ def apply_chord_and_scale_snap(
     # 2 — Hand-rule pruning (per the user's explicit request)
     merged = sorted(bass + upper,
                     key=lambda n: (float(n["onset"]), int(n["pitch"])))
-    return enforce_hand_limits(merged)
+    merged = enforce_hand_limits(merged)
+
+    # 3 — Respell accidentals for the detected key (cosmetic; pitch ints
+    #     untouched).  Flat keys finally read as flats.
+    return respell_pitch_names(merged, key_root, scale_name)
 
 
 def apply_music_theory(
@@ -834,4 +872,7 @@ def apply_music_theory(
 
     # 7 — Physical hand limits (≤ 5 per hand, ≤ 15-semitone span, ≤ 10 total)
     merged = sorted(bass + upper, key=lambda n: (float(n["onset"]), int(n["pitch"])))
-    return enforce_hand_limits(merged)
+    merged = enforce_hand_limits(merged)
+
+    # 8 — Respell accidentals for the detected key (cosmetic)
+    return respell_pitch_names(merged, key_root, scale_name)

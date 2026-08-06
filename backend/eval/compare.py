@@ -301,10 +301,10 @@ def main() -> None:
             elif d >= 0.01:
                 improved.append((r["id"], d))
         print(f"\nVs baseline {Path(args.compare_to).name}:")
-        print(f"  improved (ΔF1 ≥ 0.01): {len(improved)} pieces")
-        print(f"  regressed (ΔF1 ≤ -0.01): {len(regressed)} pieces")
+        print(f"  improved (dF1 >= 0.01): {len(improved)} pieces")
+        print(f"  regressed (dF1 <= -0.01): {len(regressed)} pieces")
         for pid, d in sorted(regressed, key=lambda x: x[1])[:5]:
-            print(f"    REGRESS {pid:<50} ΔF1 = {d:+.4f}")
+            print(f"    REGRESS {pid:<50} dF1 = {d:+.4f}")
 
 
 if __name__ == "__main__":
