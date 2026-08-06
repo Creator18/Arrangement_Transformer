@@ -28,6 +28,12 @@ BASS_SPLIT = 56          # MIDI 56 = G#3 (matches nmf_voice_leading.BASS_MAX + 1
 BASS_LO_DEFAULT = 28     # E1
 BASS_HI_DEFAULT = 55     # G3
 
+# Master switch for snap_strays_to_scale.  Off by default: measured on the
+# N=50 eval as a net harm (it erases the chromaticism that IS the musical
+# language of the repertoire).  See the comment at its call site in
+# apply_chord_and_scale_snap for the full evidence.
+SCALE_SNAP_ENABLED = False
+
 # Root-preference scoring for bass chord tones (lower = preferred)
 # Root (0) and its octave (12) tied at 0; fifth (7) at 1; third (3/4) at 3
 _BASS_INTERVAL_PRIORITY: Dict[int, int] = {
@@ -799,9 +805,25 @@ def apply_chord_and_scale_snap(
     measure_dur = (60.0 / tempo) * 4
     bass, upper = _split_voices(notes)
 
-    # 1 — Scale-floor on both voices (with chord-tone exemption inside)
-    bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
-    upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
+    # 1 — Scale-floor on both voices — DISABLED, measured harmful.
+    #
+    # Measured on the N=50 MAESTRO eval: real piano repertoire is 77.3%
+    # in-scale, i.e. nearly a quarter of every piece is chromatic.  With this
+    # pass on we emitted 90.4% in-scale, erasing roughly two-thirds of the
+    # chromaticism — and the error profile showed it clearly: near_pitch
+    # became 59% of all false positives, with FP and FN counts almost exactly
+    # 1:1 (12,345 / 13,205), the fingerprint of notes being DISPLACED by a
+    # semitone rather than added or dropped.  99.8% of those false positives
+    # sat on a scale tone with the true (chromatic) note one semitone away.
+    #
+    # The chord-tone exemption was supposed to protect borrowed chords and
+    # chromatic passing tones, but it depends on chord_map, which is still a
+    # chroma-template matcher — when it misses, legitimate chromaticism gets
+    # snapped.  Revisit only after the chord detector is upgraded, and only
+    # with a measurement showing it helps.
+    if SCALE_SNAP_ENABLED:
+        bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
+        upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
 
     # 2 — Hand-rule pruning (per the user's explicit request)
     merged = sorted(bass + upper,
@@ -864,11 +886,14 @@ def apply_music_theory(
     # 5 — Augmented 2nd avoidance (minor keys only)
     upper = avoid_augmented_second(upper, key_root, scale_name)
 
-    # 6 — Scale-floor guardrail (catches stragglers that escape steps 1–5,
-    #     typically bass notes in measures where chord_map.get(mi) is None
-    #     and a transcription-noise pitch slipped through unchanged)
-    bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
-    upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
+    # 6 — Scale-floor guardrail.  Gated by the same switch as the ORIGINAL
+    #     path.  The eval only measures the ORIGINAL view, so the harm is
+    #     proven there and merely *likely* here — but it is the same
+    #     mechanism erasing the same chromaticism, so it defaults off on
+    #     both sides rather than staying on where nothing can catch it.
+    if SCALE_SNAP_ENABLED:
+        bass  = snap_strays_to_scale(bass,  chord_map, measure_dur, key_root, scale_name)
+        upper = snap_strays_to_scale(upper, chord_map, measure_dur, key_root, scale_name)
 
     # 7 — Physical hand limits (≤ 5 per hand, ≤ 15-semitone span, ≤ 10 total)
     merged = sorted(bass + upper, key=lambda n: (float(n["onset"]), int(n["pitch"])))
