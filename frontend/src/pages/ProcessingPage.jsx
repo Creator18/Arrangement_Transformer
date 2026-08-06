@@ -3,6 +3,7 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import GradientOrbs from '../components/GradientOrbs'
 import AudioBars from '../components/AudioBars'
+import { countUp, elasticPop } from '../utils/animefx'
 import {
   transcribeAudio, separateStems, segmentAudio,
   transformArrangement, scoreFidelity, renderPreviews,
@@ -25,12 +26,25 @@ function StepPad({ step, index, status }) {
   const isDone    = status === 'done'
   const isActive  = status === 'active'
   const isPending = status === 'pending'
+  const padRef    = useRef(null)
+  const wasDone   = useRef(false)
+
+  // anime.js: one-shot elastic pop + green flash the moment this step
+  // flips to done.  Guarded so a re-render of an already-done pad
+  // doesn't re-fire it.
+  useEffect(() => {
+    if (isDone && !wasDone.current) {
+      wasDone.current = true
+      elasticPop(padRef.current, '#22c55e')
+    }
+  }, [isDone])
 
   const color = isDone ? '#22c55e' : isActive ? step.color : 'rgba(255,255,255,0.08)'
   const textColor = isDone ? '#22c55e' : isActive ? step.color : 'rgba(255,255,255,0.22)'
 
   return (
     <motion.div
+      ref={padRef}
       className="relative flex items-center gap-4 p-4 rounded-2xl"
       style={{
         background: isActive
@@ -177,7 +191,8 @@ export default function ProcessingPage() {
 
   const [currentStep, setCurrentStep] = useState(0)
   const [error,       setError]       = useState(null)
-  const ran = useRef(false)
+  const ran    = useRef(false)
+  const pctRef = useRef(null)
 
   useEffect(() => {
     if (ran.current) return
@@ -218,6 +233,11 @@ export default function ProcessingPage() {
   }
 
   const overallPct = Math.round((currentStep / STEPS.length) * 100)
+
+  // anime.js: tween the displayed % between step values instead of jumping
+  useEffect(() => {
+    countUp(pctRef.current, overallPct, { duration: 900, suffix: '%' })
+  }, [overallPct])
 
   return (
     <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden px-4 py-24">
@@ -281,8 +301,8 @@ export default function ProcessingPage() {
                 transition={{ ease: 'easeOut', duration: 0.55 }}
               />
             </div>
-            <span style={{ fontSize: 12, fontWeight: 700, color: preset.color || '#f59e0b', fontFamily: 'ui-monospace,monospace', flexShrink: 0 }}>
-              {overallPct}%
+            <span ref={pctRef} style={{ fontSize: 12, fontWeight: 700, color: preset.color || '#f59e0b', fontFamily: 'ui-monospace,monospace', flexShrink: 0 }}>
+              0%
             </span>
           </div>
         </div>

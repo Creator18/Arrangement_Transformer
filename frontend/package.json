@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "animejs": "^3.2.2",
     "axios": "^1.7.2",
     "framer-motion": "^11.2.10",
     "opensheetmusicdisplay": "^1.9.9",

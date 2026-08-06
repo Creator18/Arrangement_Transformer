@@ -1,10 +1,11 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import GradientOrbs from '../components/GradientOrbs'
 import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
 import { uploadAudio } from '../utils/api'
+import { letterReveal, gridRise } from '../utils/animefx'
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
 
@@ -126,6 +127,16 @@ function PresetPad({ preset, selected, onSelect }) {
 
 // ── Soundboard pad section ─────────────────────────────────────────────────────
 function PresetBoard({ selected, onSelect }) {
+  const gridRef = useRef(null)
+
+  // anime.js: cascade the 8 pads in as a 4x2 grid wave on mount
+  useEffect(() => {
+    if (gridRef.current) {
+      gridRise(Array.from(gridRef.current.children),
+               { grid: [4, 2], delay: 350 })
+    }
+  }, [])
+
   return (
     <div>
       {/* Section label row */}
@@ -144,6 +155,7 @@ function PresetBoard({ selected, onSelect }) {
       </div>
 
       <div
+        ref={gridRef}
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(4, 1fr)',
@@ -192,8 +204,18 @@ export default function LandingPage() {
   const [error,     setError]     = useState(null)
   const [preset,    setPreset]    = useState(PRESETS[0])   // Standard is default
 
-  const inputRef = useRef(null)
-  const navigate = useNavigate()
+  const inputRef    = useRef(null)
+  const kickerRef   = useRef(null)
+  const subtitleRef = useRef(null)
+  const navigate    = useNavigate()
+
+  // anime.js: letter-by-letter reveal on the kicker + subtitle.  The h1
+  // keeps its framer fade — background-clip:text gradients don't survive
+  // per-letter span splitting.
+  useEffect(() => {
+    letterReveal(kickerRef.current,   { delay: 300, stagger: 22 })
+    letterReveal(subtitleRef.current, { delay: 750, stagger: 12, translate: 10 })
+  }, [])
 
   const handleFile = useCallback(async (file) => {
     if (!file) return
@@ -238,7 +260,7 @@ export default function LandingPage() {
           className="float"
           style={{ display: 'inline-block', marginBottom: 8 }}
         >
-          <span style={{
+          <span ref={kickerRef} style={{
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: '0.22em',
@@ -261,7 +283,7 @@ export default function LandingPage() {
           Arrangement<br />Transformer
         </h1>
 
-        <p style={{
+        <p ref={subtitleRef} style={{
           fontSize: 18,
           color: 'rgba(255,255,255,0.38)',
           fontWeight: 300,

@@ -8,6 +8,7 @@ import CdefView from '../components/CdefView'
 import PianoRollPlayer from '../components/PianoRollPlayer'
 import SheetMusicView from '../components/SheetMusicView'
 import { getCdefText, getMidiUrl, getCdefUrl, getMusicXmlUrl, getPartAudioUrl, getLayerAudioUrl, getOriginalAudioUrl, getTranscriptionAudioUrl, getTransformedAudioUrl, getPatternClusters, getPatternClusterAudioUrl } from '../utils/api'
+import { letterReveal, gridRise } from '../utils/animefx'
 import AudioPlayer from '../components/AudioPlayer'
 import AudioBars from '../components/AudioBars'
 
@@ -191,6 +192,8 @@ export default function ResultsPage() {
   const [loading,          setLoading]          = useState(true)
   const [activePart,       setActivePart]       = useState('all')
   const [patternClusters,  setPatternClusters]  = useState({})
+  const kickerRef  = useRef(null)
+  const padsRowRef = useRef(null)
 
   useEffect(() => {
     async function load() {
@@ -222,6 +225,15 @@ export default function ResultsPage() {
     }
     load()
   }, [sessionId])
+
+  // anime.js flourishes once data has loaded and the page is rendered
+  useEffect(() => {
+    if (loading) return
+    letterReveal(kickerRef.current, { delay: 250, stagger: 26 })
+    if (padsRowRef.current) {
+      gridRise(Array.from(padsRowRef.current.children), { delay: 500 })
+    }
+  }, [loading])
 
   const originalNotes    = transcriptionData?.notes || []
   const transformedNotes = transformData?.transformed_notes || []
@@ -278,7 +290,7 @@ export default function ResultsPage() {
           transition={{ duration: 0.6 }}
           className="text-center space-y-4 pt-4"
         >
-          <span style={{
+          <span ref={kickerRef} style={{
             fontSize: 9,
             fontWeight: 700,
             letterSpacing: '0.22em',
@@ -326,7 +338,7 @@ export default function ResultsPage() {
             </span>
             <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
           </div>
-          <div className="flex gap-2.5">
+          <div className="flex gap-2.5" ref={padsRowRef}>
             {layerPads.map(p => (
               <PartPad
                 key={p.key}

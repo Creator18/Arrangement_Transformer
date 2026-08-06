@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { wipeReveal } from '../utils/animefx'
 
 // ── layout constants ──────────────────────────────────────────────────────────
 const NOTE_W_FALLBACK = 8     // initial px per semitone before container is measured
@@ -545,6 +546,17 @@ export default function PianoRollPlayer({
   }, [currentTime, playing, maxTime, notes])
 
   const pct = duration > 0 ? (currentTime / duration) * 100 : 0
+
+  // anime.js: reveal the roll with a bottom-up clip wipe on first mount.
+  // One clip-path animation on the container — cheap even with thousands
+  // of SVG note rects inside.
+  const revealed = useRef(false)
+  useEffect(() => {
+    if (!revealed.current && rollRef.current && notes.length) {
+      revealed.current = true
+      wipeReveal(rollRef.current, { duration: 1100, delay: 150 })
+    }
+  }, [notes])
 
   // ── LH/RH divider x position ───────────────────────────────────────────────
   const handDivX = (midiLo <= 60 && 60 <= midiHi)
