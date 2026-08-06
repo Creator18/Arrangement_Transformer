@@ -311,12 +311,40 @@ def select_pattern(
 
         density_pen = abs(u_density - q_density) / max(1.0, q_density)
         mud_pen     = mud_penalty(u["notes"])
+
+        # Clearance is judged on the BEST ACHIEVABLE octave placement, not on
+        # the corpus pitches as-stored.  instantiate() runs an octave search,
+        # so a pattern that crowds the melody where it happens to sit in its
+        # source score will simply be moved — penalising it here discards a
+        # candidate the placement stage would have fixed, and (measured) let
+        # clearance swing the score by up to 0.70 while the entire similarity
+        # range is 0.45.  That put the melody's register in charge of which
+        # texture got chosen, which is how the second half of the test piece
+        # ended up thrashing between five figurations in six spans.
         if melody_low is not None:
-            clear = melody_clearance(u["notes"], melody_low)
-            clear_pen = max(0.0, (MIN_MELODY_CLEARANCE_ST - clear)) / 12.0
+            span_ = max(int(n["pitch"]) for n in u["notes"]) - \
+                    min(int(n["pitch"]) for n in u["notes"])
+            best_clear = max(
+                melody_clearance([{**n, "pitch": int(n["pitch"]) + 12 * s}
+                                  for n in u["notes"]], melody_low)
+                for s in (-2, -1, 0, 1, 2)
+            )
+            clear_pen = max(0.0, (MIN_MELODY_CLEARANCE_ST - best_clear)) / 12.0
+            # A pattern too WIDE to ever clear the melody is genuinely
+            # unusable; that is the only case this should still veto.
+            if span_ > 30:
+                clear_pen += 0.5
         else:
             clear_pen = 0.0
-        cont_bonus = 1.0 if (prev_type and u.get("pattern_type") == prev_type) else 0.0
+
+        # Continuity scales with how decisive similarity is.  A flat bonus
+        # comparable to the whole similarity spread makes the first pick
+        # self-reinforce regardless of fit; scaling it means "keep the
+        # current texture unless something is clearly better".
+        top_sim = cands[0][1]
+        decisiveness = min(1.0, max(0.0, (top_sim - sim) / max(top_sim, 1e-6)))
+        cont_bonus = ((1.0 - decisiveness)
+                      if (prev_type and u.get("pattern_type") == prev_type) else 0.0)
 
         score = (W_SIM * sim
                  - W_DENSITY   * min(density_pen, 2.0)
