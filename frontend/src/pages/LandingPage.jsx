@@ -6,6 +6,9 @@ import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
 import { uploadAudio } from '../utils/api'
 import { letterReveal, gridRise } from '../utils/animefx'
+import KeyboardAssembly from '../components/KeyboardAssembly'
+import MasterDial from '../components/MasterDial'
+import SignalChain from '../components/SignalChain'
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
 
@@ -291,6 +294,12 @@ export default function LandingPage() {
         }}>
           Any song. Any keyboard. Full arrangement.
         </p>
+
+        {/* Keys fly in scattered and assemble into a strip; they drift
+            apart again ("exploded view") as the hero scrolls away */}
+        <div style={{ marginTop: 36 }}>
+          <KeyboardAssembly />
+        </div>
       </motion.div>
 
       {/* ── Main card: preset board + upload ── */}
@@ -435,16 +444,31 @@ export default function LandingPage() {
         </GlassCard>
       </motion.div>
 
-      {/* ── How it works ── */}
-      <motion.section
+      {/* ── The engine: master dial centerpiece ── */}
+      <section
+        className="relative z-10 mt-32 w-full px-4 flex flex-col items-center"
+        style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}
+      >
+        <span style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.20em',
+          color: 'rgba(255,255,255,0.2)',
+          fontFamily: 'ui-monospace,monospace',
+          marginBottom: 24,
+        }}>
+          THE ENGINE
+        </span>
+        <MasterDial size={400} />
+      </section>
+
+      {/* ── How it works: scroll-driven signal chain ── */}
+      <section
         id="how-it-works"
         className="relative z-10 mt-28 w-full px-4 pb-8"
-        style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}
-        initial={{ opacity: 0, y: 40 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, delay: 0.35 }}
+        style={{ maxWidth: 760, marginLeft: 'auto', marginRight: 'auto' }}
       >
-        <div className="text-center mb-10">
+        <div className="text-center mb-12">
           <span style={{
             fontSize: 10,
             fontWeight: 700,
@@ -455,81 +479,12 @@ export default function LandingPage() {
             HOW IT WORKS
           </span>
           <h2 className="text-2xl font-bold tracking-tight mt-2 text-gradient">
-            Three steps to your arrangement
+            Signal flows down the rack
           </h2>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[
-            {
-              num: '01',
-              color: '#f59e0b',
-              sym: '▲',
-              title: 'Upload',
-              desc: 'Drop any piano recording in any format. We convert, normalise and store it automatically.',
-            },
-            {
-              num: '02',
-              color: '#a78bfa',
-              sym: '◈',
-              title: 'Analyse',
-              desc: 'Basic Pitch transcribes every note. Spleeter separates stems. Librosa detects tempo and chord sections.',
-            },
-            {
-              num: '03',
-              color: '#06b6d4',
-              sym: '▶',
-              title: 'Transform',
-              desc: 'NMF compresses pitch range to your preset. Walking bass, voice leading and music theory rules apply.',
-            },
-          ].map((step, i) => (
-            <GlassCard
-              key={step.title}
-              tilt
-              tiltStrength={7}
-              className="p-6 relative overflow-hidden"
-              style={{ cursor: 'default' }}
-            >
-              {/* Background number */}
-              <span style={{
-                position: 'absolute',
-                right: 16, top: 12,
-                fontSize: 64,
-                fontWeight: 900,
-                color: `${step.color}08`,
-                fontFamily: 'ui-monospace,monospace',
-                userSelect: 'none',
-                lineHeight: 1,
-              }}>
-                {step.num}
-              </span>
-
-              {/* Icon circle */}
-              <div style={{
-                width: 40, height: 40,
-                borderRadius: '50%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: `${step.color}12`,
-                border: `1px solid ${step.color}30`,
-                boxShadow: `0 0 16px ${step.color}15`,
-                marginBottom: 16,
-                fontSize: 16,
-                color: step.color,
-                fontFamily: 'ui-monospace,monospace',
-              }}>
-                {step.sym}
-              </div>
-
-              <h3 className="text-base font-bold mb-2" style={{ color: '#ffffff' }}>
-                {step.title}
-              </h3>
-              <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
-                {step.desc}
-              </p>
-            </GlassCard>
-          ))}
-        </div>
-      </motion.section>
+        <SignalChain />
+      </section>
     </div>
   )
 }
