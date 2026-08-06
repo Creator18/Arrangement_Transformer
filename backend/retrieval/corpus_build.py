@@ -93,6 +93,29 @@ def _rhythm_profile(notes: List[Dict], beats_per_bar: int, slots: int = 16) -> n
     return prof / m if m > 0 else prof
 
 
+def _half_bar_profiles(bar_notes: List[Dict], bar_start: float,
+                       beats_per_bar: int, slots: int = 8):
+    """
+    Rhythm profiles of a bar's two halves, each relative to its own half's
+    start.  Used to detect half-bar figuration cycles (Alberti, broken-chord
+    ostinati, oom-pah) which are extremely common and would otherwise be
+    stored as one-bar units containing two repetitions.
+    """
+    half = beats_per_bar / 2.0
+    first  = np.zeros(slots, dtype=np.float32)
+    second = np.zeros(slots, dtype=np.float32)
+    for n in bar_notes:
+        rel = float(n["beat"]) - bar_start
+        tgt, off = (first, rel) if rel < half else (second, rel - half)
+        s = int(off / half * slots)
+        tgt[min(max(s, 0), slots - 1)] += 1.0
+    for p in (first, second):
+        m = p.max()
+        if m > 0:
+            p /= m
+    return first, second
+
+
 def _similar(a: np.ndarray, b: np.ndarray, thresh: float = 0.80) -> bool:
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na < 1e-6 or nb < 1e-6:
@@ -152,29 +175,46 @@ def extract_units_from_score(xml_path: Path, style: str) -> List[Dict]:
         if len(bars[bi]) < 2:
             continue
 
-        # Cycle length: compare this bar's rhythm with its neighbour(s)
-        if bi + 1 < n_bars and _similar(profiles[bi], profiles[bi + 1]):
-            cycle = 1.0
-        elif (bi + 3 < n_bars
-              and _similar(profiles[bi],     profiles[bi + 2])
-              and _similar(profiles[bi + 1], profiles[bi + 3])):
-            cycle = 2.0
-        else:
-            cycle = 1.0                             # default: treat as 1-bar
+        base_beat = bi * beats_per_bar
+
+        # Cycle length, checked FINEST-FIRST.  Order matters: a half-bar
+        # figure repeated across bars also passes the 1-bar test, so testing
+        # 1-bar first swallows every half-bar cycle — which is exactly what
+        # the first corpus build did (0 half-bar units out of 5,512, despite
+        # Alberti and broken-chord ostinati being half-bar figures).
+        # Half-bar detection only applies in even meters; splitting a 3/4
+        # bar in half is not musically meaningful.
+        cycle = None
+        if beats_per_bar % 2 == 0:
+            h1, h2 = _half_bar_profiles(bars[bi], base_beat, beats_per_bar)
+            if h1.sum() > 0 and h2.sum() > 0 and _similar(h1, h2, 0.85):
+                cycle = 0.5
+        if cycle is None:
+            if bi + 1 < n_bars and _similar(profiles[bi], profiles[bi + 1]):
+                cycle = 1.0
+            elif (bi + 3 < n_bars
+                  and _similar(profiles[bi],     profiles[bi + 2])
+                  and _similar(profiles[bi + 1], profiles[bi + 3])):
+                cycle = 2.0
+            else:
+                cycle = 1.0                         # default: treat as 1-bar
 
         # Per-piece dedupe: skip if a kept unit already has this rhythm
         if any(_similar(profiles[bi], kp, 0.92) for kp in kept_profiles):
             continue
 
-        span_bars = int(cycle)
-        span_notes: List[Dict] = []
-        for off in range(span_bars):
-            if bi + off < n_bars:
-                span_notes.extend(bars[bi + off])
+        # Gather the notes covered by ONE cycle
+        if cycle == 0.5:
+            half = beats_per_bar / 2.0
+            span_notes = [n for n in bars[bi]
+                          if float(n["beat"]) - base_beat < half]
+        else:
+            span_notes = []
+            for off in range(int(cycle)):
+                if bi + off < n_bars:
+                    span_notes.extend(bars[bi + off])
         if len(span_notes) < 2:
             continue
-
-        base_beat = bi * beats_per_bar
         unit = {
             "id":            f"{style}:{xml_path.parent.name}:bar{bi}",
             "meter":         meter,
@@ -190,7 +230,8 @@ def extract_units_from_score(xml_path: Path, style: str) -> List[Dict]:
             ],
             "chords": [
                 {"beat": b - base_beat, **chords_by_beat[b]}
-                for b in range(base_beat, base_beat + span_bars * beats_per_bar)
+                for b in range(base_beat,
+                               base_beat + max(1, int(np.ceil(cycle * beats_per_bar))))
                 if b in chords_by_beat
             ],
         }

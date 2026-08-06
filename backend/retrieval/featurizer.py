@@ -119,8 +119,12 @@ def featurize_unit(unit: Dict) -> np.ndarray:
     vels   = np.array([float(n.get("vel", 80)) for n in notes])
 
     # ── rhythm block: velocity-weighted onset histogram over 16 slots ────────
-    # Cycle time is folded onto a single bar's grid so a 2-bar cycle's two
-    # halves overlay — the histogram captures the *recurring* placement.
+    # The 16 slots span ONE CYCLE, not one bar.  Because cycle_bars is a hard
+    # retrieval filter, units are only ever compared against others of the
+    # same cycle length, so the effective resolution differing by cycle
+    # (32nd notes for a half-bar cycle, 16ths for a bar, 8ths for two bars)
+    # never causes a mismatched comparison — and every unit gets the full
+    # 16 dims instead of a half-bar figure wasting eight of them.
     #
     # SOFT binning: each onset's mass is split linearly between its two
     # nearest slots by fractional position.  With hard binning, ±40 ms of
@@ -128,7 +132,7 @@ def featurize_unit(unit: Dict) -> np.ndarray:
     # the sparse histogram jumps — measured as the dominant cause of
     # self-retrieval failure (recall@3 0.78 under jitter-only corruption).
     # Soft binning makes the histogram continuous under small onset shifts.
-    frac_slot = (onsets % beats_per_bar) / beats_per_bar * RHYTHM_SLOTS
+    frac_slot = (onsets % cycle_beats) / cycle_beats * RHYTHM_SLOTS
     rhythm = np.zeros(RHYTHM_SLOTS, dtype=np.float32)
     for fs, w in zip(frac_slot, vels):
         lo = int(np.floor(fs)) % RHYTHM_SLOTS
