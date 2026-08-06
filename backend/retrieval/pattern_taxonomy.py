@@ -97,27 +97,43 @@ def melody_clearance(notes: List[Dict], melody_lowest_pitch: int) -> float:
 PATTERN_TYPES = (
     "pedal_point",       # sustained bass under changing harmony
     "block_chords",      # chords struck together, one or few per bar
+    "repeated_chords",   # thick chords pulsing faster than one per beat
+    "dyads",             # two-note LH (root-fifth shells, parallel 3rds/6ths)
     "stride",            # low bass note alternating with higher chord (boom-chick)
     "broken_octaves",    # alternating octave doublings
-    "alberti",           # single line, low-high-mid-high oscillation
+    "alberti",           # single line, strict low-high-mid-high oscillation
+    "broken_chord",      # single line oscillating, not strictly Alberti-shaped
     "walking_bass",      # single line, ~1/beat, stepwise through chord tones
     "arpeggiated",       # single line spanning a wide range, directional runs
     "ostinato",          # short repeating figure, few distinct pitches
     "mixed",             # legitimate fallback
 )
 
+# NOTE on why this list is longer than the researched one.  The published
+# taxonomies are pedagogical — they teach the patterns a student should
+# recognise — and they proved incomplete against real repertoire.  Running
+# the first version over 5,490 corpus units left 43.5% unclassified, and
+# the residue was dominated by three textures no source names:
+#     58% two-note dyads (root-fifth shells, parallel thirds/sixths)
+#     26% single-line oscillating figures that are not strictly Alberti
+#     13% thick chords pulsing faster than once per beat (pop/gospel comping)
+# Those three are added here as first-class types.
+
 # Style affinity per type, from the researched taxonomy.  Used for optional
 # genre-aware filtering later ("pop arrangement" should not retrieve Alberti).
 STYLE_AFFINITY: Dict[str, Tuple[str, ...]] = {
-    "pedal_point":    ("classical", "romantic", "cinematic"),
-    "block_chords":   ("pop", "hymn", "gospel"),
-    "stride":         ("jazz", "ragtime", "blues", "pop"),
-    "broken_octaves": ("classical", "romantic", "dramatic"),
-    "alberti":        ("classical",),
-    "walking_bass":   ("jazz", "pop", "blues"),
-    "arpeggiated":    ("romantic", "pop", "cinematic"),
-    "ostinato":       ("contemporary", "minimalist", "pop"),
-    "mixed":          (),
+    "pedal_point":     ("classical", "romantic", "cinematic"),
+    "block_chords":    ("pop", "hymn", "gospel"),
+    "repeated_chords": ("pop", "gospel", "rock", "latin"),
+    "dyads":           ("pop", "rock", "folk", "classical"),
+    "stride":          ("jazz", "ragtime", "blues", "pop"),
+    "broken_octaves":  ("classical", "romantic", "dramatic"),
+    "alberti":         ("classical",),
+    "broken_chord":    ("classical", "romantic", "pop"),
+    "walking_bass":    ("jazz", "pop", "blues"),
+    "arpeggiated":     ("romantic", "pop", "cinematic"),
+    "ostinato":        ("contemporary", "minimalist", "pop"),
+    "mixed":           (),
 }
 
 
@@ -159,9 +175,9 @@ def classify_pattern_type(unit: Dict) -> str:
     if n_g <= 2 and float(durs.max()) >= 0.7 * cycle_beats:
         return "pedal_point"
 
-    # 2. Block chords — thick simultaneities, sparse in time
-    if mean_size >= 2.5 and groups_per_beat <= 1.2:
-        return "block_chords"
+    # 2. Thick simultaneities — sparse = block chords, frequent = comping
+    if mean_size >= 2.5:
+        return "block_chords" if groups_per_beat <= 1.2 else "repeated_chords"
 
     # 3. Stride / boom-chick — single low note alternating with higher chord
     if n_g >= 2:
@@ -183,7 +199,11 @@ def classify_pattern_type(unit: Dict) -> str:
     # 5. Alberti — single line, >=3 attacks/bar, oscillating, narrow span,
     #    and the cycle's lowest note comes first (the defining shape:
     #    lowest-highest-middle-highest)
-    if mean_size <= 1.4 and groups_per_beat >= 0.9 and span <= 16:
+    #    Requires >=3 distinct pitches: Alberti bass is by definition a broken
+    #    TRIAD (lowest-highest-middle-highest), so a two-pitch oscillation is
+    #    an ostinato, not an Alberti figure.
+    if (mean_size <= 1.4 and groups_per_beat >= 0.9 and span <= 16
+            and len(set(pitches.tolist())) >= 3):
         d = np.diff(lows)
         if d.size >= 2:
             dir_changes = float(np.mean(np.sign(d[:-1]) != np.sign(d[1:])))
@@ -205,9 +225,27 @@ def classify_pattern_type(unit: Dict) -> str:
     if mean_size <= 1.6 and span > 16 and groups_per_beat >= 0.9:
         return "arpeggiated"
 
-    # 8. Ostinato — short cycle, few distinct pitches, repeating
-    if len(set(pitches.tolist())) <= 4 and n_g >= 3:
+    # 8. Broken chord — the general case Alberti is a special case of: a
+    #    single line oscillating within a hand-span.  Alberti's strict
+    #    lowest-note-first shape is rare in real writing even where the
+    #    texture is unmistakably a broken chord, so this catches the rest.
+    if mean_size <= 1.4 and groups_per_beat >= 0.9 and span <= 20:
+        return "broken_chord"
+
+    # 9. Ostinato — repeating SINGLE-LINE figure over few distinct pitches.
+    #    The mean_size gate matters: without it, a repeating root-fifth dyad
+    #    shell also has "few distinct pitches" and gets labelled ostinato,
+    #    when 'dyads' is the more informative description of its texture.
+    #    Ostinato here means repetition of a line; dyads means two-note
+    #    writing, repeating or not.
+    if mean_size <= 1.4 and len(set(pitches.tolist())) <= 4 and n_g >= 3:
         return "ostinato"
+
+    # 10. Dyads — consistently two-note left hand: root-fifth shells,
+    #     parallel thirds and sixths, unbroken octaves.  58% of the first
+    #     version's unclassified residue.
+    if 1.4 < mean_size < 2.5:
+        return "dyads"
 
     return "mixed"
 
