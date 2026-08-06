@@ -64,9 +64,12 @@ def mud_penalty(notes: List[Dict]) -> float:
     """
     if not notes:
         return 0.0
+    # Accepts both note shapes: corpus units are keyed on 'beat'
+    # (beat-relative), generated/pipeline notes on 'onset' (seconds).
     by_onset: Dict[float, List[int]] = {}
     for n in notes:
-        by_onset.setdefault(round(float(n["beat"]), 2), []).append(int(n["pitch"]))
+        t = n.get("beat", n.get("onset", 0.0))
+        by_onset.setdefault(round(float(t), 2), []).append(int(n["pitch"]))
     bad = 0
     for pitches in by_onset.values():
         if len(pitches) < 3:

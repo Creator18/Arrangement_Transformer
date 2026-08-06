@@ -74,7 +74,12 @@ def arrange_session(session_dir: Path, corpus: Optional[Corpus] = None,
             continue
         span_mel = [n for n in melody
                     if span["t_start"] <= float(n["onset"]) < span["t_end"]]
-        mel_low = min((int(n["pitch"]) for n in span_mel), default=None)
+        # Robust melody floor: the 20th percentile, not the absolute minimum.
+        # Clearance measured against the single lowest melody note (a dip, an
+        # ornament, a skyline mis-assignment) pins the accompaniment far lower
+        # than the tune actually sits.
+        mel_low = (int(np.percentile([int(n["pitch"]) for n in span_mel], 20))
+                   if span_mel else None)
 
         picked = select_pattern(corpus, q, mel_low, prev_type)
         if picked is None:
@@ -82,7 +87,10 @@ def arrange_session(session_dir: Path, corpus: Optional[Corpus] = None,
         unit, score, diag = picked
         prev_type = unit.get("pattern_type")
 
-        gen = instantiate(unit, span, beat_times, chord_map, beats_per_bar)
+        gen = instantiate(unit, span, beat_times, chord_map, beats_per_bar,
+                          downbeat_times=downbeat_times,
+                          source_notes=accomp,
+                          melody_low=mel_low)
         out_accomp.extend(gen)
         provenance.append({
             "bars":         [span["bar_start"], span["bar_end"]],

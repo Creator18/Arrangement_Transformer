@@ -376,35 +376,134 @@ def _pitch_for_degree(degree: int, chord: Dict, near: int,
     return best if best is not None else max(lo, min(hi, near))
 
 
+def _make_bar_clock(downbeat_times: Sequence[float],
+                    beat_times: Sequence[float],
+                    beats_per_bar: int):
+    """
+    Build (bar_index, beat_within_bar) -> seconds.
+
+    Anchored to actual DOWNBEAT times, with the real beats that fall inside
+    each bar used for intra-bar interpolation.  The previous version
+    computed a global beat index as bar*beats_per_bar + beat and indexed
+    beat_times with it, which silently assumes the beat and downbeat grids
+    agree everywhere.  madmom detects them separately, so one dropped beat
+    or a pickup bar makes the two drift — and because the index is
+    cumulative, the error grows through the piece.  That is the "sometimes
+    rushed, sometimes delayed" artefact.
+    """
+    db = np.asarray(sorted(float(t) for t in downbeat_times), dtype=float)
+    bt = np.asarray(sorted(float(t) for t in beat_times),     dtype=float)
+
+    def clock(bar: float, beat_in_bar: float) -> Optional[float]:
+        b = int(np.floor(bar))
+        if db.size < 2 or b < 0:
+            return None
+        if b >= db.size - 1:
+            # past the last detected downbeat: extrapolate with the last bar
+            if db.size < 2:
+                return None
+            bar_len = float(db[-1] - db[-2])
+            over = bar - (db.size - 1)
+            start, length = float(db[-1]) + over * bar_len, bar_len
+        else:
+            start, length = float(db[b]), float(db[b + 1] - db[b])
+        frac = beat_in_bar / max(1, beats_per_bar)
+        # Prefer the real beats inside this bar over linear interpolation,
+        # so intra-bar rubato survives.
+        inner = bt[(bt > start + 1e-6) & (bt < start + length - 1e-6)]
+        grid = np.concatenate(([start], inner, [start + length]))
+        pos = frac * (grid.size - 1)
+        i = int(np.floor(pos))
+        i = min(max(i, 0), grid.size - 2)
+        return float(grid[i] + (pos - i) * (grid[i + 1] - grid[i]))
+
+    return clock
+
+
+def _octave_shift_search(
+    notes:          List[Dict],
+    target_centroid: Optional[float],
+    melody_low:     Optional[int],
+    lo:             int,
+    hi:             int,
+    max_shift:      int = 2,
+) -> int:
+    """
+    Choose an octave displacement for a generated pattern.
+
+    Objective (lower is better):
+        |centroid - source span's accompaniment centroid|   register match
+      + mud penalty                                          low tight voicings
+      + melody-crowding penalty                              clearance
+      + out-of-range penalty                                 keyboard fit
+
+    Enumerated over a 5-point space (-2..+2 octaves) rather than hill
+    climbed: with a space this small, exhaustive search costs the same and
+    cannot get stuck in a local optimum, which a hill climb over a
+    non-convex objective like this genuinely can.
+
+    On the audio-domain objective you suggested: comparing rendered
+    waveforms would be the most faithful signal, but each render is
+    seconds and this runs per span, so it would add minutes per song.  The
+    register-centroid term is a symbolic proxy for the same thing — octave
+    placement is precisely what shifts spectral energy between registers —
+    at ~zero cost.  If the proxy proves insufficient in listening, the
+    hook to swap in a spectral objective is this function's signature.
+    """
+    if not notes:
+        return 0
+    best_shift, best_cost = 0, float("inf")
+    for s in range(-max_shift, max_shift + 1):
+        shifted = [{**n, "pitch": int(n["pitch"]) + 12 * s} for n in notes]
+        ps = np.array([n["pitch"] for n in shifted], dtype=float)
+
+        cost = 0.0
+        if target_centroid is not None:
+            cost += abs(float(ps.mean()) - target_centroid) / 12.0
+        cost += 1.5 * mud_penalty(shifted)
+        if melody_low is not None:
+            clear = melody_low - float(ps.max())
+            cost += max(0.0, (MIN_MELODY_CLEARANCE_ST - clear)) / 12.0
+        cost += float(np.mean((ps < lo) | (ps > hi))) * 3.0
+
+        if cost < best_cost:
+            best_shift, best_cost = s, cost
+    return best_shift
+
+
 def instantiate(
-    unit:          Dict,
-    span:          Dict,
-    beat_times:    Sequence[float],
-    chord_map:     Dict[int, Tuple[int, set]],
-    beats_per_bar: int,
-    register_lo:   int = 28,
-    register_hi:   int = 60,
+    unit:            Dict,
+    span:            Dict,
+    beat_times:      Sequence[float],
+    chord_map:       Dict[int, Tuple[int, set]],
+    beats_per_bar:   int,
+    downbeat_times:  Sequence[float] = (),
+    source_notes:    Sequence[Dict] = (),
+    melody_low:      Optional[int] = None,
+    register_lo:     int = 28,
+    register_hi:     int = 67,
 ) -> List[Dict]:
     """
     Turn a retrieved pattern into real notes over THIS span: tile its cycle
     across the span's bars, re-pitch each note by chord degree onto the
-    span's actual chords, and place onsets at the song's actual beat times
-    so rubato and tempo drift are inherited rather than flattened.
+    span's actual chords, place onsets on the song's actual bar/beat clock
+    so rubato is inherited, then choose the octave that best matches where
+    the SOURCE's own accompaniment sat in this span.
     """
-    bt = np.asarray(beat_times, dtype=float)
-    if bt.size < 2:
-        return []
+    clock = _make_bar_clock(downbeat_times or beat_times, beat_times, beats_per_bar)
     cycle_bars  = float(unit["cycle_bars"])
     cycle_beats = beats_per_bar * cycle_bars
     src_chords  = sorted(unit.get("chords", []), key=lambda c: float(c["beat"]))
 
-    def beat_to_time(global_beat: float) -> float:
-        i = int(np.floor(global_beat))
-        frac = global_beat - i
-        i = min(max(i, 0), bt.size - 2)
-        return float(bt[i] + frac * (bt[i + 1] - bt[i]))
+    # Where the source's accompaniment actually sits in this span — the
+    # target the octave search aims at.  Without this the pattern lands in
+    # whatever register the corpus piece happened to use.
+    src_span = [n for n in source_notes
+                if span["t_start"] <= float(n["onset"]) < span["t_end"]]
+    target_centroid = (float(np.mean([int(n["pitch"]) for n in src_span]))
+                       if src_span else None)
 
-    out: List[Dict] = []
+    raw: List[Dict] = []
     n_bars = span["bar_end"] - span["bar_start"]
     reps = int(np.ceil(n_bars / max(cycle_bars, 0.5)))
     for r in range(reps):
@@ -426,23 +525,41 @@ def instantiate(
                 if float(c["beat"]) <= nb + 1e-6:
                     src_chord = c
             deg = _degree_of(int(n["pitch"]), src_chord)
-            # keep the pattern's internal contour: place relative to where the
-            # source note sat within its own chord's register
-            near = register_lo + (int(n["pitch"]) - (src_chord["root_pc"] if src_chord else 0)) % 24
-            pitch = _pitch_for_degree(deg, tgt, near, register_lo, register_hi)
 
-            gb = (span["bar_start"] + bar_off) * beats_per_bar + nb
-            on = beat_to_time(gb)
-            off = beat_to_time(gb + max(0.1, float(n.get("dur", 0.5))))
-            if off <= on:
-                off = on + 0.08
-            out.append({
+            # Preserve the pattern's internal contour, but anchor it where
+            # the SOURCE's accompaniment actually sits rather than at the
+            # bottom of the keyboard.  Anchoring at register_lo (as the
+            # first version did) put every pattern in E1-Eb3 regardless of
+            # context, which is why generated accompaniment came out nearly
+            # an octave below the source's own.
+            pat_mean = float(np.mean([int(x["pitch"]) for x in unit["notes"]]))
+            anchor   = (target_centroid - pat_mean) if target_centroid is not None \
+                       else (register_lo + 12 - pat_mean)
+            near     = int(round(int(n["pitch"]) + anchor))
+            pitch  = _pitch_for_degree(deg, tgt, near, register_lo, register_hi)
+
+            on  = clock(abs_bar + (nb // beats_per_bar), nb % beats_per_bar)
+            off = clock(abs_bar + ((nb + max(0.1, float(n.get("dur", 0.5))))
+                                   // beats_per_bar),
+                        (nb + max(0.1, float(n.get("dur", 0.5)))) % beats_per_bar)
+            if on is None:
+                continue
+            if off is None or off <= on:
+                off = on + 0.12
+            raw.append({
                 "pitch":    int(pitch),
-                "onset":    round(on, 4),
-                "offset":   round(off, 4),
+                "onset":    round(float(on), 4),
+                "offset":   round(float(off), 4),
                 "velocity": int(n.get("vel", 70)),
                 "layer":    "pattern",
                 "source":   unit["id"],
                 "pattern_type": unit.get("pattern_type", "mixed"),
             })
-    return out
+
+    # Octave placement, decided once per span so the texture stays coherent
+    shift = _octave_shift_search(raw, target_centroid, melody_low,
+                                 register_lo, register_hi)
+    if shift:
+        for n in raw:
+            n["pitch"] = int(n["pitch"]) + 12 * shift
+    return raw
