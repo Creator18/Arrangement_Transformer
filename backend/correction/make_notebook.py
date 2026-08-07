@@ -99,8 +99,58 @@ if REBUILD:
 else:
     print("reusing", PAIRS)
 
-rows = [json.loads(l) for l in open(PAIRS, encoding="utf-8")]
-print(f"pieces with pairs: {len(rows)}")
+rows_all = [json.loads(l) for l in open(PAIRS, encoding="utf-8")]
+print(f"pieces with pairs: {len(rows_all)}")
+"""))
+
+C.append(nbf.v4.new_markdown_cell("""\
+### Repeat-structure gate
+
+music21 expands written repeats; ASAP's beat annotations follow what the
+pianist actually played. When those disagree the score and the annotation
+grid describe different amounts of music, and everything after the first
+repeat is offset — recall collapses to ~0.17 while looking like an
+ordinary hard piece.
+
+The tell is exact: usable pieces have annotation coverage of 1.00, broken
+ones land anywhere from 0.28 to 1.54. Gate on it rather than trying to
+reconcile repeat structure, which is error-prone and unnecessary given
+how much data is left afterwards.
+"""))
+
+C.append(nbf.v4.new_code_cell("""\
+# ── drop pieces whose repeat structure does not match the annotations ────
+import csv
+from correction.align import BeatMap
+ASAP = REPO / "data" / "asap-dataset"
+meta = {r["midi_performance"]: r for r in
+        csv.DictReader(open(ASAP / "metadata.csv", encoding="utf-8"))}
+man  = json.load(open(DATA / "train_manifest.json", encoding="utf-8"))
+pm_by = {p["folder"]: p["perf_midi"] for p in man["performances"]}
+tg = {r["folder"]: r for r in (json.loads(l) for l in
+      open(DATA / "score_targets.jsonl", encoding="utf-8"))}
+
+TOL = 0.02
+rows, dropped = [], []
+for r in rows_all:
+    f = r["folder"]; m = meta.get(pm_by.get(f, ""))
+    if m is None:
+        dropped.append((f, None)); continue
+    try:
+        bm = BeatMap.for_performance(ASAP / f, Path(m["performance_annotations"]).name)
+        cover = bm.score.max() / max(1e-6, max(n["onset_b"] for n in tg[f]["notes"]))
+    except Exception:
+        dropped.append((f, None)); continue
+    (rows if abs(cover - 1.0) <= TOL else dropped).append(
+        (r if abs(cover - 1.0) <= TOL else (f, round(cover, 3))))
+rows = [r for r in rows if isinstance(r, dict)]
+print(f"kept {len(rows)} / {len(rows_all)} pieces (coverage within {TOL:.0%} of 1.0)")
+print(f"dropped {len(dropped)} for repeat-structure mismatch")
+kp = np.array([r["stats"]["precision"] for r in rows])
+kr = np.array([r["stats"]["recall"] for r in rows])
+print(f"kept-set precision mean {kp.mean():.3f} median {np.median(kp):.3f} | "
+      f"recall mean {kr.mean():.3f}")
+print(f"kept-set pieces with P<0.5: {(kp<0.5).sum()}/{len(kp)}")
 """))
 
 C.append(nbf.v4.new_markdown_cell("""\
@@ -157,14 +207,21 @@ C.append(nbf.v4.new_code_cell("""\
 LAYERS = ["melody","pattern","bass_pattern","bass_melody","bass",""]
 
 def featurise_piece(r):
-    ev = ([(x["ours_onset_b"], x["ours_dur_b"], x["pitch"], x["ours_vel"],
-            x.get("ours_layer") or "", 1, x["dur_ratio"], x["tgt_hand"]) for x in r["matched"]]
-        + [(x["onset_b"], x["dur_b"], x["pitch"], 80, "", 0, 1.0, None)
+    # LEAKAGE TRAP, found by head 1 reporting a perfect 1.000/1.000: the
+    # pairs file does not store velocity or layer for spurious notes, so the
+    # first version substituted constants (80, "") — which ARE the label.
+    # The model learned "velocity == 80 -> delete" and scored perfectly on a
+    # task it never solved.  Both fields are dropped from the feature set;
+    # nothing that distinguishes the two record TYPES may be a feature, only
+    # things a real note would carry either way.
+    ev = ([(x["ours_onset_b"], x["ours_dur_b"], x["pitch"], 1,
+            x["dur_ratio"], x["tgt_hand"]) for x in r["matched"]]
+        + [(x["onset_b"], x["dur_b"], x["pitch"], 0, 1.0, None)
            for x in r["spurious"]])
     ev.sort(key=lambda e: (e[0], e[2]))
     if len(ev) < 5: return None
     on = np.array([e[0] for e in ev]); du = np.array([e[1] for e in ev])
-    pi = np.array([e[2] for e in ev], dtype=float); ve = np.array([e[3] for e in ev], dtype=float)
+    pi = np.array([e[2] for e in ev], dtype=float)
     X, Yk, Yd, Yh, Md, Mh = [], [], [], [], [], []
     med_p = np.median(pi)
     for i, e in enumerate(ev):
@@ -174,21 +231,21 @@ def featurise_piece(r):
         prev_gap = on[i]-on[i-1] if i > 0 else 2.0
         next_gap = on[i+1]-on[i] if i < len(ev)-1 else 2.0
         dens = len(win_on)/max(1e-6, (win_on.max()-win_on.min()) or 1.0)
-        lay = [0.0]*len(LAYERS); lay[LAYERS.index(e[4]) if e[4] in LAYERS else -1] = 1.0
         X.append([ (pi[i]-60)/24, (pi[i]-med_p)/12, np.log1p(du[i]),
-                   ve[i]/127, np.log1p(min(prev_gap,4)), np.log1p(min(next_gap,4)),
+                   np.log1p(min(prev_gap,4)), np.log1p(min(next_gap,4)),
                    simul/6, min(dens,20)/20,
                    (pi[i]-win_p.min())/12, (win_p.max()-pi[i])/12,
                    float(pi[i]==win_p.max()), float(pi[i]==win_p.min()),
                    (win_p.mean()-60)/24, win_p.std()/12,
                    on[i]-np.floor(on[i]),                       # position in beat
-                 ] + lay)
-        Yk.append(float(e[5]))
-        Yd.append(np.log(max(1e-3, e[6])) if e[5] else 0.0); Md.append(float(e[5]))
-        Yh.append(1.0 if e[7]=="RH" else 0.0)
-        # bool() first: `e[5] and e[7]` returns the STRING "RH" when both are
+                   min(du[i]/max(1e-6,next_gap), 4)/4,          # overlap with next
+                 ])
+        Yk.append(float(e[3]))
+        Yd.append(np.log(max(1e-3, e[4])) if e[3] else 0.0); Md.append(float(e[3]))
+        Yh.append(1.0 if e[5]=="RH" else 0.0)
+        # bool() first: `e[3] and e[5]` returns the STRING "RH" when both are
         # truthy, and float("RH") raises.
-        Mh.append(1.0 if (e[5] and e[7] is not None) else 0.0)
+        Mh.append(1.0 if (e[3] and e[5] is not None) else 0.0)
     return (np.array(X,dtype=np.float32), np.array(Yk,dtype=np.float32),
             np.array(Yd,dtype=np.float32), np.array(Yh,dtype=np.float32),
             np.array(Md,dtype=np.float32), np.array(Mh,dtype=np.float32))
