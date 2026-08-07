@@ -599,11 +599,32 @@ def _stamp_pattern_idx(
 
 _BASS_SPLIT_PITCH = 56    # G#3 — matches music_theory.BASS_SPLIT
 
-# Apply the score-informed corrector (duration + hand) after quantization.
-# Trained on 140 ASAP scores / 180k matched notes; on held-out pieces it cut
-# mean |log duration error| by 39%.  Whether that survives contact with the
-# real eval harness is what the flag exists to test.
+# Score-informed corrector.  Trained on 140 ASAP scores / 180k matched notes;
+# on held-out pieces it cut mean |log duration error| by 39%.
+#
+# MEASURED ON THE REAL HARNESS (eval run 6) IT MADE THINGS MUCH WORSE:
+#     COnP    0.7821 -> 0.7821   (unchanged; it touches no onsets or pitches)
+#     COnPOff 0.4594 -> 0.2784   (-39% relative)
+#
+# The model is not broken — it was trained toward a different target than the
+# metric measures.  It learned NOTATED durations from scores; the eval's
+# ground truth is PERFORMANCE MIDI, and a performer detaches notes, so a
+# written quarter is played shorter than a quarter.  We sit below the notated
+# value on 52% of notes, so the model dutifully lengthens — correct against a
+# score, wrong against a performance.
+#
+# Consequences, kept separate on purpose:
+#   - the DURATION head is off for the transcription path, which is judged
+#     against performances.  It is the right correction for sheet-music
+#     export, where notated values are what should be printed — that is a
+#     future use, not this one.
+#   - the HAND head is unaffected by this: hand assignment is notation
+#     information that has no performance counterpart to disagree with, and
+#     it does not touch timing.  It beat the pitch>=C4 heuristic 0.883 to
+#     0.788 and is applied.
 USE_CORRECTOR = True
+CORRECTOR_APPLY_DURATION = False   # see above: harmful against performance truth
+CORRECTOR_APPLY_HAND     = True
 
 
 def _transcribe_fullmix_of(
@@ -693,7 +714,10 @@ def _transcribe_fullmix_of(
         try:
             from app.ml.corrector import correct_notes, available
             if available():
-                quantized = correct_notes(quantized, beat_times)
+                quantized = correct_notes(
+                    quantized, beat_times,
+                    apply_duration=CORRECTOR_APPLY_DURATION,
+                    apply_hand=CORRECTOR_APPLY_HAND)
         except Exception as e:
             print(f"[transcription] corrector skipped: {e}")
 
