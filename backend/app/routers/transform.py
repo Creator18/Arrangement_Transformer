@@ -1,8 +1,15 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from pathlib import Path
 import json
 import numpy as np
+
+# How the accompaniment is produced — see the block in transform_arrangement.
+#   'transformer' : 88->61 model + rule stack (default, unchanged behaviour)
+#   'retrieval'   : borrow figuration from real scores, re-pitched onto this
+#                   song's harmony
+ARRANGEMENT_MODE = "transformer"
 
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
@@ -249,6 +256,35 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         except Exception:
             export_notes = notes
 
+    # ── retrieval-augmented arrangement (opt-in) ──────────────────────────
+    # ARRANGEMENT_MODE selects how the accompaniment is produced:
+    #   'transformer' — the 88->61 model plus the rule stack (current
+    #                   default; what every arrangement has used so far)
+    #   'retrieval'   — keep the source melody and harmony, but borrow the
+    #                   accompaniment FIGURATION from real scores and
+    #                   re-pitch it onto this song's own chords
+    # Both write the same transformed.json shape, so the whole downstream
+    # (previews, MIDI, MusicXML, CDEF, the UI) is unchanged either way.
+    # This is what makes the three-arm A/B possible from the app instead of
+    # from a script.
+    retrieval_provenance = None
+    if ARRANGEMENT_MODE == "retrieval":
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+            from retrieval.arrange import arrange_session
+            arranged = arrange_session(session_dir, verbose=False)
+            if arranged["notes"]:
+                export_notes = arranged["notes"]
+                retrieval_provenance = arranged["provenance"]
+                method = f"{method}+retrieval"
+                print(f"[transform] retrieval arrangement: "
+                      f"{arranged['counts']} over "
+                      f"{len(retrieval_provenance)} spans")
+        except Exception as e:
+            print(f"[transform] retrieval failed, keeping transformer output: "
+                  f"{type(e).__name__}: {e}")
+
     for stale in ["arrangement_preview.wav", "transcription_preview.wav"]:
         p = session_dir / stale
         if p.exists():
@@ -272,6 +308,11 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         "detected_scale":         scale_info,
         "midi_path":              str(midi_path),
         "layers":                 layers,
+        "arrangement_mode":       ARRANGEMENT_MODE,
+        # Per-span record of which corpus pattern each passage borrowed and
+        # why it won — the review surface for retrieval, in the same spirit
+        # as the Layers tab for separation.
+        "retrieval_provenance":   retrieval_provenance,
     }
 
     with open(session_dir / "transformed.json", "w") as f:

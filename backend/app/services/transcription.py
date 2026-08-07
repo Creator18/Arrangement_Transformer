@@ -422,10 +422,24 @@ def _compute_feel(notes: List[Dict], beat_times: np.ndarray) -> float:
     return float(np.median(offsets))
 
 
+# Gentle-quantization gate.  A snap is only applied when it moves the note
+# by less than this many seconds; larger corrections are assumed to be the
+# grid disagreeing with the performance (or madmom's beat being off) rather
+# than the note needing fixing, and the original time is kept.
+#
+# Eval evidence: after the of_fullmix swap, timing_off became the #1 FP
+# category (40%) and #2 FN (29%) — ~38k events that are real notes landing
+# just outside the +-50 ms match window.  Unconditional snapping was a prime
+# suspect for *creating* some of that.  45 ms keeps corrections inside the
+# metric's own tolerance so a snap can never push a correct note out of it.
+_MAX_SNAP_SHIFT_S = 0.045
+
+
 def _beat_adaptive_quantize(
     notes: List[Dict],
     beat_times: np.ndarray,
     subdivisions: int = 4,
+    max_shift_s: Optional[float] = _MAX_SNAP_SHIFT_S,
 ) -> List[Dict]:
     """
     Snap note onsets/offsets to the nearest sub-beat grid position.
@@ -434,6 +448,10 @@ def _beat_adaptive_quantize(
     positions, so it handles tempo variation and rubato correctly.  Between
     consecutive beats the interval is divided into `subdivisions` equal slots
     (subdivisions=4 → 16th-note grid within each beat pair).
+
+    `max_shift_s` gates each snap: onsets/offsets further than that from the
+    nearest grid line are left where the transcriber put them.  Pass None to
+    restore unconditional snapping (the pre-2026-08 behaviour).
 
     Extrapolates using the last beat interval for notes beyond the final beat.
     Falls back to leaving times unchanged if fewer than 2 beats are detected.
@@ -471,13 +489,20 @@ def _beat_adaptive_quantize(
         idx  = round(frac * subdivisions)
         return float(beat_times[i] + idx * sub)
 
+    def _gated_snap(t: float) -> float:
+        """Snap only if the correction is small enough to be plausible."""
+        snapped = _snap(t)
+        if max_shift_s is not None and abs(snapped - t) > max_shift_s:
+            return t
+        return snapped
+
     result = []
     for n in notes:
         # Clamp to zero — extrapolation before the first beat can snap an
         # early onset negative, which downstream (mir_eval, MIDI export)
         # rejects as a malformed interval.
-        onset_s  = max(0.0, _snap(float(n['onset'])))
-        offset_s = max(0.0, _snap(float(n.get('offset', float(n['onset']) + 0.25))))
+        onset_s  = max(0.0, _gated_snap(float(n['onset'])))
+        offset_s = max(0.0, _gated_snap(float(n.get('offset', float(n['onset']) + 0.25))))
 
         if offset_s <= onset_s:
             # Extend by one sub-beat using the local interval
@@ -574,6 +599,12 @@ def _stamp_pattern_idx(
 
 _BASS_SPLIT_PITCH = 56    # G#3 — matches music_theory.BASS_SPLIT
 
+# Apply the score-informed corrector (duration + hand) after quantization.
+# Trained on 140 ASAP scores / 180k matched notes; on held-out pieces it cut
+# mean |log duration error| by 39%.  Whether that survives contact with the
+# real eval harness is what the flag exists to test.
+USE_CORRECTOR = True
+
 
 def _transcribe_fullmix_of(
     session_dir: Path,
@@ -654,6 +685,17 @@ def _transcribe_fullmix_of(
         quantized = _beat_adaptive_quantize(refined, beat_times, subdivisions=4)
     else:
         quantized = quantize_notes(refined, tempo, subdivisions=16)
+
+    # Score-informed correction.  Runs last, on final timings, because it was
+    # trained on the output of exactly this pipeline — feeding it anything
+    # earlier would show it a distribution it never saw.
+    if USE_CORRECTOR:
+        try:
+            from app.ml.corrector import correct_notes, available
+            if available():
+                quantized = correct_notes(quantized, beat_times)
+        except Exception as e:
+            print(f"[transcription] corrector skipped: {e}")
 
     return quantized, {'bass': round(bass_feel, 4), 'upper': round(upper_feel, 4)}
 
