@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import GradientOrbs from '../components/GradientOrbs'
+import ScrollStage from '../components/ScrollStage'
+import SectionRail from '../components/SectionRail'
+import RackSection from '../components/RackSection'
 import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
 import { uploadAudio } from '../utils/api'
@@ -9,6 +11,16 @@ import { letterReveal, gridRise } from '../utils/animefx'
 import KeyboardAssembly from '../components/KeyboardAssembly'
 import MasterDial from '../components/MasterDial'
 import SignalChain from '../components/SignalChain'
+
+// Channels on the rail, in document order.  Keep this list in step with
+// ScrollStage's SCENES so the backdrop and the menu agree about where the
+// user is — they read the same scroll position independently.
+const SECTIONS = [
+  { id: 'hero',         label: 'INTRO',   color: '#f59e0b' },
+  { id: 'console',      label: 'CONSOLE', color: '#a78bfa' },
+  { id: 'engine',       label: 'ENGINE',  color: '#06b6d4' },
+  { id: 'how-it-works', label: 'SIGNAL',  color: '#34d399' },
+]
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
 
@@ -249,12 +261,14 @@ export default function LandingPage() {
   const onDragLeave = () => setDragging(false)
 
   return (
-    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden pt-24 pb-32">
-      <GradientOrbs />
+    <div className="relative min-h-screen flex flex-col items-center pt-24 pb-40">
+      <ScrollStage />
+      <SectionRail sections={SECTIONS} />
 
       {/* ── Hero ── */}
       <motion.div
-        className="relative z-10 text-center mb-12 px-4"
+        id="hero"
+        className="relative z-10 text-center mb-14 px-4"
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
@@ -304,6 +318,7 @@ export default function LandingPage() {
 
       {/* ── Main card: preset board + upload ── */}
       <motion.div
+        id="console"
         className="relative z-10 w-full px-4"
         style={{ maxWidth: 560 }}
         initial={{ opacity: 0, y: 48 }}
@@ -444,47 +459,33 @@ export default function LandingPage() {
         </GlassCard>
       </motion.div>
 
-      {/* ── The engine: master dial centerpiece ── */}
-      <section
-        className="relative z-10 mt-32 w-full px-4 flex flex-col items-center"
-        style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}
-      >
-        <span style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: '0.20em',
-          color: 'rgba(255,255,255,0.2)',
-          fontFamily: 'ui-monospace,monospace',
-          marginBottom: 24,
-        }}>
-          THE ENGINE
-        </span>
-        <MasterDial size={400} />
-      </section>
+      {/* ── The engine ── */}
+      <div className="relative z-10 w-full px-4 mt-36"
+           style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}>
+        <RackSection
+          id="engine"
+          label="THE ENGINE"
+          color="#06b6d4"
+          subtitle="Scroll drives the dial — the page position is the knob."
+        >
+          <div className="flex justify-center">
+            <MasterDial size={400} />
+          </div>
+        </RackSection>
+      </div>
 
-      {/* ── How it works: scroll-driven signal chain ── */}
-      <section
-        id="how-it-works"
-        className="relative z-10 mt-28 w-full px-4 pb-8"
-        style={{ maxWidth: 760, marginLeft: 'auto', marginRight: 'auto' }}
-      >
-        <div className="text-center mb-12">
-          <span style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: '0.20em',
-            color: 'rgba(255,255,255,0.2)',
-            fontFamily: 'ui-monospace,monospace',
-          }}>
-            HOW IT WORKS
-          </span>
-          <h2 className="text-2xl font-bold tracking-tight mt-2 text-gradient">
-            Signal flows down the rack
-          </h2>
-        </div>
-
-        <SignalChain />
-      </section>
+      {/* ── Signal chain ── */}
+      <div className="relative z-10 w-full px-4 mt-36"
+           style={{ maxWidth: 780, marginLeft: 'auto', marginRight: 'auto' }}>
+        <RackSection
+          id="how-it-works"
+          label="SIGNAL PATH"
+          color="#34d399"
+          title="Signal flows down the rack"
+        >
+          <SignalChain />
+        </RackSection>
+      </div>
     </div>
   )
 }
