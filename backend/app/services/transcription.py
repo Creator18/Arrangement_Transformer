@@ -252,8 +252,14 @@ def refine_notes(notes: List[Dict], tempo: float) -> List[Dict]:
     notes.sort(key=lambda n: (n['pitch'], n['onset']))
     merged: List[Dict] = []
     for n in notes:
+        # Never merge across a detected re-strike.  restrike.py splits a held
+        # note into contiguous same-pitch pieces, which this rule would
+        # otherwise fuse straight back together — silently reverting the
+        # whole feature.  (It did exactly that: the eval numbers came back
+        # byte-identical because all 61 recovered attacks were re-merged.)
         if (merged
                 and merged[-1]['pitch'] == n['pitch']
+                and not n.get('restrike')
                 and float(n['onset']) - float(merged[-1]['offset']) < 0.05):
             merged[-1]['offset']   = max(merged[-1]['offset'],   float(n['offset']))
             merged[-1]['velocity'] = max(merged[-1]['velocity'],  int(n.get('velocity', 80)))
@@ -626,6 +632,11 @@ USE_CORRECTOR = True
 CORRECTOR_APPLY_DURATION = False   # see above: harmful against performance truth
 CORRECTOR_APPLY_HAND     = True
 
+# Recover repeated-note articulation — a key released and struck again reads
+# as one held note.  Measured: we emit 46% of the re-strikes present in the
+# ground truth.  See app/services/restrike.py.
+USE_RESTRIKE_DETECTION = True
+
 
 def _transcribe_fullmix_of(
     session_dir: Path,
@@ -656,6 +667,21 @@ def _transcribe_fullmix_of(
 
     notes = _onsets_frames_notes(audio_path)
     print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
+
+    # Repeated-note recovery.  Measured against ground truth: we produce only
+    # 46% of the re-strikes real performances contain, because a key struck
+    # again while still ringing gives a small transient against a large
+    # background and the onset head misses it.  restrike.py asks the much
+    # narrower question — is energy being re-injected into THIS pitch's own
+    # harmonics, part-way through a note we already found — which is
+    # answerable where general polyphonic onset detection is not.
+    if USE_RESTRIKE_DETECTION:
+        try:
+            from app.services.restrike import detect_restrikes
+            y, sr_r = librosa.load(str(audio_path), sr=22050, mono=True)
+            notes = detect_restrikes(y, sr_r, notes)
+        except Exception as e:
+            print(f"[transcription] restrike detection skipped: {e}")
 
     bass_notes  = [dict(n, layer='bass') for n in notes
                    if int(n['pitch']) < _BASS_SPLIT_PITCH]
