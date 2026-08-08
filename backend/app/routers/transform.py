@@ -338,6 +338,10 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         "midi_path":              str(midi_path),
         "layers":                 layers,
         "arrangement_mode":       ARRANGEMENT_MODE,
+        # Carried through from transcription.  Note offsets are key releases
+        # on both views; the damper decides how long the sound lasts, and it
+        # is applied at render time rather than baked into durations.
+        "pedal":                  transcription.get("pedal", []),
         # Per-span record of which corpus pattern each passage borrowed and
         # why it won — the review surface for retrieval, in the same spirit
         # as the Layers tab for separation.

@@ -206,16 +206,40 @@ def _get_of_transcriptor():
     return _of_transcriptor
 
 
+# Damper-down intervals from the last _onsets_frames_notes call.  The model
+# predicts pedal on a dedicated head (the checkpoint is named
+# note_F1=0.9677_pedal_F1=0.9186) and we used to discard it entirely, which
+# forced sustain to be faked by lengthening notes — and made a repeated note
+# impossible, since you must release a key to strike it again and releasing
+# was the only way to stop the sound.
+_last_pedal: List[Dict[str, float]] = []
+
+
 def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
-    """Run Onsets & Frames on a WAV file, return raw note list (88-key range)."""
+    """
+    Run Onsets & Frames on a WAV file, return raw note list (88-key range).
+
+    Note offsets are KEY RELEASES, which is what the model predicts and what
+    the ground truth records.  Sustain is not baked in here; the damper
+    intervals are captured separately into `_last_pedal`.
+    """
+    global _last_pedal
     from piano_transcription_inference import sample_rate as OF_SR
 
     audio, _ = librosa.load(str(wav_path), sr=OF_SR, mono=True)
     if audio.size == 0:
+        _last_pedal = []
         return []
 
     transcriptor = _get_of_transcriptor()
     result = transcriptor.transcribe(audio.astype(np.float32), midi_path=None)
+
+    _last_pedal = [
+        {"onset": round(float(e["onset_time"]), 4),
+         "offset": round(float(e["offset_time"]), 4)}
+        for e in result.get("est_pedal_events", [])
+        if float(e["offset_time"]) > float(e["onset_time"])
+    ]
 
     notes: List[Dict[str, Any]] = []
     for ev in result.get("est_note_events", []):
@@ -784,7 +808,8 @@ def _transcribe_fullmix_of(
         except Exception as e:
             print(f"[transcription] corrector skipped: {e}")
 
-    return quantized, {'bass': round(bass_feel, 4), 'upper': round(upper_feel, 4)}
+    return quantized, {'bass': round(bass_feel, 4), 'upper': round(upper_feel, 4),
+                       'pedal': list(_last_pedal)}
 
 
 # ── main entry point ──────────────────────────────────────────────────────────

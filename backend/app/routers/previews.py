@@ -65,8 +65,11 @@ async def render_previews(session_id: str, force: bool = False):
         with open(transcription_file) as f:
             data = json.load(f)
         notes = data.get("notes", [])
+        # Pedal is its own channel: note offsets are key releases, and the
+        # damper decides how long the sound actually lasts.
+        pedal = data.get("pedal", [])
         t0 = time.time()
-        audio = render_notes(notes, sr=PREVIEW_SR)
+        audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
         sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
         summary["tracks"]["original_arrangement"] = {
             "notes": len(notes),
@@ -82,8 +85,9 @@ async def render_previews(session_id: str, force: bool = False):
         with open(transformed_file) as f:
             data = json.load(f)
         notes = data.get("transformed_notes", [])
+        pedal = data.get("pedal", [])
         t0 = time.time()
-        audio = render_notes(notes, sr=PREVIEW_SR)
+        audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
         sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
         summary["tracks"]["transformed"] = {
             "notes": len(notes),

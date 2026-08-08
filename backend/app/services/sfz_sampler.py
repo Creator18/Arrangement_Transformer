@@ -117,16 +117,31 @@ def is_available() -> bool:
         return False
 
 
-def render_notes_sfz(notes: List[Dict], sr: int = 22050) -> np.ndarray:
+SUSTAIN_CC = 64
+
+
+def render_notes_sfz(notes: List[Dict], sr: int = 22050,
+                     pedal: Optional[Sequence[Dict]] = None) -> np.ndarray:
     """
     Render a note list through the SFZ instrument and return a mono float32
-    waveform.  Same signature as `sf2_sampler.render_notes_sf2`.
+    waveform.  Same signature as `sf2_sampler.render_notes_sf2`, plus an
+    optional pedal track.
 
     Note dict fields (matches the rest of the pipeline):
         pitch    int   MIDI pitch 21..108
-        onset    float seconds
-        offset   float seconds  (defaults to onset+0.5 if missing)
-        velocity int   1..127   (defaults to 80)
+        onset    float seconds   — key press
+        offset   float seconds   — key RELEASE, not when the sound stops
+        velocity int   1..127    (defaults to 80)
+
+    `pedal` is a list of {"onset": s, "offset": s} damper-down intervals,
+    sent as CC64.  This is the whole point of the separation: a note's
+    offset says when the finger left the key, and the pedal decides
+    whether the sound stops there.  Without it the only way to sustain is
+    to hold the key, which makes a repeated note impossible — you must
+    release to strike again, and releasing kills the ring.
+
+    Salamander ships a real sustain layer with sympathetic resonance, so
+    sfizz does the physics rather than us faking it with long offsets.
     """
     synth = _get_synth(sr)
     raw = synth._synth                                   # libsfizz binding
@@ -151,7 +166,19 @@ def render_notes_sfz(notes: List[Dict], sr: int = 22050) -> np.ndarray:
         events.append((offset_s, "off", pitch, 0))
         max_off_s = max(max_off_s, offset_s)
 
-    events.sort(key=lambda e: (e[0], 0 if e[1] == "on" else 1))
+    # Pedal as CC64.  Down events are ordered BEFORE note-offs at the same
+    # sample and up events AFTER, so a damper that is supposed to catch the
+    # sound does, and one that is supposed to hold it does not miss by a
+    # single frame.
+    for seg in (pedal or []):
+        d = max(0, int(float(seg["onset"]) * sr))
+        u = max(d + 1, int(float(seg.get("offset", seg["onset"] + 0.5)) * sr))
+        events.append((d, "ped_on",  SUSTAIN_CC, 127))
+        events.append((u, "ped_off", SUSTAIN_CC, 0))
+        max_off_s = max(max_off_s, u)
+
+    _ORDER = {"ped_on": 0, "on": 1, "off": 2, "ped_off": 3}
+    events.sort(key=lambda e: (e[0], _ORDER[e[1]]))
 
     # ── render block by block ─────────────────────────────────────────────
     # Tail cap (5 s) prevents an unterminated release sample from holding
@@ -176,8 +203,10 @@ def render_notes_sfz(notes: List[Dict], sr: int = 22050) -> np.ndarray:
             delay = max(0, min(bs - 1, ev_sample - block_start))
             if kind == "on":
                 raw.note_on(delay, pitch, vel)
-            else:
+            elif kind == "off":
                 raw.note_off(delay, pitch, 0)
+            else:                       # ped_on / ped_off
+                raw.cc(delay, SUSTAIN_CC, vel)
             ev_i += 1
 
         left, right = raw.render_block()

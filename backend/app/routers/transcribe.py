@@ -34,6 +34,10 @@ async def transcribe_audio(session_id: str):
         "octave_range": octave_range,
         "tempo_bpm":    round(tempo, 1),
         "timing_feel":  timing_feel,
+        # Damper-down intervals, kept as their own channel.  Note offsets
+        # mean KEY RELEASE; how long the sound lasts is decided here and
+        # applied at render time, never stored in the note.
+        "pedal":        timing_feel.get("pedal", []),
     }
 
     with open(session_dir / "transcription.json", "w") as f:

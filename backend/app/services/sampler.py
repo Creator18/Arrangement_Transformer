@@ -21,7 +21,7 @@ the server output which sampler is rendering.
 """
 from __future__ import annotations
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 import numpy as np
 
 
@@ -45,9 +45,17 @@ def _try_sfz() -> bool:
         return False
 
 
-def render_notes(notes: List[Dict], sr: int = 22050) -> np.ndarray:
+def render_notes(notes: List[Dict], sr: int = 22050,
+                 pedal: Optional[List[Dict]] = None) -> np.ndarray:
     """
     Render `notes` to a mono float32 waveform at `sr`.
+
+    `pedal` is a list of {"onset", "offset"} damper-down intervals.  Note
+    offsets are key releases; the pedal decides how long the sound lasts.
+    Only the sfizz backend can honour it — Salamander has a real sustain
+    layer — so the SF2 fallback ignores it and will sound dry by
+    comparison.  That is the correct tradeoff: faking sustain by
+    lengthening notes is what made repeated notes impossible.
 
     Tries the SFZ (sfizz + Salamander) backend first.  Any failure —
     missing dep, missing SFZ file, render exception — falls back to the
@@ -58,7 +66,7 @@ def render_notes(notes: List[Dict], sr: int = 22050) -> np.ndarray:
         try:
             from app.services.sfz_sampler import render_notes_sfz, SFZ_PATH
             _log_backend("sfizz", str(SFZ_PATH.name) if SFZ_PATH else "")
-            return render_notes_sfz(notes, sr=sr)
+            return render_notes_sfz(notes, sr=sr, pedal=pedal)
         except Exception as e:
             print(f"[sampler] sfizz render failed ({e}); falling back to SF2")
 
