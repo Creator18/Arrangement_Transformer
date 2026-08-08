@@ -204,7 +204,8 @@
    Lenis puts a `lenis` class on <html> itself.  The `scroll-behavior: auto`
    override is the important line: any inherited `scroll-behavior: smooth`
    makes the browser animate the same scrollTop Lenis is already animating,
-   and the two fight. */
+   and the two fight.
+
    Keyed on `.lenis` alone rather than the documented `.lenis.lenis-smooth`:
    only `lenis` is actually present on <html> at runtime here, so the
    two-class selectors never matched.  Nothing in this stylesheet sets

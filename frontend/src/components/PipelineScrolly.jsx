@@ -217,10 +217,27 @@ export default function PipelineScrolly({ id = 'pipeline' }) {
       }
       raf = requestAnimationFrame(frame)
     }
-    raf = requestAnimationFrame(frame)
+    // The pipeline is five viewports tall but only worth drawing while some
+    // of it is on screen.  With the hero's StringField and ScrollStage also
+    // running, leaving this looping from the top of the page meant paying
+    // for 260 tokens nobody could see.
+    // Guarded by `running`: IntersectionObserver fires once immediately on
+    // observe(), so an already-visible element would otherwise get a second
+    // rAF loop stacked on the one started below.
+    let running = false
+    const start = () => { if (!running) { running = true; raf = requestAnimationFrame(frame) } }
+    const stop  = () => { if (running)  { running = false; cancelAnimationFrame(raf) } }
+
+    const io = new IntersectionObserver(
+      ([e]) => (e.isIntersecting ? start() : stop()),
+      { threshold: 0 },
+    )
+    io.observe(outer)
+    start()
 
     return () => {
-      cancelAnimationFrame(raf)
+      stop()
+      io.disconnect()
       window.removeEventListener('resize', resize)
       window.removeEventListener('scroll', readProgress)
       if (lenis) lenis.off('scroll', onLenis)

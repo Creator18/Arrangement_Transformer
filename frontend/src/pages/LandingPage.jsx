@@ -9,6 +9,7 @@ import AudioBars from '../components/AudioBars'
 import { uploadAudio } from '../utils/api'
 import { letterReveal, gridRise } from '../utils/animefx'
 import KeyboardAssembly from '../components/KeyboardAssembly'
+import StringField from '../components/StringField'
 import MasterDial from '../components/MasterDial'
 import PipelineScrolly from '../components/PipelineScrolly'
 
@@ -268,11 +269,24 @@ export default function LandingPage() {
       {/* ── Hero ── */}
       <motion.div
         id="hero"
-        className="relative z-10 text-center mb-14 px-4"
+        /* w-full: the string bank should span the viewport like a
+           soundboard — without it the hero shrinks to its text (647px)
+           and takes the strings with it. */
+        className="relative z-10 text-center mb-14 px-4 w-full"
         initial={{ opacity: 0, y: 40 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
+        style={{ paddingTop: 26, paddingBottom: 26 }}
       >
+        {/* Resonating strings behind the hero.  Click anywhere in here to
+            strike them. */}
+        <StringField />
+
+        {/* The content must be positioned to sit above the canvas: an
+            absolutely-positioned sibling paints in a later phase than
+            static block content, so without this the strings would cover
+            the headline rather than sit behind it. */}
+        <div style={{ position: 'relative', zIndex: 1 }}>
         <motion.div
           className="float"
           style={{ display: 'inline-block', marginBottom: 8 }}
@@ -313,6 +327,7 @@ export default function LandingPage() {
             apart again ("exploded view") as the hero scrolls away */}
         <div style={{ marginTop: 36 }}>
           <KeyboardAssembly />
+        </div>
         </div>
       </motion.div>
 
