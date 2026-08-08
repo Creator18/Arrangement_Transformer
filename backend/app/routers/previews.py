@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import time
 
+from pathlib import Path
+from typing import Dict, Optional
 from fastapi import APIRouter, HTTPException
 
 import soundfile as sf
@@ -40,8 +42,28 @@ router = APIRouter()
 PREVIEW_SR = 22050
 
 
+def _render_one(session_dir: Path, src_file: Path, notes_key: str,
+                out_name: str, force: bool) -> Dict:
+    """Render one preview track.  Returns a small summary."""
+    out_path = session_dir / out_name
+    if not force and out_path.exists():
+        return {"cached": True}
+    with open(src_file) as f:
+        data = json.load(f)
+    notes = data.get(notes_key, [])
+    # Pedal is its own channel: note offsets are key releases, and the damper
+    # decides how long the sound actually lasts.
+    pedal = data.get("pedal", [])
+    t0 = time.time()
+    audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
+    sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
+    return {"notes": len(notes), "render_s": round(time.time() - t0, 2),
+            "cached": False}
+
+
 @router.post("/previews/{session_id}")
-async def render_previews(session_id: str, force: bool = False):
+async def render_previews(session_id: str, force: bool = False,
+                          only: Optional[str] = None):
     """
     Render `transcription_preview.wav` + `arrangement_preview.wav` for
     the given session.  Assumes /transcribe, /segment, and /transform
@@ -59,42 +81,21 @@ async def render_previews(session_id: str, force: bool = False):
 
     summary = {"session_id": session_id, "tracks": {}}
 
-    # ── transcription preview ──────────────────────────────────────────────
-    out_path = session_dir / "transcription_preview.wav"
-    if force or not out_path.exists():
-        with open(transcription_file) as f:
-            data = json.load(f)
-        notes = data.get("notes", [])
-        # Pedal is its own channel: note offsets are key releases, and the
-        # damper decides how long the sound actually lasts.
-        pedal = data.get("pedal", [])
-        t0 = time.time()
-        audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
-        sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
-        summary["tracks"]["original_arrangement"] = {
-            "notes": len(notes),
-            "render_s": round(time.time() - t0, 2),
-            "cached":   False,
-        }
-    else:
-        summary["tracks"]["original_arrangement"] = {"cached": True}
+    # 'only' renders a single track and returns.  The frontend asks for the
+    # transformed one first, lands the user on Results, then requests the
+    # other in the background — so the visible wait is one render, not two.
+    # Rendering both up front cost 38% of the total upload-to-result time
+    # while the user can only listen to one of them at a time.
+    jobs = [
+        ("transformed",          transformed_file,   "transformed_notes",
+         "arrangement_preview.wav"),
+        ("original_arrangement", transcription_file, "notes",
+         "transcription_preview.wav"),
+    ]
+    if only:
+        jobs = [j for j in jobs if j[0] == only] or jobs
 
-    # ── transformed preview ────────────────────────────────────────────────
-    out_path = session_dir / "arrangement_preview.wav"
-    if force or not out_path.exists():
-        with open(transformed_file) as f:
-            data = json.load(f)
-        notes = data.get("transformed_notes", [])
-        pedal = data.get("pedal", [])
-        t0 = time.time()
-        audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
-        sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
-        summary["tracks"]["transformed"] = {
-            "notes": len(notes),
-            "render_s": round(time.time() - t0, 2),
-            "cached":   False,
-        }
-    else:
-        summary["tracks"]["transformed"] = {"cached": True}
+    for name, src, key, out_name in jobs:
+        summary["tracks"][name] = _render_one(session_dir, src, key, out_name, force)
 
     return summary

@@ -193,6 +193,32 @@ def _ensure_of_checkpoint() -> Path:
     return ckpt_path
 
 
+# The upstream package hardcodes batch_size=1 in transcribe(), so a piece is
+# pushed through the GPU as a series of separate 10-second calls with no
+# parallelism.  On an 8 GB card with ~7.4 GB free that is pure waste.
+# Measured on a 2.3-minute piece: 23.0s at batch 1, 12.8s at 4, 10.1s at 8 —
+# 2.3x faster with byte-identical output (833 notes in every case).
+OF_BATCH_SIZE = 8
+
+
+def _patch_of_batch_size(batch_size: int = OF_BATCH_SIZE) -> None:
+    """
+    Force a larger inference batch.  Done by wrapping the module-level
+    `forward` rather than reimplementing transcribe(), so we inherit any
+    upstream fixes to the segmenting and post-processing logic.  Idempotent.
+    """
+    import piano_transcription_inference.inference as INF
+    if getattr(INF.forward, "_batched", False):
+        return
+    _orig = INF.forward
+
+    def _batched_forward(model, x, batch_size=1, _orig=_orig, _bs=batch_size):
+        return _orig(model, x, batch_size=_bs)
+
+    _batched_forward._batched = True
+    INF.forward = _batched_forward
+
+
 def _get_of_transcriptor():
     """Construct (or fetch) the Onsets & Frames transcriber. Lazy + cached."""
     global _of_transcriptor
@@ -202,6 +228,8 @@ def _get_of_transcriptor():
     from piano_transcription_inference import PianoTranscription
     ckpt_path = _ensure_of_checkpoint()
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        _patch_of_batch_size()
     _of_transcriptor = PianoTranscription(device=device, checkpoint_path=str(ckpt_path))
     return _of_transcriptor
 

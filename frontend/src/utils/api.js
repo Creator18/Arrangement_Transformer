@@ -47,9 +47,14 @@ export async function scoreFidelity(sessionId) {
  * synchronously.  Returns when both WAVs are on disk.  Run from the
  * ProcessingPage after /transform so the Results page can play instantly.
  */
-export async function renderPreviews(sessionId, force = false) {
+export async function renderPreviews(sessionId, force = false, only = null) {
+  const params = {}
+  if (force) params.force = 1
+  // `only` renders a single track. Rendering both up front was 38% of the
+  // whole upload-to-result wait, and you can only listen to one at a time.
+  if (only) params.only = only
   const { data } = await api.post(`/previews/${sessionId}`, null, {
-    params: force ? { force: 1 } : undefined,
+    params: Object.keys(params).length ? params : undefined,
   })
   return data
 }

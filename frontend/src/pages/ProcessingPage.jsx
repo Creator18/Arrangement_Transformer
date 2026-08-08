@@ -207,22 +207,24 @@ export default function ProcessingPage() {
       setCurrentStep(3); await segmentAudio(sessionId)
       setCurrentStep(4); await transformArrangement(sessionId, preset.octaves, preset.components)
 
-      // Render the two main listening tracks through Salamander.  This is
-      // the long synthesis pass (~1–2 min on a 5-min song).  Doing it here
-      // — with its own visible step — means the Results page lands with
-      // both WAVs already on disk; first-click on Listen is then just a
-      // file download.
-      setCurrentStep(5); await renderPreviews(sessionId)
+      // Render ONLY the transformed track before landing on Results.  The
+      // Salamander pass is the single largest slice of the wait (38% of
+      // upload-to-result, measured), and rendering both up front made the
+      // user wait for a track they cannot listen to simultaneously.
+      setCurrentStep(5); await renderPreviews(sessionId, false, 'transformed')
 
-      // Pre-fetch the rendered WAVs into the browser's HTTP cache so even
-      // the file download is already done by the time the user clicks
-      // play.  fetch() with cache:'reload' makes the browser store the
-      // response in disk cache; failure here is silent — playback still
-      // works, it just streams instead of being instant.
-      await Promise.all([
-        fetch(getTranscriptionAudioUrl(sessionId), { cache: 'reload' }).catch(() => {}),
-        fetch(getTransformedAudioUrl(sessionId),   { cache: 'reload' }).catch(() => {}),
-      ])
+      // Warm the browser cache for the one that exists, so first-click on
+      // Listen is a cache hit rather than a download.  Failure is silent —
+      // playback still works, it just streams.
+      await fetch(getTransformedAudioUrl(sessionId), { cache: 'reload' }).catch(() => {})
+
+      // The original arrangement renders in the background while the user
+      // is already on Results.  Not awaited: by the time they switch to
+      // that track it is normally ready, and if not the endpoint simply
+      // serves it lazily on request.
+      renderPreviews(sessionId, false, 'original_arrangement')
+        .then(() => fetch(getTranscriptionAudioUrl(sessionId), { cache: 'reload' }))
+        .catch(() => {})
 
       setCurrentStep(6); await scoreFidelity(sessionId)
       setCurrentStep(7)
