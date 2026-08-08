@@ -923,19 +923,23 @@ def apply_chord_and_scale_snap(
 
     # NOT applied here: enforce_sounding_limits.
     #
-    # Measured (eval run 7): applying it to the ORIGINAL view cost COnPOff
-    # 0.4594 -> 0.4144 while leaving COnP untouched.  That is not a bug in
-    # the rule — it is the two views having different jobs.
+    # Kept out on the ARGUMENT below, NOT on a measurement.  (An earlier
+    # version of this comment cited "eval run 7: COnPOff 0.4594 -> 0.4144".
+    # That number was read off a half-finished run whose remaining pieces
+    # still held the previous configuration's output, so it measured a
+    # mixture, not this change.  Retracted.)
     #
-    # ORIGINAL answers "what was played", and the eval scores it against a
-    # human performance which ITSELF reaches 12 simultaneous sounding notes
-    # (pedal, and legato overlaps where one key is released as the next is
-    # pressed).  Truncating those overlaps moves us away from the truth we
-    # are being measured against.
+    # The argument stands on its own: ORIGINAL answers "what was played",
+    # and the eval scores it against a human performance which ITSELF
+    # reaches 12 simultaneous sounding notes — pedal, plus legato overlaps
+    # where one key is released as the next is pressed.  Truncating those
+    # overlaps moves us away from the very thing we are measured against,
+    # so fidelity and playability are genuinely competing objectives on
+    # this view.
     #
-    # TRANSFORMED answers "what can be played", where the constraint belongs
-    # and where the listener actually heard the violation.  See step 7b in
-    # apply_music_theory.
+    # TRANSFORMED answers "what can be played", where the constraint
+    # belongs and where the listener actually heard the violation.  See
+    # step 7b in apply_music_theory.
 
     # 3 — Respell accidentals for the detected key (cosmetic; pitch ints
     #     untouched).  Flat keys finally read as flats.
