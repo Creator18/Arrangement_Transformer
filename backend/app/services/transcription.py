@@ -239,6 +239,12 @@ def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
 
 # ── post-processing: refine note list ─────────────────────────────────────────
 
+# Rejoin same-pitch notes separated by <50 ms.  See the call site: this was
+# written for Basic Pitch's fragmentation and, with O&F, destroys 40% of
+# repeated-note articulation instead.
+MERGE_SAME_PITCH = False
+
+
 def refine_notes(notes: List[Dict], tempo: float) -> List[Dict]:
     """
     Drop notes shorter than 60 ms, merge same-pitch notes with gap < 50 ms,
@@ -252,12 +258,25 @@ def refine_notes(notes: List[Dict], tempo: float) -> List[Dict]:
     notes.sort(key=lambda n: (n['pitch'], n['onset']))
     merged: List[Dict] = []
     for n in notes:
-        # Never merge across a detected re-strike.  restrike.py splits a held
-        # note into contiguous same-pitch pieces, which this rule would
-        # otherwise fuse straight back together — silently reverting the
-        # whole feature.  (It did exactly that: the eval numbers came back
-        # byte-identical because all 61 recovered attacks were re-merged.)
-        if (merged
+        # Same-pitch merging is OFF by default — measured, it was destroying
+        # 40% of all repeated-note articulation.
+        #
+        # Traced stage by stage on a test piece: ground truth has 142
+        # re-strikes, raw O&F output has 192 (it over-detects, so the
+        # evidence is abundant), and after this merge only 116 survive.
+        #
+        # My earlier exoneration of this rule measured the wrong thing.  Real
+        # re-strike GAPS are 50-350 ms, comfortably outside the 50 ms window
+        # — but the window is applied to OUR note boundaries, and O&F
+        # over-sustains offsets, so a true 150 ms gap becomes a 20 ms gap in
+        # our data and gets merged.
+        #
+        # The rule is a holdover from the Basic Pitch era, which fragmented
+        # notes into pieces that genuinely needed rejoining.  O&F has a
+        # dedicated offset head and rarely fragments, so the rule now costs
+        # far more than it saves.
+        if (MERGE_SAME_PITCH
+                and merged
                 and merged[-1]['pitch'] == n['pitch']
                 and not n.get('restrike')
                 and float(n['onset']) - float(merged[-1]['offset']) < 0.05):
