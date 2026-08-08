@@ -10,16 +10,16 @@ import { uploadAudio } from '../utils/api'
 import { letterReveal, gridRise } from '../utils/animefx'
 import KeyboardAssembly from '../components/KeyboardAssembly'
 import MasterDial from '../components/MasterDial'
-import SignalChain from '../components/SignalChain'
+import PipelineScrolly from '../components/PipelineScrolly'
 
 // Channels on the rail, in document order.  Keep this list in step with
 // ScrollStage's SCENES so the backdrop and the menu agree about where the
 // user is — they read the same scroll position independently.
 const SECTIONS = [
-  { id: 'hero',         label: 'INTRO',   color: '#f59e0b' },
-  { id: 'console',      label: 'CONSOLE', color: '#a78bfa' },
-  { id: 'engine',       label: 'ENGINE',  color: '#06b6d4' },
-  { id: 'how-it-works', label: 'SIGNAL',  color: '#34d399' },
+  { id: 'hero',     label: 'INTRO',    color: '#f59e0b' },
+  { id: 'console',  label: 'CONSOLE',  color: '#a78bfa' },
+  { id: 'pipeline', label: 'PIPELINE', color: '#06b6d4' },
+  { id: 'engine',   label: 'ENGINE',   color: '#34d399' },
 ]
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
@@ -262,7 +262,7 @@ export default function LandingPage() {
 
   return (
     <div className="relative min-h-screen flex flex-col items-center pt-24 pb-40">
-      <ScrollStage />
+      <ScrollStage sections={SECTIONS} />
       <SectionRail sections={SECTIONS} />
 
       {/* ── Hero ── */}
@@ -459,31 +459,29 @@ export default function LandingPage() {
         </GlassCard>
       </motion.div>
 
+      {/* ── The pipeline, told by scrolling ──
+          This replaces the old static SignalChain section: both told the
+          same story, and one where the material visibly persists through
+          every stage tells it far better.  Deliberately NOT wrapped in
+          RackSection — RackSection applies a parallax transform, and a
+          transformed ancestor becomes the containing block for the sticky
+          panel inside, which breaks the pin. */}
+      <div className="relative z-10 w-full mt-36">
+        <PipelineScrolly id="pipeline" />
+      </div>
+
       {/* ── The engine ── */}
       <div className="relative z-10 w-full px-4 mt-36"
            style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}>
         <RackSection
           id="engine"
           label="THE ENGINE"
-          color="#06b6d4"
+          color="#34d399"
           subtitle="Scroll drives the dial — the page position is the knob."
         >
           <div className="flex justify-center">
             <MasterDial size={400} />
           </div>
-        </RackSection>
-      </div>
-
-      {/* ── Signal chain ── */}
-      <div className="relative z-10 w-full px-4 mt-36"
-           style={{ maxWidth: 780, marginLeft: 'auto', marginRight: 'auto' }}>
-        <RackSection
-          id="how-it-works"
-          label="SIGNAL PATH"
-          color="#34d399"
-          title="Signal flows down the rack"
-        >
-          <SignalChain />
         </RackSection>
       </div>
     </div>

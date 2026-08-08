@@ -199,3 +199,20 @@
 ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
+
+/* ── Lenis smooth scroll ────────────────────────────────────────────────────
+   Lenis puts a `lenis` class on <html> itself.  The `scroll-behavior: auto`
+   override is the important line: any inherited `scroll-behavior: smooth`
+   makes the browser animate the same scrollTop Lenis is already animating,
+   and the two fight. */
+   Keyed on `.lenis` alone rather than the documented `.lenis.lenis-smooth`:
+   only `lenis` is actually present on <html> at runtime here, so the
+   two-class selectors never matched.  Nothing in this stylesheet sets
+   scroll-behavior: smooth today, so that was harmless — but a rule that
+   silently does not apply is a trap for whoever adds one later. */
+html.lenis,
+html.lenis body               { height: auto; }
+html.lenis                    { scroll-behavior: auto !important; }
+/* Opt a nested scroller out of Lenis with data-lenis-prevent */
+html.lenis [data-lenis-prevent] { overscroll-behavior: contain; }
+html.lenis.lenis-stopped      { overflow: hidden; }

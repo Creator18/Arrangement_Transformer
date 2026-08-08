@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import anime from '../utils/animefx'
+import { scrollToTarget } from '../utils/smoothscroll'
 
 /**
  * SectionRail — the scrollable menu, styled as a mixer channel strip.
@@ -86,10 +87,11 @@ export default function SectionRail({ sections }) {
                      easing: 'easeOutElastic(1, .6)' })
   }, [active])
 
-  const go = (id) => {
-    const el = document.getElementById(id)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
+  // Through Lenis, not scrollIntoView: with Lenis running, the browser's
+  // own smooth-scroll animates the same scrollTop Lenis is animating and
+  // the two fight, which reads as an overshoot-and-snap.  scrollToTarget
+  // falls back to the native path when Lenis is off (reduced motion).
+  const go = (id) => scrollToTarget(id, { offset: -80 })
 
   return (
     <div

@@ -22,18 +22,54 @@ import { useEffect, useRef } from 'react'
 // `drift` the particle speed, `density` how busy the scene is.
 const SCENES = [
   { hue: 38,  drift: 0.22, density: 0.55, name: 'hero'     },  // amber
-  { hue: 265, drift: 0.40, density: 0.85, name: 'presets'  },  // violet
-  { hue: 190, drift: 0.30, density: 0.70, name: 'engine'   },  // cyan
-  { hue: 150, drift: 0.50, density: 1.00, name: 'chain'    },  // green
+  { hue: 265, drift: 0.40, density: 0.85, name: 'console'  },  // violet
+  { hue: 190, drift: 0.30, density: 0.70, name: 'pipeline' },  // cyan
+  { hue: 150, drift: 0.50, density: 1.00, name: 'engine'   },  // green
 ]
 
 const N_PARTICLES = 90
 
 function lerp(a, b, t) { return a + (b - a) * t }
 
-function sceneAt(p) {
-  // p in [0,1] across the whole document
-  const x = Math.max(0, Math.min(0.9999, p)) * (SCENES.length - 1)
+/**
+ * Continuous scene index from the ACTUAL positions of the sections, not
+ * from a fraction of document height.
+ *
+ * Document-fraction was fine while every section was roughly a screen tall.
+ * The pinned pipeline section is five viewports tall, which makes it ~60%
+ * of the page — under the old mapping the backdrop would sprint through
+ * three palettes while the reader was still inside a single section, and
+ * then sit frozen for the rest.  Anchoring to section centres means each
+ * section holds its own colour for exactly as long as it is on screen,
+ * which is also what makes the backdrop agree with the rail.
+ *
+ * Returns a float: 2.4 means "40% of the way from section 2 to section 3".
+ */
+function sceneIndexFromSections(ids) {
+  if (!ids?.length) return 0
+  const focus = window.scrollY + window.innerHeight * 0.5
+  const centres = ids.map((id) => {
+    const el = document.getElementById(id)
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return r.top + window.scrollY + r.height * 0.5
+  })
+  const pts = centres.map((c, i) => [c, i]).filter(([c]) => c != null)
+  if (!pts.length) return 0
+  if (focus <= pts[0][0]) return pts[0][1]
+  for (let k = 0; k < pts.length - 1; k++) {
+    const [c0, i0] = pts[k], [c1, i1] = pts[k + 1]
+    if (focus <= c1) {
+      const t = (focus - c0) / Math.max(1, c1 - c0)
+      return i0 + t * (i1 - i0)
+    }
+  }
+  return pts[pts.length - 1][1]
+}
+
+function sceneAt(x0) {
+  // x0 is a continuous scene index, not a document fraction
+  const x = Math.max(0, Math.min(SCENES.length - 1.0001, x0))
   const i = Math.floor(x)
   const t = x - i
   const a = SCENES[i], b = SCENES[Math.min(i + 1, SCENES.length - 1)]
@@ -44,9 +80,14 @@ function sceneAt(p) {
   }
 }
 
-export default function ScrollStage() {
+export default function ScrollStage({ sections = [] }) {
   const canvasRef = useRef(null)
-  const state = useRef({ progress: 0, target: 0, velocity: 0, lastY: 0 })
+  // `scene`/`sceneTarget` are a scene INDEX (0..SCENES.length-1) driven by
+  // section geometry; `progress` stays a plain 0..1 document fraction and
+  // only drives the slow drift of the gradient field and grid.
+  const state = useRef({ scene: 0, sceneTarget: 0, progress: 0, target: 0, velocity: 0, lastY: 0 })
+  const idsRef = useRef(sections.map((s) => (typeof s === 'string' ? s : s.id)))
+  idsRef.current = sections.map((s) => (typeof s === 'string' ? s : s.id))
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -83,6 +124,7 @@ export default function ScrollStage() {
       const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
       const y = window.scrollY
       state.current.target = y / max
+      state.current.sceneTarget = sceneIndexFromSections(idsRef.current)
       state.current.velocity += Math.abs(y - state.current.lastY) * 0.02
       state.current.lastY = y
     }
@@ -96,10 +138,11 @@ export default function ScrollStage() {
       const s = state.current
       // Smooth both, so nothing snaps
       s.progress += (s.target - s.progress) * Math.min(1, dt * 4)
+      s.scene    += (s.sceneTarget - s.scene) * Math.min(1, dt * 3)
       s.velocity *= Math.pow(0.02, dt)          // decay toward rest
       const vel = Math.min(1, s.velocity)
 
-      const sc = sceneAt(s.progress)
+      const sc = sceneAt(s.scene)
       ctx.clearRect(0, 0, w, h)
 
       // ── field: two large soft radials that swap position with scroll ──
