@@ -2,7 +2,7 @@
 
 Measures the transcription half of the pipeline — audio → 88-key MIDI — against ground-truth MIDI from a held-out slice of MAESTRO. This is what we benchmark against when changing the model, the separation strategy, the cleanup rules, or anything else upstream of `/transform`.
 
-The transformed (88 → 61) half of the pipeline is a separate evaluation problem with no formal metric. It needs blind A/B against a trivial baseline; that's not in this harness.
+The transformed (88 → 61) half of the pipeline is measured separately by `eval_arrangement.py` — see **Arrangement eval** below.
 
 ## What lives where
 
@@ -107,7 +107,7 @@ This is the regression-test surface for the entire pipeline. If a pipeline chang
 
 ## What's *not* in this harness
 
-- **Transformed-side (88 → 61) evaluation.** No formal metric exists. Plan: blind A/B listening tests against a trivial baseline ("just compress octaves and apply music_theory"). Build a small score sheet, get 2-3 pianists to evaluate.
+- **Subjective arrangement quality.** `eval_arrangement.py` now covers the structural side (see below), but it only catches what is provably wrong — out-of-range notes, doubled keys, unplayable chords. Whether an arrangement is *musical* still needs blind A/B listening against a trivial baseline.
 - **Real-world audio evaluation.** Synthesised audio only for now. Add a hand-curated real-audio subset later.
 - **Klangio comparison numbers.** Manual workflow: upload the 50 audio files to Klangio's free trial, download their MIDI outputs, run them through `compare.py` against the same ground truth. Not automated.
 - **Per-layer breakdown.** Currently we compare full transcriptions. If we want per-layer accuracy (bass_pattern vs bass_melody vs pattern vs melody), we'd need ground-truth labels for those layers, which MAESTRO doesn't provide.
@@ -122,3 +122,50 @@ The mir_eval tolerances are tuned to standard piano AMT defaults. To change them
 - `OFFSET_RATIO` (default 0.2) — offset tolerance also includes 20% of note duration
 
 These are the values used in the Onsets & Frames paper and most subsequent piano AMT work; comparable numbers across the literature use these defaults.
+
+## Arrangement eval (88 → 61)
+
+`eval_arrangement.py` measures the *arrangement* half. It cannot work like the
+transcription harness: there is no ground truth, because a good 5-octave
+arrangement legitimately differs from its 7-octave source. Distance from the
+source is not a quality signal — a perfect arrangement would score badly on it.
+
+So the metrics are reference-free, and of two kinds:
+
+- **Absolute** — facts about a 61-key piano, not opinions about arranging.
+  A note outside the keyboard is wrong. Two note-ons for one key at the same
+  instant is wrong. A chord no two hands can take is wrong.
+- **Relative** — what changed in the two voices a listener actually tracks
+  (top line, bass line). Deliberately not a note-by-note diff, so an arm that
+  legitimately rewrites inner figuration is not punished for doing its job.
+
+Lower is better on every column; 0 is ideal.
+
+```bash
+python backend/eval/eval_arrangement.py                  # 5 octaves, all arms
+python backend/eval/eval_arrangement.py --octaves 6
+python backend/eval/eval_arrangement.py --arms fold --limit 30
+```
+
+`passthrough` is the control — and it is *literally* what the 7-octave preset
+does, since `compress_notes_to_range` returns untouched notes for `(21, 108)`.
+That is worth stating plainly: **all of the 7-octave tuning work bypassed range
+compression entirely**, so 5-octave was running through a stage no listening
+test had ever covered.
+
+Result that motivated `fit_notes_to_range` (120 pieces, 218k notes, 5 octaves):
+
+| arm | out-of-range | doubled keys/piece | worst | crossings | note loss |
+|---|---|---|---|---|---|
+| passthrough | 3078 | 0.2 | 4 | 0.0 | — |
+| fold (old) | 0 | 12.6 | 96 | 1.6 | 0% |
+| fold_nodouble | 0 | **0.0** | **0** | 0.2 | 0.006% |
+
+Doubled keys are the metric that matters most here: a second note-on for a key
+already held double-triggers the sampler, and in MIDI export the first note-off
+silences the key while the second note is still notated as held. That is the
+mechanism behind repeated notes losing their sustain.
+
+**Corpus caveat.** These numbers come from ASAP solo classical piano
+(`correction/data/work/`). Song and pop material typically carries *more*
+sub-C2 content, so they probably understate the problem rather than overstate it.

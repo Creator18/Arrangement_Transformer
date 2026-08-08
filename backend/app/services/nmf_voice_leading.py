@@ -531,6 +531,130 @@ def compress_notes_to_range(
     return result
 
 
+def fit_notes_to_range(
+    notes: List[Dict],
+    tgt_low: int,
+    tgt_high: int,
+) -> List[Dict]:
+    """
+    Fold notes into [tgt_low, tgt_high] WITHOUT ever pressing a key that is
+    already down.
+
+    Why this exists alongside compress_notes_to_range
+    --------------------------------------------------
+    compress_notes_to_range folds each note in isolation, which is fine for
+    pitch but blind to what else is sounding.  Measured over 120 real
+    transcriptions (218k notes) at the 5-octave preset, that produced 12.6
+    same-pitch collisions per piece — up to 96 in one — against 0.2 in the
+    uncompressed source.
+
+    A same-pitch collision is a second note-on for a key that is already
+    held.  The sampler double-triggers it, and in MIDI export the first
+    note-off silences the key while the second note is still notated as
+    held.  That is precisely the mechanism behind repeated notes losing
+    their sustain, so it has to be zero.
+
+    Policy, in order:
+      1. Fold to the nearest in-range octave, as before.
+      2. If that key is busy, try octaves further out, nearest first, so
+         the note keeps as much of its register as it can.
+      3. If every octave in range is busy, drop the note and EXTEND the
+         note already holding that key to cover it.  A second press of a
+         held key adds no pitch and no harmony; extending keeps the sound
+         lasting as long as the source intended, which matters now that
+         key press and sounding duration are separate channels.
+
+    Measured against plain folding: doubled keys 12.6 -> 0.0 per piece,
+    order-flips 1.6 -> 0.2, at a cost of 13 dropped notes out of 218,370
+    (0.006%).  Playability goes back to the source's own level, which
+    plain folding had been improving only as a side effect of collapsing
+    distinct notes onto one key.  enforce_hand_constraints is the stage
+    that owns playability.
+
+    Unlike compress_notes_to_range this does NOT preserve list order or
+    index alignment, so callers that rely on that must keep using the
+    original.  A no-op for the full 88-key range, so the 7-octave preset is
+    untouched.
+    """
+    if tgt_low <= PIANO_LOW and tgt_high >= PIANO_HIGH:
+        return notes
+
+    held: Dict[int, List[List[float]]] = {}   # pitch -> [[onset, offset], ...]
+    out: List[Dict] = []
+
+    for n in sorted(notes, key=lambda x: (float(x["onset"]), int(x["pitch"]))):
+        on = float(n["onset"])
+        off = float(n.get("offset", on))
+        p = int(n["pitch"])
+        while p < tgt_low:
+            p += 12
+        while p > tgt_high:
+            p -= 12
+
+        cands = [p] + [p + d for k in (1, 2) for d in (12 * k, -12 * k)]
+        cands = [c for c in cands if tgt_low <= c <= tgt_high]
+
+        placed = None
+        for c in cands:
+            if all(on >= s[1] - 1e-6 or off <= s[0] + 1e-6
+                   for s in held.get(c, [])):
+                placed = c
+                break
+
+        if placed is None:
+            for s in held.get(p, []):
+                if on < s[1] and off > s[0]:
+                    s[1] = max(s[1], off)
+                    for m in out:
+                        if int(m["pitch"]) == p and abs(float(m["onset"]) - s[0]) < 1e-6:
+                            m["offset"] = s[1]
+                            break
+                    break
+            continue
+
+        held.setdefault(placed, []).append([on, off])
+        if placed == int(n["pitch"]):
+            out.append(n)
+        else:
+            out.append({**n, "pitch": placed,
+                        "pitch_name": librosa.midi_to_note(placed)})
+
+    return sorted(out, key=lambda x: (float(x["onset"]), int(x["pitch"])))
+
+
+def resolve_doubled_keys(notes: List[Dict]) -> List[Dict]:
+    """
+    Final safety net: guarantee no key is pressed while already held.
+
+    fit_notes_to_range clears collisions at compression time, but later
+    stages (walking-bass injection, hand-constraint re-routing, chord-tone
+    snapping) can move a note onto an occupied key afterwards.  Pitch is
+    fixed by then — re-octaving here would undo hand assignment — so this
+    only extends and drops.
+    """
+    held: Dict[int, List[List[float]]] = {}
+    out: List[Dict] = []
+    for n in sorted(notes, key=lambda x: (float(x["onset"]), int(x["pitch"]))):
+        on = float(n["onset"])
+        off = float(n.get("offset", on))
+        p = int(n["pitch"])
+        clash = None
+        for s in held.get(p, []):
+            if on < s[1] - 1e-6 and off > s[0] + 1e-6:
+                clash = s
+                break
+        if clash is not None:
+            clash[1] = max(clash[1], off)
+            for m in out:
+                if int(m["pitch"]) == p and abs(float(m["onset"]) - clash[0]) < 1e-6:
+                    m["offset"] = clash[1]
+                    break
+            continue
+        held.setdefault(p, []).append([on, off])
+        out.append(n)
+    return out
+
+
 # ── post-processing bundle (used by the pattern-extraction pipeline) ───────────
 
 def post_process_notes(

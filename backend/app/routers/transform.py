@@ -15,7 +15,8 @@ from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
 from app.services.nmf_voice_leading import (
     BASS_MAX, MELODY_MIN,
-    compress_notes_to_range, post_process_notes,
+    compress_notes_to_range, fit_notes_to_range, resolve_doubled_keys,
+    post_process_notes,
     detect_scale, _NOTE_NAMES,
     TARGET_LOW, TARGET_HIGH,
     apply_feel_offset,
@@ -158,7 +159,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                 )
 
         # Compress into target octave range
-        merged = compress_notes_to_range(merged, tgt_low, tgt_high)
+        merged = fit_notes_to_range(merged, tgt_low, tgt_high)
 
         # Inject walking bass from kick-pattern grid
         bass_lo = tgt_low
@@ -237,7 +238,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         )
         method = "fallback"
         try:
-            export_notes = compress_notes_to_range(notes, tgt_low, tgt_high)
+            export_notes = fit_notes_to_range(notes, tgt_low, tgt_high)
             export_notes = apply_voice_leading(export_notes)
             export_notes = quantize_notes(export_notes, tempo)
             export_notes = remove_beat_outliers(export_notes, tempo)
@@ -290,7 +291,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                 # borrowed figuration, which is the one thing retrieval
                 # exists to preserve.
                 from app.services.music_theory import enforce_sounding_limits
-                retrieved = compress_notes_to_range(retrieved, tgt_low, tgt_high)
+                retrieved = fit_notes_to_range(retrieved, tgt_low, tgt_high)
                 retrieved = enforce_hand_constraints(
                     retrieved,
                     beat_times     = beat_times_arr.tolist()
@@ -313,6 +314,13 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         except Exception as e:
             print(f"[transform] retrieval failed, keeping transformer output: "
                   f"{type(e).__name__}: {e}")
+
+    # Every arm converges here.  Later stages (walking bass, hand-constraint
+    # re-routing, chord-tone snapping) can land a note on a key that is
+    # already held, so the "one key, one press" invariant is enforced last.
+    # Applies at every octave setting: the 7-octave source carries ~0.2
+    # collisions per piece of its own, and those cost sustain too.
+    export_notes = resolve_doubled_keys(export_notes)
 
     for stale in ["arrangement_preview.wav", "transcription_preview.wav"]:
         p = session_dir / stale
