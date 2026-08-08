@@ -633,9 +633,27 @@ CORRECTOR_APPLY_DURATION = False   # see above: harmful against performance trut
 CORRECTOR_APPLY_HAND     = True
 
 # Recover repeated-note articulation — a key released and struck again reads
-# as one held note.  Measured: we emit 46% of the re-strikes present in the
-# ground truth.  See app/services/restrike.py.
-USE_RESTRIKE_DETECTION = True
+# as one held note.  The PROBLEM is real and measured: we emit only 46% of
+# the re-strikes present in the ground truth.
+#
+# This DETECTOR is off because it measured worse (eval run 8):
+#     COnP    0.7821 -> 0.7495
+#     COnPOff 0.4594 -> 0.4282
+#     0 pieces improved, 45 of 50 regressed, 12,431 attacks added
+#
+# It passed all five synthetic tests and still failed on real audio, which
+# is the instructive part.  Every test was a single note in isolation —
+# "does this held note split where it should".  Real music has dozens of
+# notes sounding at once, any of which can inject energy into any other's
+# harmonic bins, plus pedal resonance and room reflections doing the same.
+# Precision that is perfect on one note in silence is not precision.
+#
+# The right approach is supervised, not hand-tuned: backend/correction/
+# already contains 180k aligned (our extraction, real score) pairs, and the
+# score says exactly where re-strikes we merged should have been.  That is
+# labelled training data for this precise question, and it does not require
+# me to guess spectral thresholds.
+USE_RESTRIKE_DETECTION = False
 
 
 def _transcribe_fullmix_of(
