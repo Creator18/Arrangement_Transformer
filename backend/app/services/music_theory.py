@@ -456,6 +456,97 @@ def _trim_hand(
     return by_pitch
 
 
+def enforce_sounding_limits(
+    notes:        List[Dict],
+    max_per_hand: int = 5,
+    max_total:    int = 10,
+    release_gap:  float = 0.015,
+    min_dur:      float = 0.05,
+) -> List[Dict]:
+    """
+    Keep the number of notes HELD DOWN at any instant within what hands can
+    do — by releasing notes early, never by deleting them.
+
+    enforce_hand_limits counts only notes that ATTACK together, on the
+    reasoning that a held bass note does not pin a finger while the other
+    hand plays.  That is true under pedal and false otherwise, and it makes
+    the rule blind to the case a listener actually notices: notes
+    accumulating until more keys are down than the player has fingers.
+
+    Releasing rather than deleting matters for two reasons.  Musically it
+    is what a pianist does — you lift the note you no longer need so the
+    finger is free for the next one.  Practically, this pipeline already
+    under-emits by ~29%, so any fix that removes notes pays in the currency
+    we can least afford.
+
+    When a hand is full and a new note arrives, the note that has been held
+    LONGEST is released just before the new attack.  If it cannot be
+    shortened without falling under `min_dur` it is left alone — a genuine
+    violation is preferable to a note too short to sound.
+    """
+    if not notes:
+        return notes
+
+    out = [dict(n) for n in notes]
+    order = sorted(range(len(out)), key=lambda i: float(out[i]["onset"]))
+    active: List[int] = []            # indices currently sounding
+
+    for idx in order:
+        t = float(out[idx]["onset"])
+        active = [j for j in active if float(out[j]["offset"]) > t + 1e-9]
+
+        def hand_of(j: int) -> int:
+            # Prefer the corrector's predicted hand over the pitch proxy.
+            # `pitch < middle C = LH` miscounts every hand crossing, and
+            # pianists' right hands routinely play below middle C — which is
+            # why the ground-truth performances appear to hold 10 notes in
+            # one hand.  The trained head scores 0.883 against the proxy's
+            # 0.788, so use it wherever transcription attached one.
+            h = out[j].get("hand")
+            if h in ("LH", "RH"):
+                return 0 if h == "LH" else 1
+            return 0 if int(out[j]["pitch"]) < HAND_SPLIT else 1
+
+        h = hand_of(idx)
+        # Release oldest-held notes in this hand until there is a finger free
+        same = [j for j in active if hand_of(j) == h]
+        while len(same) >= max_per_hand or len(active) >= max_total:
+            pool = same if len(same) >= max_per_hand else active
+            if not pool:
+                break
+            oldest = min(pool, key=lambda j: float(out[j]["onset"]))
+            new_off = t - release_gap
+            if new_off - float(out[oldest]["onset"]) < min_dur:
+                # Cannot shorten it enough to help; stop trying rather than
+                # produce an inaudible stub.
+                break
+            out[oldest]["offset"] = round(new_off, 4)
+            active.remove(oldest)
+            same = [j for j in active if hand_of(j) == h]
+        active.append(idx)
+
+    return out
+
+
+def max_sounding(notes: List[Dict]) -> Dict[str, int]:
+    """Diagnostic: peak simultaneous SOUNDING notes, overall and per hand."""
+    if not notes:
+        return {"total": 0, "lh": 0, "rh": 0}
+    ev = []
+    for n in notes:
+        ev.append((float(n["onset"]), 1, int(n["pitch"])))
+        ev.append((float(n["offset"]), -1, int(n["pitch"])))
+    ev.sort()
+    cur = {"total": 0, "lh": 0, "rh": 0}
+    peak = {"total": 0, "lh": 0, "rh": 0}
+    for _, d, p in ev:
+        cur["total"] += d
+        cur["lh" if p < HAND_SPLIT else "rh"] += d
+        for k in peak:
+            peak[k] = max(peak[k], cur[k])
+    return peak
+
+
 def enforce_hand_limits(notes: List[Dict]) -> List[Dict]:
     """
     Enforce physical piano-performance constraints:
@@ -830,6 +921,22 @@ def apply_chord_and_scale_snap(
                     key=lambda n: (float(n["onset"]), int(n["pitch"])))
     merged = enforce_hand_limits(merged)
 
+    # NOT applied here: enforce_sounding_limits.
+    #
+    # Measured (eval run 7): applying it to the ORIGINAL view cost COnPOff
+    # 0.4594 -> 0.4144 while leaving COnP untouched.  That is not a bug in
+    # the rule — it is the two views having different jobs.
+    #
+    # ORIGINAL answers "what was played", and the eval scores it against a
+    # human performance which ITSELF reaches 12 simultaneous sounding notes
+    # (pedal, and legato overlaps where one key is released as the next is
+    # pressed).  Truncating those overlaps moves us away from the truth we
+    # are being measured against.
+    #
+    # TRANSFORMED answers "what can be played", where the constraint belongs
+    # and where the listener actually heard the violation.  See step 7b in
+    # apply_music_theory.
+
     # 3 — Respell accidentals for the detected key (cosmetic; pitch ints
     #     untouched).  Flat keys finally read as flats.
     return respell_pitch_names(merged, key_root, scale_name)
@@ -898,6 +1005,12 @@ def apply_music_theory(
     # 7 — Physical hand limits (≤ 5 per hand, ≤ 15-semitone span, ≤ 10 total)
     merged = sorted(bass + upper, key=lambda n: (float(n["onset"]), int(n["pitch"])))
     merged = enforce_hand_limits(merged)
+
+    # 7b — Sounding-note limit: bound how many keys are HELD DOWN at once,
+    #      which enforce_hand_limits cannot see.  Matters more here than on
+    #      the ORIGINAL side, because range compression folds 88 keys into
+    #      61 and stacks notes into a single hand's span.
+    merged = enforce_sounding_limits(merged)
 
     # 8 — Respell accidentals for the detected key (cosmetic)
     return respell_pitch_names(merged, key_root, scale_name)
