@@ -531,6 +531,35 @@ def compress_notes_to_range(
     return result
 
 
+# Shortest note we will emit.  Anything at or below this is a click, not a
+# pitch, and it gives corrupt input somewhere sane to land.
+MIN_NOTE_S = 0.02
+
+
+def sanitize_durations(notes: List[Dict]) -> List[Dict]:
+    """
+    Repair notes whose offset is at or before their onset.
+
+    Found in the wild: a transcription carrying onset 0.8707 with offset
+    -86.9065 — a duration of minus eighty-seven seconds.  Exactly one note in
+    2,743, which is why it survived this long.  Downstream that is undefined
+    behaviour in both the sampler and the MIDI writer, and it also reads as a
+    false fidelity violation, since a note can never be "sounding" across an
+    interval that runs backwards.
+
+    The onset is the musically meaningful part and is what the fidelity rule
+    protects, so the onset is kept and only the offset is repaired.
+    """
+    out = []
+    for n in notes:
+        on = float(n["onset"])
+        off = float(n.get("offset", on))
+        if not (off > on + 1e-9):
+            n = {**n, "offset": on + MIN_NOTE_S}
+        out.append(n)
+    return out
+
+
 def fit_notes_to_range(
     notes: List[Dict],
     tgt_low: int,
@@ -558,11 +587,11 @@ def fit_notes_to_range(
       1. Fold to the nearest in-range octave, as before.
       2. If that key is busy, try octaves further out, nearest first, so
          the note keeps as much of its register as it can.
-      3. If every octave in range is busy, drop the note and EXTEND the
-         note already holding that key to cover it.  A second press of a
-         held key adds no pitch and no harmony; extending keeps the sound
-         lasting as long as the source intended, which matters now that
-         key press and sounding duration are separate channels.
+      3. If every octave in range is busy, RELEASE the key early and
+         re-strike it — what a pianist does.  Only a genuine duplicate
+         (identical onset) is dropped.  Truncating makes the sounding
+         duration a subset of the source, which the fidelity rule allows;
+         extending it would have been a superset, which it forbids.
 
     Measured against plain folding: doubled keys 12.6 -> 0.0 per piece,
     order-flips 1.6 -> 0.2, at a cost of 13 dropped notes out of 218,370
@@ -579,6 +608,7 @@ def fit_notes_to_range(
     if tgt_low <= PIANO_LOW and tgt_high >= PIANO_HIGH:
         return notes
 
+    notes = sanitize_durations(notes)
     held: Dict[int, List[List[float]]] = {}   # pitch -> [[onset, offset], ...]
     out: List[Dict] = []
 
@@ -602,14 +632,35 @@ def fit_notes_to_range(
                 break
 
         if placed is None:
-            for s in held.get(p, []):
-                if on < s[1] and off > s[0]:
-                    s[1] = max(s[1], off)
-                    for m in out:
-                        if int(m["pitch"]) == p and abs(float(m["onset"]) - s[0]) < 1e-6:
-                            m["offset"] = s[1]
-                            break
+            # Every octave in range is busy.  RELEASE the key early and
+            # re-strike it, which is exactly what a pianist does.
+            #
+            # This replaces an earlier version that extended the held note
+            # instead.  Extending made the pitch sound at timestamps the
+            # original never had it — a superset of the source, which the
+            # fidelity rule forbids ("sounding duration can be a subset,
+            # never a superset").  Truncating is a subset, so it complies,
+            # AND it preserves the re-articulation, which extending
+            # silently destroyed.  That is the re-strike defect all over
+            # again, so it is worth being exact about.
+            spans = held.setdefault(p, [])
+            clash = next((s for s in spans if s[0] < off and s[1] > on), None)
+            if clash is None or clash[0] >= on - 1e-6:
+                continue                      # same onset: a true duplicate
+            clash[1] = on                     # release before the re-strike
+            # Replace with a COPY rather than assigning into the dict.  `out`
+            # holds the caller's own note objects when the pitch was already
+            # in range, so mutating one here reached back and rewrote the
+            # input list — and the fallback arm passes transcription["notes"]
+            # straight in, which would have quietly corrupted the ORIGINAL
+            # view the user listens to alongside the arrangement.
+            for i, m in enumerate(out):
+                if int(m["pitch"]) == p and abs(float(m["onset"]) - clash[0]) < 1e-6:
+                    out[i] = {**m, "offset": on}
                     break
+            spans.append([on, off])
+            out.append(n if p == int(n["pitch"])
+                       else {**n, "pitch": p, "pitch_name": librosa.midi_to_note(p)})
             continue
 
         held.setdefault(placed, []).append([on, off])
@@ -627,11 +678,12 @@ def resolve_doubled_keys(notes: List[Dict]) -> List[Dict]:
     Final safety net: guarantee no key is pressed while already held.
 
     fit_notes_to_range clears collisions at compression time, but later
-    stages (walking-bass injection, hand-constraint re-routing, chord-tone
-    snapping) can move a note onto an occupied key afterwards.  Pitch is
-    fixed by then — re-octaving here would undo hand assignment — so this
-    only extends and drops.
+    stages (hand-constraint re-routing, voice leading) can move a note onto
+    an occupied key afterwards.  Pitch is fixed by then — re-octaving here
+    would undo hand assignment — so this only releases the held key early
+    so the second note can be struck, and drops genuine duplicates.
     """
+    notes = sanitize_durations(notes)
     held: Dict[int, List[List[float]]] = {}
     out: List[Dict] = []
     for n in sorted(notes, key=lambda x: (float(x["onset"]), int(x["pitch"]))):
@@ -644,12 +696,14 @@ def resolve_doubled_keys(notes: List[Dict]) -> List[Dict]:
                 clash = s
                 break
         if clash is not None:
-            clash[1] = max(clash[1], off)
-            for m in out:
+            if clash[0] >= on - 1e-6:
+                continue                      # same onset: a true duplicate
+            clash[1] = on                     # release, then re-strike
+            # Copy, never mutate — `out` may hold the caller's own dicts.
+            for i, m in enumerate(out):
                 if int(m["pitch"]) == p and abs(float(m["onset"]) - clash[0]) < 1e-6:
-                    m["offset"] = clash[1]
+                    out[i] = {**m, "offset": on}
                     break
-            continue
         held.setdefault(p, []).append([on, off])
         out.append(n)
     return out

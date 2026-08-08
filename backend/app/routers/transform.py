@@ -11,6 +11,35 @@ import numpy as np
 #                   song's harmony
 ARRANGEMENT_MODE = "transformer"
 
+# ── source-fidelity rule ─────────────────────────────────────────────────────
+# The arrangement may only be a SUBSET of the original, never a superset:
+#
+#   R1  same total duration
+#   R2  onsets unchanged — the melody stays locked to the original timestamps
+#   R3  at any timestamp, the pitch classes sounding must be a subset of the
+#       pitch classes the original sounded at that timestamp (octave-free)
+#
+# Notes may be dropped or released early to fit the smaller keyboard.  No note
+# may move in time, change pitch class, or be invented.
+#
+# Audited over 60 pieces, the stages this switches off and why:
+#
+#   quantize_notes         98.3% of onsets moved   -> breaks R2
+#   enforce_uniform_tempo  95.1% of onsets moved   -> breaks R2
+#   snap_to_chord_tones     6.9% pitch classes added -> breaks R3
+#   generate_walking_bass  invents a bass line wholesale, and replaces the
+#                          transcribed bass with it -> breaks R3 by design
+#
+# The two timing stages score ~43% on R3 as well, but that is a SYMPTOM: they
+# do not invent pitches, they move notes to timestamps where those pitches
+# were not sounding.  Which is also the audible "rushing" — those two
+# functions flatten performed rubato onto a metronomic grid.  The fidelity
+# rule and the rushing complaint point at exactly the same code.
+#
+# Quantisation is not gone, it moved: it is a NOTATION concern and now happens
+# only when building sheet music, where a readable rhythm is the whole point.
+SOURCE_FIDELITY = True
+
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
 from app.services.nmf_voice_leading import (
@@ -164,7 +193,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         # Inject walking bass from kick-pattern grid
         bass_lo = tgt_low
         bass_hi = min(BASS_MAX, tgt_high)
-        if audio_path.exists() and bass_lo < bass_hi:
+        if (not SOURCE_FIDELITY) and audio_path.exists() and bass_lo < bass_hi:
             try:
                 duration_s  = max(float(n.get("offset", n["onset"] + 0.5)) for n in merged) + 1.0
                 measure_dur = (60.0 / tempo) * 4
@@ -197,7 +226,21 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             "scale": scale_name,
             "notes": sorted(_NOTE_NAMES[(root + iv) % 12] for iv in [0,2,4,5,7,9,11]),
         }
-        merged = post_process_notes(
+        if SOURCE_FIDELITY:
+            # Only the stages that drop or re-voice within the original
+            # pitch-class set at the original timestamps.
+            from app.services.music_theory import enforce_sounding_limits
+            from app.services.nmf_voice_leading import remove_beat_outliers
+            # apply_voice_leading is NOT here on purpose.  It was the last
+            # remaining R3 violator at 0.25% — small, but the rule's whole
+            # value is being absolute: an invariant that holds 99.75% of the
+            # time cannot be used as a gate, because every future regression
+            # hides inside the exception.  Voice leading reassigns pitches,
+            # and "no note can change" leaves no room for that.
+            merged = remove_beat_outliers(merged, tempo)
+            merged = enforce_sounding_limits(merged)
+        else:
+            merged = post_process_notes(
             merged,
             chord_map  = chord_map,
             tempo      = tempo,
@@ -207,11 +250,11 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             bass_hi    = bass_hi,
         )
 
-        # Final pass: smooth the entire piece onto a strict uniform-tempo grid
-        # using the original beat_times.  All notes (transcribed + walking bass)
-        # are now on the same original-audio timeline, so this remaps them
-        # together with no relative drift.
-        merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
+        # Uniform-tempo remapping is a rule violation (R2: 95% of onsets
+        # move) and is the direct cause of the rushing, so under fidelity the
+        # notes stay on the original performance timeline.
+        if not SOURCE_FIDELITY:
+            merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
         # Phase 6a/6b/6c — physical playability:
         #   6a: hard constraints (≤5/hand, ≤1-octave span/hand, ≤10 total)
@@ -239,11 +282,12 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         method = "fallback"
         try:
             export_notes = fit_notes_to_range(notes, tgt_low, tgt_high)
-            export_notes = apply_voice_leading(export_notes)
-            export_notes = quantize_notes(export_notes, tempo)
             export_notes = remove_beat_outliers(export_notes, tempo)
-            export_notes = snap_to_chord_tones(export_notes, tempo)
-            export_notes = enforce_uniform_tempo(export_notes, beat_times_arr, tempo)
+            if not SOURCE_FIDELITY:
+                export_notes = apply_voice_leading(export_notes)
+                export_notes = quantize_notes(export_notes, tempo)
+                export_notes = snap_to_chord_tones(export_notes, tempo)
+                export_notes = enforce_uniform_tempo(export_notes, beat_times_arr, tempo)
             export_notes = enforce_hand_constraints(
                 export_notes,
                 beat_times     = beat_times_arr.tolist()     if beat_times_arr     is not None else None,
@@ -327,8 +371,10 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if p.exists():
             p.unlink()
 
-    # Notes are already on a uniform-tempo timeline after enforce_uniform_tempo,
-    # so MIDI export just does a direct seconds→tick conversion (no beat grid).
+    # Under SOURCE_FIDELITY the notes are on the ORIGINAL performance
+    # timeline, which is what we want in the MIDI: an expressive performance,
+    # not a metronomic one.  Either way this is a direct seconds->tick
+    # conversion, so the written tempo is only a reference for notation.
     pm        = notes_to_pretty_midi(export_notes, tempo)
     midi_path = session_dir / "transformed.mid"
     pm.write(str(midi_path))

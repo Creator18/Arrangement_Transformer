@@ -184,6 +184,54 @@ def crossings_introduced(src: Sequence[Dict], arr: Sequence[Dict]) -> Optional[i
     return flips
 
 
+def rule_violations(src: Sequence[Dict], arr: Sequence[Dict]) -> Dict:
+    """
+    The source-fidelity rule, as three checkable numbers.
+
+      R2  onset_moved_pct  — notes whose onset is not an onset the original
+                             had.  The melody must stay locked to the
+                             original timestamps.
+      R3  pitch_added_pct  — notes sounding a pitch class the original was
+                             NOT sounding at that instant (octave-free).
+      R1  duration_delta   — change in total span, as a fraction.
+
+    Dropping is legal, so a smaller note count is not a violation and is
+    reported separately rather than penalised.
+    """
+    if not src:
+        return {"onset_moved_pct": 0.0, "pitch_added_pct": 0.0,
+                "duration_delta": 0.0, "kept_pct": 100.0}
+
+    src_onsets = {round(float(n["onset"]), 4) for n in src}
+    moved = sum(1 for n in arr if round(float(n["onset"]), 4) not in src_onsets)
+
+    # Intervals of (start, end, pitch-class) the original was sounding.
+    iv: Dict[int, List[tuple]] = {}
+    for n in src:
+        iv.setdefault(int(n["pitch"]) % 12, []).append(
+            (float(n["onset"]), float(n.get("offset", n["onset"]))))
+    added = 0
+    for n in arr:
+        t = float(n["onset"])
+        spans = iv.get(int(n["pitch"]) % 12, ())
+        if not any(a - 1e-6 <= t < b + 1e-6 for a, b in spans):
+            added += 1
+
+    def span(ns):
+        if not ns:
+            return 0.0
+        return (max(float(x.get("offset", x["onset"])) for x in ns)
+                - min(float(x["onset"]) for x in ns))
+    s0, s1 = span(src), span(arr)
+
+    return {
+        "onset_moved_pct": 100.0 * moved / max(1, len(arr)),
+        "pitch_added_pct": 100.0 * added / max(1, len(arr)),
+        "duration_delta": abs(s1 - s0) / max(1e-6, s0),
+        "kept_pct": 100.0 * len(arr) / len(src),
+    }
+
+
 def evaluate(src: Sequence[Dict], arr: Sequence[Dict], lo: int, hi: int) -> Dict:
     """All metrics for one piece.  Lower is better throughout."""
     return {

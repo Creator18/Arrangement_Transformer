@@ -292,9 +292,40 @@ async def export_midi(session_id: str):
 
 # ── MusicXML (sheet music, rendered client-side by OSMD) ────────────────────
 
+def _quantize_for_notation(notes: List[Dict], tempo: float, subdivisions: int = 8):
+    """
+    Snap onsets and durations to a readable grid — for NOTATION ONLY.
+
+    The arrangement itself now stays on the original performance timeline,
+    because moving notes in time breaks source fidelity and is what made
+    playback sound rushed.  But a score is a different object from a
+    performance: notating live timing literally produces unreadable nests of
+    tuplets and 128th rests.  Quantising is what notation *is*.
+
+    So this is applied here and nowhere else.  It never touches the notes
+    used for audio rendering or MIDI export, which is the whole point of
+    doing it at this layer instead of upstream.
+
+    8 subdivisions per quarter (32nd-note resolution) is about as fine as is
+    readable while still capturing swing and ornaments.
+    """
+    spb = 60.0 / max(float(tempo), 1.0)
+    step = spb / subdivisions
+    out = []
+    for n in notes:
+        on = round(float(n["onset"]) / step) * step
+        off = round(float(n.get("offset", n["onset"])) / step) * step
+        if off <= on:
+            off = on + step                      # nothing shorter than the grid
+        out.append({**n, "onset": on, "offset": off})
+    return sorted(out, key=lambda x: (x["onset"], int(x["pitch"])))
+
+
 def _build_score(notes: List[Dict], tempo: float):
     """Build a music21 Score from note dicts. No external tool needed."""
     from music21 import stream, note as m21note, tempo as m21tempo, metadata
+
+    notes = _quantize_for_notation(notes, tempo)
 
     score = stream.Score()
     score.metadata = metadata.Metadata()

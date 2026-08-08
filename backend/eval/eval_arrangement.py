@@ -25,8 +25,10 @@ from typing import Dict, List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.services.nmf_voice_leading import compress_notes_to_range   # noqa: E402
-from eval.arrangement_metrics import evaluate                        # noqa: E402
+from app.services.nmf_voice_leading import (                        # noqa: E402
+    compress_notes_to_range, fit_notes_to_range,
+)
+from eval.arrangement_metrics import evaluate, rule_violations        # noqa: E402
 
 OCTAVE_BOUNDS = {5: (36, 96), 6: (28, 103), 7: (21, 108)}
 
@@ -48,68 +50,16 @@ def arm_fold(notes, lo, hi):
 
 def arm_fold_nodouble(notes, lo, hi):
     """
-    Candidate fix: fold, but never press a key that is already down.
+    The shipped policy — delegates to fit_notes_to_range.
 
-    The measurement says doubled keys are the dominant cost of folding
-    (0.2 -> 12.6 per piece, worst 96), and they are the exact mechanism
-    behind repeated notes losing their sustain.  So when the folded
-    destination is already sounding:
-
-      1. try the next octave out, nearest-to-original first, so the note
-         keeps as much of its register as possible;
-      2. if every octave in range is occupied, DROP the note and extend
-         the note already holding that key to cover it.
-
-    Dropping is the musically honest choice: a second note-on for a key
-    that is already down adds no pitch and no harmony.  Extending rather
-    than plain-dropping keeps the sound lasting as long as the source
-    intended, which matters now that key press and sounding duration are
-    separate channels.
+    Deliberately a one-line call rather than a copy.  An earlier version of
+    this file reimplemented the policy, and the moment production changed
+    (extend-held-note became release-and-re-strike) the eval silently went
+    on measuring code that no longer ran anywhere.  An eval that does not
+    test the shipped function is worse than no eval, because it reports
+    confidence it has not earned.
     """
-    if lo <= 21 and hi >= 108:
-        return notes
-
-    held: Dict[int, List[list]] = {}     # pitch -> [[onset, offset], ...]
-    out: List[Dict] = []
-
-    for n in sorted(notes, key=lambda x: (float(x["onset"]), int(x["pitch"]))):
-        on = float(n["onset"])
-        off = float(n.get("offset", on))
-        p = int(n["pitch"])
-        while p < lo:
-            p += 12
-        while p > hi:
-            p -= 12
-
-        # Candidate octaves, nearest to the folded landing point first.
-        cands = [p] + [p + d for k in (1, 2) for d in (12 * k, -12 * k)]
-        cands = [c for c in cands if lo <= c <= hi]
-
-        placed = None
-        for c in cands:
-            spans = held.get(c, [])
-            if all(on >= s[1] - 1e-6 or off <= s[0] + 1e-6 for s in spans):
-                placed = c
-                break
-
-        if placed is None:
-            # Every octave occupied — extend whoever holds the key.
-            spans = held.get(p, [])
-            for s in spans:
-                if on < s[1] and off > s[0]:
-                    s[1] = max(s[1], off)
-                    for m in out:
-                        if int(m["pitch"]) == p and abs(float(m["onset"]) - s[0]) < 1e-6:
-                            m["offset"] = s[1]
-                            break
-                    break
-            continue
-
-        held.setdefault(placed, []).append([on, off])
-        out.append(n if placed == int(n["pitch"])
-                   else {**n, "pitch": placed})
-
-    return sorted(out, key=lambda x: (float(x["onset"]), int(x["pitch"])))
+    return fit_notes_to_range(notes, lo, hi)
 
 
 ARMS = {
@@ -136,7 +86,10 @@ def run(arm_names: List[str], octaves: int, limit: int) -> Dict[str, Dict]:
         if not src:
             continue
         for a in arm_names:
-            results[a].append(evaluate(src, ARMS[a](src, lo, hi), lo, hi))
+            out = ARMS[a](src, lo, hi)
+            row = evaluate(src, out, lo, hi)
+            row.update(rule_violations(src, out))
+            results[a].append(row)
 
     agg: Dict[str, Dict] = {}
     for a, rows in results.items():
@@ -160,6 +113,9 @@ def run(arm_names: List[str], octaves: int, limit: int) -> Dict[str, Dict]:
             "top_breaks":     mean("top_breaks"),
             "bass_breaks":    mean("bass_breaks"),
             "bass_role_lost": mean("bass_role_lost"),
+            "onset_moved":    mean("onset_moved_pct"),
+            "pitch_added":    mean("pitch_added_pct"),
+            "kept":           mean("kept_pct"),
         }
     return agg
 
@@ -195,6 +151,14 @@ def main():
     print("               this is the mechanism behind lost sustain on repeats")
     print("unplayable     simultaneities no two hands can take, per piece")
     print("crossings      pairs whose pitch order flipped vs source, per piece")
+    print("Source-fidelity rule (R2/R3 must be 0.00; dropping notes is legal):")
+    hdr2 = f"{'arm':<15}{'R2 onsets moved':>18}{'R3 pitch added':>17}{'notes kept':>13}"
+    print(hdr2)
+    print("-" * len(hdr2))
+    for a, r in agg.items():
+        print(f"{a:<15}{r['onset_moved']:>17.2f}%{r['pitch_added']:>16.2f}%"
+              f"{r['kept']:>12.2f}%")
+    print()
     print("bass role lost % of onsets where the LOWEST note's pitch class changed")
     print("               — i.e. the chord got inverted and the harmony moved\n")
 
