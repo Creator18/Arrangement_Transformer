@@ -9,7 +9,7 @@ import numpy as np
 #   'transformer' : 88->61 model + rule stack (default, unchanged behaviour)
 #   'retrieval'   : borrow figuration from real scores, re-pitched onto this
 #                   song's harmony
-ARRANGEMENT_MODE = "retrieval"
+ARRANGEMENT_MODE = "transformer"
 
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
