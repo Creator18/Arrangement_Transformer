@@ -9,7 +9,7 @@ import numpy as np
 #   'transformer' : 88->61 model + rule stack (default, unchanged behaviour)
 #   'retrieval'   : borrow figuration from real scores, re-pitched onto this
 #                   song's harmony
-ARRANGEMENT_MODE = "transformer"
+ARRANGEMENT_MODE = "retrieval"
 
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
@@ -275,12 +275,41 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             from retrieval.arrange import arrange_session
             arranged = arrange_session(session_dir, verbose=False)
             if arranged["notes"]:
-                export_notes = arranged["notes"]
+                retrieved = arranged["notes"]
+
+                # Retrieval used to replace export_notes outright, which
+                # meant its output skipped the entire rule stack — including
+                # the range compression and the playability constraints.
+                # Retrieved patterns are individually playable because they
+                # come from real scores, but nothing checked them AFTER
+                # re-pitching onto this song's chords, or against the melody
+                # sitting on top of them.
+                #
+                # Only the constraints are applied, not the full stack:
+                # voice-leading and chord-tone snapping would rewrite the
+                # borrowed figuration, which is the one thing retrieval
+                # exists to preserve.
+                from app.services.music_theory import enforce_sounding_limits
+                retrieved = compress_notes_to_range(retrieved, tgt_low, tgt_high)
+                retrieved = enforce_hand_constraints(
+                    retrieved,
+                    beat_times     = beat_times_arr.tolist()
+                                     if beat_times_arr is not None else None,
+                    downbeat_times = downbeat_times_arr.tolist()
+                                     if downbeat_times_arr is not None else None,
+                    dominance_map  = dominance_map,
+                    tempo          = tempo,
+                    beats_per_bar  = beats_per_bar,
+                )
+                retrieved = enforce_sounding_limits(retrieved)
+
+                export_notes = retrieved
                 retrieval_provenance = arranged["provenance"]
                 method = f"{method}+retrieval"
                 print(f"[transform] retrieval arrangement: "
                       f"{arranged['counts']} over "
-                      f"{len(retrieval_provenance)} spans")
+                      f"{len(retrieval_provenance)} spans -> "
+                      f"{len(export_notes)} notes after constraints")
         except Exception as e:
             print(f"[transform] retrieval failed, keeping transformer output: "
                   f"{type(e).__name__}: {e}")
