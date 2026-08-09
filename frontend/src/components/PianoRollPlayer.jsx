@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { playNote } from '../utils/tonesynth'
 import { motion, AnimatePresence } from 'framer-motion'
 import { wipeReveal } from '../utils/animefx'
 
@@ -27,6 +28,10 @@ const isBlack   = p => BLACK_PCS.has(p % 12)
 const PC_TO_WHITE_IDX = { 0: 0, 2: 1, 4: 2, 5: 3, 7: 4, 9: 5, 11: 6 }
 const BLACK_BOUNDARY  = { 1: 1, 3: 2, 6: 4, 8: 5, 10: 6 }
 const isWhitePc       = (pc) => pc in PC_TO_WHITE_IDX
+
+// Five fingers, two hands.  A hard ceiling on how many keys may be drawn as
+// held at once; anything still ringing beyond this is sustain, not a press.
+const MAX_KEYS_DOWN = 10
 
 // Compute the visual { x, w } of a pitch within the keyboard.
 //   wkw    = white-key bottom width = octave_width / 7 = (12·noteW)/7
@@ -92,7 +97,7 @@ function fmt(s) {
 // have a one-sided notch and D/G/A have notches on both sides, but every key's
 // bottom remains visually identical.  Black keys are short and float above
 // the boundary between the two whites they belong between.
-function KeyboardSVG({ midiLo, midiHi, activePitches, noteW }) {
+function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown }) {
   const pitchRange = midiHi - midiLo + 1
   const totalW     = TIMELINE_W + pitchRange * noteW
   const WHITE_H    = KEY_H - 1
@@ -182,16 +187,18 @@ function KeyboardSVG({ midiLo, midiHi, activePitches, noteW }) {
         const topL = (leftPc  in BLACK_BOUNDARY) ? botL + blackW / 2 : botL
         const topR = (rightPc in BLACK_BOUNDARY) ? botR - blackW / 2 : botR
 
-        const active = activePitches.has(pitch)
+        const active = activeKeys.has(pitch)
         const reg    = classify(pitch)
         const isC    = pitch % 12 === 0
         const octave = Math.floor(pitch / 12) - 1
         return (
           <g
             key={pitch}
+            onMouseDown={interactive ? (e) => { e.stopPropagation(); onKeyDown?.(pitch) } : undefined}
             style={{
               transform: active ? `translateY(${PRESS_W}px)` : 'translateY(0px)',
               transition: pressTransition,
+              cursor: interactive ? 'pointer' : 'default',
             }}
           >
             {/* Body — notched path */}
@@ -208,6 +215,20 @@ function KeyboardSVG({ midiLo, midiHi, activePitches, noteW }) {
                 ].join(' '),
               } : undefined}
             />
+            {/* Re-strike flash.  Keyed on the ONSET so a repeated note mounts
+                a NEW element, and a CSS keyframe animation restarts on mount
+                (a plain transition would not — a remounted element is painted
+                straight into its final state with nothing to animate from,
+                which is exactly why two consecutive notes used to look like
+                one long press). */}
+            {active && (
+              <path
+                key={activeKeys.get(pitch)}
+                className="key-strike"
+                d={wkPath(topL, topR, botL, botR)}
+                fill="#ffffff"
+              />
+            )}
             {/* Top highlight stripe — 3D ivory sheen, sized to top span */}
             {!active && (
               <rect
@@ -248,14 +269,16 @@ function KeyboardSVG({ midiLo, midiHi, activePitches, noteW }) {
         const pos    = pitchPos(pitch, midiLo, noteW)
         const xL     = TIMELINE_W + pos.x
         const w      = pos.w
-        const active = activePitches.has(pitch)
+        const active = activeKeys.has(pitch)
         const reg    = classify(pitch)
         return (
           <g
             key={pitch}
+            onMouseDown={interactive ? (e) => { e.stopPropagation(); onKeyDown?.(pitch) } : undefined}
             style={{
               transform: active ? `translateY(${PRESS_B}px)` : 'translateY(0px)',
               transition: pressTransition,
+              cursor: interactive ? 'pointer' : 'default',
             }}
           >
             <rect
@@ -271,6 +294,14 @@ function KeyboardSVG({ midiLo, midiHi, activePitches, noteW }) {
                 ].join(' '),
               } : undefined}
             />
+            {active && (
+              <rect
+                key={activeKeys.get(pitch)}
+                className="key-strike"
+                x={xL} y={0} width={w} height={BLACK_H} rx={2}
+                fill="#ffffff"
+              />
+            )}
             {/* Glossy top sheen */}
             {!active && (
               <rect
@@ -382,19 +413,54 @@ export default function PianoRollPlayer({
   const [partLo, partHi] = PART_RANGE[activePart]
 
   // ── Active pitches ──────────────────────────────────────────────────────────
-  const activePitches = useMemo(() => {
-    const active = new Set()
-    if (currentTime <= 0) return active
+  // Map of pitch -> onset of the note currently sounding on that key.
+  //
+  // Two things this fixes over the old Set of pitches.
+  //
+  // HARD CAP OF 10.  A hand has five fingers; a player has two hands.  The
+  // roll was colouring a key for a note's whole SOUNDING duration, which is
+  // not the same thing as the key being held — under pedal a note keeps
+  // ringing long after the finger has left.  Conflating the two is how the
+  // keyboard ended up showing more keys down than a human has.  When more
+  // than ten are sounding we keep the ten most recently struck, which is
+  // both the physical truth (you release the oldest to free a finger) and a
+  // strict guarantee the display can never break.  Everything older is still
+  // audible — that is what the sustain pedal is for — it just is not drawn
+  // as a pressed key, because it isn't one.
+  //
+  // ONSET AS THE VALUE, not just membership.  A repeated note kept the same
+  // pitch in the Set continuously, so the key never visibly lifted between
+  // two strikes even though the roll clearly showed two. Keying the flash on
+  // the onset makes a re-strike re-trigger.
+  const activeKeys = useMemo(() => {
+    const found = []
+    if (currentTime <= 0) return new Map()
     for (const n of notes) {
       const p = parseInt(n.pitch, 10)
       if (p < midiLo || p > midiHi) continue
       const inPart = activePart === 'all' || (p >= partLo && p <= partHi)
       if (inPart && currentTime >= n.onset && currentTime < (n.offset ?? n.onset + 0.25)) {
-        active.add(p)
+        found.push([p, n.onset])
       }
     }
-    return active
+    // Most recently struck first, then keep at most ten distinct keys.
+    found.sort((a, b) => b[1] - a[1])
+    const m = new Map()
+    for (const [p, onset] of found) {
+      if (m.has(p)) continue          // same key re-listed: newest wins
+      if (m.size >= MAX_KEYS_DOWN) break
+      m.set(p, onset)
+    }
+    return m
   }, [notes, currentTime, activePart, partLo, partHi, midiLo, midiHi])
+
+  // Click-to-hear.  Only when stopped: while the arrangement plays, clicks on
+  // the roll are seeks, and a synth note over the recording would muddy the
+  // very thing the user is trying to judge.
+  const strikeKey = useCallback((pitch) => {
+    if (playing) return
+    playNote(pitch, { velocity: 0.75 })
+  }, [playing])
 
   // ── Audio events ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -420,23 +486,30 @@ export default function PianoRollPlayer({
     }
   }, [])
 
-  // Reload audio on part change
+  // Reload audio when the SOURCE actually changes.
+  //
+  // This effect used to depend on `getPartUrl`, which every caller passes as
+  // an inline arrow — a fresh function identity on every parent render.  So
+  // the effect re-ran constantly and each run did
+  // `audio.pause(); setCurrentTime(0)`, snapping playback back to the start.
+  // That is why seeking appeared to restart the track: the seek itself worked
+  // fine, then a re-render threw it away.  Depending on the resolved URL
+  // string instead means the reload happens when, and only when, the audio
+  // being played is genuinely different.
+  const partUrl = getPartUrl(activePart) || ''
   useEffect(() => {
     const audio = audioRef.current
-    if (!audio) return
-    const wasPlaying = playing
+    if (!audio || !partUrl) return
+    const wasPlaying = !audio.paused
     audio.pause(); setPlaying(false); setCurrentTime(0); setDuration(0); setLoading(true)
-    const url = getPartUrl(activePart)
-    if (url) {
-      audio.src = url
-      audio.load()
-      if (wasPlaying) {
-        audio.play()
-          .then(() => { setPlaying(true); setLoading(false) })
-          .catch(() => setLoading(false))
-      }
+    audio.src = partUrl
+    audio.load()
+    if (wasPlaying) {
+      audio.play()
+        .then(() => { setPlaying(true); setLoading(false) })
+        .catch(() => setLoading(false))
     }
-  }, [activePart, getPartUrl])
+  }, [partUrl])
 
   // ── rAF auto-scroll (vertical) ──────────────────────────────────────────────
   // Scroll so the current time sits at the bottom edge of the roll viewport
@@ -814,7 +887,9 @@ export default function PianoRollPlayer({
           midiLo={midiLo}
           midiHi={midiHi}
           noteW={noteW}
-          activePitches={activePitches}
+          activeKeys={activeKeys}
+          interactive={!playing}
+          onKeyDown={strikeKey}
         />
       </div>
 

@@ -217,3 +217,16 @@ html.lenis                    { scroll-behavior: auto !important; }
 /* Opt a nested scroller out of Lenis with data-lenis-prevent */
 html.lenis [data-lenis-prevent] { overscroll-behavior: contain; }
 html.lenis.lenis-stopped      { overflow: hidden; }
+
+/* ── Piano key re-strike flash ───────────────────────────────────────────────
+   Mounted fresh on every new onset.  A keyframe animation (unlike a
+   transition) plays on mount, which is what makes a repeated note on the same
+   key read as two strikes instead of one held press. */
+@keyframes keyStrike {
+  from { opacity: 0.85; }
+  to   { opacity: 0;    }
+}
+.key-strike {
+  animation: keyStrike 190ms ease-out forwards;
+  pointer-events: none;
+}
