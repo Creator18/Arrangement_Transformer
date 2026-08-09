@@ -1,7 +1,14 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import GradientOrbs from '../components/GradientOrbs'
+import StringSpace from '../components/StringSpace'
+
+// Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
+// when this prop changes, and an inline {current: x} is a NEW object every
+// render — on a page that re-renders on every progress tick that would tear
+// down and recreate the renderer dozens of times.
+const SCENE_POS = { current: 0.85 }
+
 import GlassCard from '../components/GlassCard'
 import FidelityBadge from '../components/FidelityBadge'
 import CdefView from '../components/CdefView'
@@ -74,7 +81,7 @@ function PartPad({ part, selected, onSelect }) {
       onClick={() => onSelect(part.key)}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
-      className="pad-press flex-1 flex flex-col items-center justify-center gap-1.5 py-4 rounded-2xl relative overflow-hidden"
+      className="pad-press flex-1 flex flex-col items-center justify-center gap-1.5 py-4 rounded-sm relative overflow-hidden"
       style={{
         background: selected
           ? `linear-gradient(145deg, ${part.color}18, ${part.color}08)`
@@ -150,7 +157,7 @@ function DetectedKeyBadge({ detected_scale }) {
       className="flex justify-center"
     >
       <div
-        className="inline-flex items-center gap-3 px-5 py-2.5 rounded-2xl"
+        className="inline-flex items-center gap-3 px-5 py-2.5 rounded-sm"
         style={{
           background: 'rgba(245,158,11,0.07)',
           border: '1px solid rgba(245,158,11,0.28)',
@@ -268,7 +275,7 @@ export default function ResultsPage() {
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <GradientOrbs />
+        <StringSpace progressRef={SCENE_POS} />
         <AudioBars color="#a78bfa" height={40} className="relative z-10" />
         <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.28)', fontFamily: 'ui-monospace,monospace', letterSpacing: '0.12em' }}
           className="relative z-10">
@@ -280,7 +287,7 @@ export default function ResultsPage() {
 
   return (
     <div className="relative min-h-screen pt-20 pb-24 px-4">
-      <GradientOrbs />
+      <StringSpace progressRef={SCENE_POS} />
       <div className="relative z-10 max-w-4xl mx-auto space-y-5">
 
         {/* ── Header ── */}
@@ -366,7 +373,7 @@ export default function ResultsPage() {
                   key={label}
                   href={url}
                   download
-                  className="relative overflow-hidden inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold tracking-widest transition-all duration-200 hover:scale-[1.03] active:scale-95"
+                  className="relative overflow-hidden inline-flex items-center gap-2 px-6 py-2.5 rounded-sm text-xs font-bold tracking-widest transition-all duration-200 hover:scale-[1.03] active:scale-95"
                   style={{
                     background: `${color}10`,
                     border: `1px solid ${color}30`,

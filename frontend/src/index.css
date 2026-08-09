@@ -230,3 +230,193 @@ html.lenis.lenis-stopped      { overflow: hidden; }
   animation: keyStrike 190ms ease-out forwards;
   pointer-events: none;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONCERT — the overhauled design language.
+
+   A deliberate break from the previous workstation skin.  What changed and
+   why, so the difference is intentional rather than decorative:
+
+     surfaces   glass cards with heavy blur  ->  hairline rules on near-void
+                Blur reads as "panel floating over content".  This design has
+                a real 3D space behind it, and a frosted slab in front of a
+                depth field flattens it.  Hairlines let the space show.
+
+     colour     three accents everywhere     ->  near-monochrome, ONE accent
+                per act, shifting with scroll.  The old palette competed with
+                the piano-roll registers, which genuinely need three colours.
+
+     layout     centred column of cards      ->  full-viewport acts, content
+                anchored off-centre.  You move through the page rather than
+                reading down it.
+
+     type       uniform bold, tight          ->  a real scale: outsized light
+                display against very small wide-tracked mono labels.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --ct-ink:      #04050a;
+  --ct-line:     rgba(255, 255, 255, 0.10);
+  --ct-line-soft:rgba(255, 255, 255, 0.055);
+  --ct-text:     rgba(255, 255, 255, 0.94);
+  --ct-dim:      rgba(255, 255, 255, 0.46);
+  --ct-faint:    rgba(255, 255, 255, 0.26);
+  --ct-accent:   #fbb84a;         /* set per act from JS */
+}
+
+/* ── type scale ─────────────────────────────────────────────────────────── */
+.ct-display {
+  font-size: clamp(44px, 8.4vw, 132px);
+  line-height: 0.92;
+  letter-spacing: -0.045em;
+  font-weight: 300;
+  color: var(--ct-text);
+}
+.ct-display em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ct-accent);
+}
+.ct-lead {
+  font-size: clamp(15px, 1.35vw, 20px);
+  line-height: 1.55;
+  font-weight: 300;
+  color: var(--ct-dim);
+  max-width: 46ch;
+}
+.ct-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--ct-faint);
+  margin-bottom: clamp(18px, 2.6vw, 38px);
+}
+.ct-eyebrow-rule {
+  width: clamp(28px, 5vw, 78px);
+  height: 1px;
+  background: linear-gradient(90deg, var(--ct-accent), transparent);
+}
+.ct-mono {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ct-faint);
+}
+
+/* ── surfaces: rules, not slabs ─────────────────────────────────────────── */
+.ct-panel {
+  border: 1px solid var(--ct-line);
+  background: rgba(255, 255, 255, 0.012);
+  border-radius: 2px;                 /* nearly square — architectural */
+}
+.ct-hairline { height: 1px; background: var(--ct-line-soft); }
+
+/* ── act entrance ───────────────────────────────────────────────────────── */
+@keyframes actIn {
+  from { opacity: 0; transform: translateY(26px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.act-in { animation: actIn 900ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Children cascade in after their act, so a movement resolves rather than
+   snapping into place all at once. */
+.act-in > * { animation: actIn 760ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.act-in > *:nth-child(1) { animation-delay: 40ms; }
+.act-in > *:nth-child(2) { animation-delay: 130ms; }
+.act-in > *:nth-child(3) { animation-delay: 220ms; }
+.act-in > *:nth-child(4) { animation-delay: 310ms; }
+.act-in > *:nth-child(5) { animation-delay: 400ms; }
+
+/* ── act index, fixed to the left edge ──────────────────────────────────── */
+.ct-index {
+  position: fixed;
+  left: clamp(12px, 2.2vw, 34px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ct-index button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ct-faint);
+  transition: color 0.45s;
+}
+.ct-index button[data-on='true'] { color: var(--ct-text); }
+.ct-index .tick {
+  width: 14px; height: 1px;
+  background: currentColor;
+  transition: width 0.45s cubic-bezier(0.16, 1, 0.3, 1), background 0.45s;
+}
+.ct-index button[data-on='true'] .tick {
+  width: 40px;
+  background: var(--ct-accent);
+}
+
+/* ── controls ───────────────────────────────────────────────────────────── */
+.ct-cta {
+  appearance: none;
+  border: 1px solid var(--ct-accent);
+  background: transparent;
+  color: var(--ct-accent);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  padding: 18px 34px;
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: color 0.35s;
+}
+/* Fill wipes up from the baseline — the button "sounds" rather than glows. */
+.ct-cta::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--ct-accent);
+  transform: translateY(101%);
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: -1;
+}
+.ct-cta:hover { color: var(--ct-ink); }
+.ct-cta:hover::after { transform: translateY(0); }
+.ct-cta > span { position: relative; z-index: 1; }
+
+.ct-key {
+  border: 1px solid var(--ct-line);
+  background: transparent;
+  border-radius: 2px;
+  padding: 16px 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.3s, background 0.3s, transform 0.3s;
+}
+.ct-key:hover { border-color: rgba(255,255,255,0.24); transform: translateY(-2px); }
+.ct-key[data-on='true'] {
+  border-color: var(--ct-accent);
+  background: color-mix(in srgb, var(--ct-accent) 9%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .act-in, .act-in > * { animation: none !important; opacity: 1 !important; transform: none !important; }
+}

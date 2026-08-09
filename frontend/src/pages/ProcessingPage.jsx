@@ -1,7 +1,14 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import GradientOrbs from '../components/GradientOrbs'
+import StringSpace from '../components/StringSpace'
+
+// Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
+// when this prop changes, and an inline {current: x} is a NEW object every
+// render — on a page that re-renders on every progress tick that would tear
+// down and recreate the renderer dozens of times.
+const SCENE_POS = { current: 0.55 }
+
 import AudioBars from '../components/AudioBars'
 import { countUp, elasticPop } from '../utils/animefx'
 import {
@@ -242,8 +249,12 @@ export default function ProcessingPage() {
   }, [overallPct])
 
   return (
-    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden px-4 py-24">
-      <GradientOrbs />
+    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden px-4 py-24"
+         style={{ background: 'var(--ct-ink)' }}>
+      {/* Same 3D field as the landing page, parked deep in the run so the
+          scene reads as continuous across the navigation rather than the
+          user arriving somewhere else. */}
+      <StringSpace progressRef={SCENE_POS} />
 
       <motion.div
         className="relative z-10 w-full"
@@ -254,11 +265,11 @@ export default function ProcessingPage() {
       >
         {/* Header glass panel */}
         <div
-          className="rounded-2xl p-6 mb-4"
+          className="p-6 mb-4"
           style={{
-            background: 'rgba(255,255,255,0.025)',
-            border: '1px solid rgba(255,255,255,0.07)',
-            backdropFilter: 'blur(32px)',
+            background: 'rgba(255,255,255,0.012)',
+            border: '1px solid var(--ct-line)',
+            borderRadius: 2,
           }}
         >
           {/* Waveform + title row */}

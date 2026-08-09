@@ -1,243 +1,106 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
-import ScrollStage from '../components/ScrollStage'
-import SectionRail from '../components/SectionRail'
-import RackSection from '../components/RackSection'
-import GlassCard from '../components/GlassCard'
-import AudioBars from '../components/AudioBars'
-import { uploadAudio, getWarmupStatus } from '../utils/api'
-import { letterReveal, gridRise } from '../utils/animefx'
-import KeyboardAssembly from '../components/KeyboardAssembly'
-import StringField from '../components/StringField'
-import MasterDial from '../components/MasterDial'
+import { AnimatePresence, motion } from 'framer-motion'
+import StringSpace from '../components/StringSpace'
+import Act from '../components/Act'
 import PipelineScrolly from '../components/PipelineScrolly'
+import { uploadAudio, getWarmupStatus } from '../utils/api'
+import { scrollToTarget } from '../utils/smoothscroll'
 
-// Channels on the rail, in document order.  Keep this list in step with
-// ScrollStage's SCENES so the backdrop and the menu agree about where the
-// user is — they read the same scroll position independently.
-const SECTIONS = [
-  { id: 'hero',     label: 'INTRO',    color: '#f59e0b' },
-  { id: 'console',  label: 'CONSOLE',  color: '#a78bfa' },
-  { id: 'pipeline', label: 'PIPELINE', color: '#06b6d4' },
-  { id: 'engine',   label: 'ENGINE',   color: '#34d399' },
+/**
+ * LandingPage — rebuilt as a scroll story.
+ *
+ * The previous page was a centred column of glass cards over a flat canvas.
+ * This one is four full-viewport ACTS travelling through a 3D string field,
+ * with one accent colour at a time and type doing the work that decoration
+ * used to.  Functionally identical: same eight presets, same drag-and-drop
+ * upload, same progress, same warm-up lamp, same navigation payload.
+ */
+
+const ACTS = [
+  { id: 'overture', label: 'Overture', accent: '#fbb84a' },
+  { id: 'console',  label: 'Console',  accent: '#8cc7ff' },
+  { id: 'pipeline', label: 'Chain',    accent: '#9ef9cc' },
+  { id: 'coda',     label: 'Coda',     accent: '#dba9ff' },
 ]
 
 const ACCEPTED = '.mp3,.wav,.m4a,.ogg,.flac,.aiff'
 
-// ── Transformation presets — the soundboard pads ─────────────────────────────
-// Each pad is a real config that gets passed to the backend transform step.
+// Unchanged from the old page — these are real backend configs and the
+// object travels with the session, so its shape must not drift.
 const PRESETS = [
-  { id: 'standard',  label: 'Standard',   sym: '◈',  octaves: 5, components: 16, color: '#f59e0b', desc: '5 oct · balanced'    },
-  { id: 'wide',      label: 'Wide',        sym: '⬡',  octaves: 6, components: 16, color: '#3b82f6', desc: '6 oct · expressive'  },
-  { id: 'full',      label: 'Concert',     sym: '◉',  octaves: 7, components: 20, color: '#a78bfa', desc: '7 oct · full range'  },
-  { id: 'minimal',   label: 'Minimal',     sym: '▪',  octaves: 4, components: 8,  color: '#34d399', desc: '4 oct · clean'       },
-  { id: 'jazz',      label: 'Jazz',        sym: '♩',  octaves: 5, components: 24, color: '#f87171', desc: '5 oct · rich NMF'    },
-  { id: 'classical', label: 'Classical',   sym: '♪',  octaves: 6, components: 20, color: '#06b6d4', desc: '6 oct · detailed'    },
-  { id: 'beginner',  label: 'Beginner',    sym: '▸',  octaves: 4, components: 12, color: '#84cc16', desc: '4 oct · simplified'  },
-  { id: 'dense',     label: 'Dense',       sym: '⬟',  octaves: 5, components: 32, color: '#e879f9', desc: '5 oct · max NMF'     },
+  { id: 'standard',  label: 'Standard',  octaves: 5, components: 16, color: '#fbb84a', desc: '5 oct · balanced'   },
+  { id: 'wide',      label: 'Wide',      octaves: 6, components: 16, color: '#8cc7ff', desc: '6 oct · expressive' },
+  { id: 'full',      label: 'Concert',   octaves: 7, components: 20, color: '#dba9ff', desc: '7 oct · full range' },
+  { id: 'minimal',   label: 'Minimal',   octaves: 4, components: 8,  color: '#9ef9cc', desc: '4 oct · clean'      },
+  { id: 'jazz',      label: 'Jazz',      octaves: 5, components: 24, color: '#ff9b8a', desc: '5 oct · rich NMF'   },
+  { id: 'classical', label: 'Classical', octaves: 6, components: 20, color: '#7fe3e0', desc: '6 oct · detailed'   },
+  { id: 'beginner',  label: 'Beginner',  octaves: 4, components: 12, color: '#c6e77f', desc: '4 oct · simplified' },
+  { id: 'dense',     label: 'Dense',     octaves: 5, components: 32, color: '#f2a0e0', desc: '5 oct · max NMF'    },
 ]
 
-// ── Single preset pad ─────────────────────────────────────────────────────────
-function PresetPad({ preset, selected, onSelect }) {
-  const ref = useRef(null)
-
-  const onMouseMove = (e) => {
-    const el = ref.current
-    if (!el) return
-    const r  = el.getBoundingClientRect()
-    const x  = (e.clientX - r.left) / r.width  - 0.5
-    const y  = (e.clientY - r.top)  / r.height - 0.5
-    el.style.transform = `perspective(360px) rotateX(${-y * 14}deg) rotateY(${x * 14}deg) scale(${selected ? 1.06 : 1.04}) translateZ(4px)`
-    el.style.transition = 'transform 0.06s ease'
-  }
-
-  const onMouseLeave = () => {
-    const el = ref.current
-    if (!el) return
-    el.style.transform = selected
-      ? 'perspective(360px) rotateX(0deg) rotateY(0deg) scale(1.03) translateZ(2px)'
-      : 'perspective(360px) rotateX(0deg) rotateY(0deg) scale(1) translateZ(0px)'
-    el.style.transition = 'transform 0.35s cubic-bezier(0.4,0,0.2,1)'
-  }
-
+function ActIndex({ acts, current }) {
   return (
-    <motion.button
-      ref={ref}
-      onClick={() => onSelect(preset)}
-      onMouseMove={onMouseMove}
-      onMouseLeave={onMouseLeave}
-      className="pad-press relative flex flex-col items-start text-left"
-      style={{
-        background: selected
-          ? `linear-gradient(145deg, ${preset.color}18, ${preset.color}08)`
-          : 'rgba(255,255,255,0.025)',
-        border: `1px solid ${selected ? preset.color + '55' : 'rgba(255,255,255,0.07)'}`,
-        borderRadius: 14,
-        padding: '14px 12px 12px',
-        cursor: 'pointer',
-        boxShadow: selected
-          ? `0 0 0 1px ${preset.color}30, 0 0 24px ${preset.color}25, 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.10)`
-          : 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 16px rgba(0,0,0,0.5)',
-        transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
-        minHeight: 90,
-        willChange: 'transform',
-      }}
-      initial={false}
-      animate={{ scale: selected ? 1.03 : 1 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 24 }}
-      whileTap={{ scale: 0.92 }}
-    >
-      {/* Status LED */}
-      <motion.div
-        style={{
-          position: 'absolute',
-          top: 8, right: 8,
-          width: 6, height: 6,
-          borderRadius: '50%',
-          background: selected ? preset.color : 'rgba(255,255,255,0.08)',
-          boxShadow: selected ? `0 0 8px ${preset.color}, 0 0 16px ${preset.color}80` : 'none',
-        }}
-        animate={selected ? { opacity: [1, 0.5, 1] } : { opacity: 1 }}
-        transition={{ duration: 1.6, repeat: selected ? Infinity : 0 }}
-      />
-
-      {/* Symbol */}
-      <span style={{
-        fontSize: 18,
-        color: selected ? preset.color : 'rgba(255,255,255,0.35)',
-        display: 'block',
-        marginBottom: 8,
-        lineHeight: 1,
-        transition: 'color 0.2s',
-        fontFamily: 'ui-monospace, monospace',
-      }}>
-        {preset.sym}
-      </span>
-
-      {/* Label */}
-      <p style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: '0.08em',
-        color: selected ? preset.color : 'rgba(255,255,255,0.65)',
-        marginBottom: 3,
-        transition: 'color 0.2s',
-      }}>
-        {preset.label.toUpperCase()}
-      </p>
-
-      {/* Description */}
-      <p style={{
-        fontSize: 8.5,
-        color: selected ? `${preset.color}99` : 'rgba(255,255,255,0.25)',
-        letterSpacing: '0.04em',
-        transition: 'color 0.2s',
-        lineHeight: 1.4,
-      }}>
-        {preset.desc}
-      </p>
-    </motion.button>
+    <nav className="ct-index" aria-label="Sections">
+      {acts.map((a, i) => (
+        <button
+          key={a.id}
+          data-on={i === current}
+          onClick={() => scrollToTarget(a.id)}
+          title={a.label}
+        >
+          <span className="tick" />
+          {a.label}
+        </button>
+      ))}
+    </nav>
   )
 }
 
-// ── Soundboard pad section ─────────────────────────────────────────────────────
-function PresetBoard({ selected, onSelect }) {
-  const gridRef = useRef(null)
+export default function LandingPage() {
+  const [dragging, setDragging]     = useState(false)
+  const [uploading, setUploading]   = useState(false)
+  const [progress, setProgress]     = useState(0)
+  const [error, setError]           = useState(null)
+  const [preset, setPreset]         = useState(PRESETS[0])
+  const [engineReady, setEngineReady] = useState(null)
+  const [act, setAct]               = useState(0)
 
-  // anime.js: cascade the 8 pads in as a 4x2 grid wave on mount
+  const inputRef  = useRef(null)
+  const navigate  = useNavigate()
+  // Scroll progress for the WebGL camera. A ref, not state: the scene reads
+  // it every frame and re-rendering React 60x a second for a number nothing
+  // in the DOM displays would be pure waste.
+  const progressRef = useRef(0)
+
   useEffect(() => {
-    if (gridRef.current) {
-      gridRise(Array.from(gridRef.current.children),
-               { grid: [4, 2], delay: 350 })
+    let ticking = false
+    const read = () => {
+      ticking = false
+      const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
+      const p = window.scrollY / max
+      progressRef.current = p
+      const idx = Math.min(ACTS.length - 1, Math.round(p * (ACTS.length - 1)))
+      setAct((prev) => (prev === idx ? prev : idx))
+    }
+    const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(read) } }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    read()
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
     }
   }, [])
 
-  return (
-    <div>
-      {/* Section label row */}
-      <div className="flex items-center gap-3 mb-4">
-        <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.06)' }} />
-        <span style={{
-          fontSize: 9,
-          fontWeight: 700,
-          letterSpacing: '0.18em',
-          color: 'rgba(255,255,255,0.25)',
-          fontFamily: 'ui-monospace, monospace',
-        }}>
-          SELECT PRESET
-        </span>
-        <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.06)' }} />
-      </div>
-
-      <div
-        ref={gridRef}
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: 8,
-        }}
-      >
-        {PRESETS.map((p) => (
-          <PresetPad
-            key={p.id}
-            preset={p}
-            selected={selected?.id === p.id}
-            onSelect={onSelect}
-          />
-        ))}
-      </div>
-
-      {/* Octave + component hint */}
-      <AnimatePresence mode="wait">
-        {selected && (
-          <motion.div
-            key={selected.id}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            className="flex items-center justify-center gap-4 mt-4"
-          >
-            <span style={{ fontSize: 10, color: `${selected.color}bb`, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
-              {selected.octaves} OCTAVES
-            </span>
-            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.15)', fontFamily: 'ui-monospace,monospace' }}>·</span>
-            <span style={{ fontSize: 10, color: `${selected.color}bb`, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
-              {selected.components} NMF COMPONENTS
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  )
-}
-
-// ── Main landing page ─────────────────────────────────────────────────────────
-export default function LandingPage() {
-  const [dragging,  setDragging]  = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [progress,  setProgress]  = useState(0)
-  const [error,     setError]     = useState(null)
-  const [preset,    setPreset]    = useState(PRESETS[0])   // Standard is default
-
-  const [engineReady, setEngineReady] = useState(null)   // null = unknown
-  const inputRef    = useRef(null)
-  const kickerRef   = useRef(null)
-  const subtitleRef = useRef(null)
-  const navigate    = useNavigate()
-
-  // anime.js: letter-by-letter reveal on the kicker + subtitle.  The h1
-  // keeps its framer fade — background-clip:text gradients don't survive
-  // per-letter span splitting.
+  // One accent for the whole page, following the act. Everything that uses
+  // --ct-accent moves together, which is what keeps it feeling like one
+  // instrument changing state rather than four differently-themed pages.
   useEffect(() => {
-    letterReveal(kickerRef.current,   { delay: 300, stagger: 22 })
-    letterReveal(subtitleRef.current, { delay: 750, stagger: 12, translate: 10 })
-  }, [])
+    document.documentElement.style.setProperty('--ct-accent', ACTS[act].accent)
+  }, [act])
 
-  // Start the backend warming as soon as the page is open, and poll until
-  // it reports ready.  The GET both reports status and kicks warming off, so
-  // a freshly started server begins loading models the moment anyone looks at
-  // the page rather than when they upload.
+  // Warm the backend while the user reads — unchanged behaviour.
   useEffect(() => {
     let alive = true
     let timer = null
@@ -257,17 +120,11 @@ export default function LandingPage() {
 
   const handleFile = useCallback(async (file) => {
     if (!file) return
-    setError(null)
-    setUploading(true)
-    setProgress(0)
+    setError(null); setUploading(true); setProgress(0)
     try {
       const result = await uploadAudio(file, setProgress)
       navigate(`/processing/${result.session_id}`, {
-        state: {
-          filename: file.name,
-          duration: result.duration_seconds,
-          preset,           // ← the chosen preset travels with the session
-        },
+        state: { filename: file.name, duration: result.duration_seconds, preset },
       })
     } catch (e) {
       setError(e?.response?.data?.detail || 'Upload failed. Please try again.')
@@ -275,278 +132,190 @@ export default function LandingPage() {
     }
   }, [navigate, preset])
 
-  const onDrop      = useCallback((e) => {
+  const onDrop = useCallback((e) => {
     e.preventDefault(); setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
+    const f = e.dataTransfer.files[0]
+    if (f) handleFile(f)
   }, [handleFile])
-  const onDragOver  = (e) => { e.preventDefault(); setDragging(true) }
-  const onDragLeave = () => setDragging(false)
 
   return (
-    <div className="relative min-h-screen flex flex-col items-center pt-24 pb-40">
-      <ScrollStage sections={SECTIONS} />
-      <SectionRail sections={SECTIONS} />
+    <div style={{ position: 'relative', background: 'var(--ct-ink)' }}>
+      <StringSpace progressRef={progressRef} />
+      <ActIndex acts={ACTS} current={act} />
 
-      {/* ── Hero ── */}
-      <motion.div
-        id="hero"
-        /* w-full: the string bank should span the viewport like a
-           soundboard — without it the hero shrinks to its text (647px)
-           and takes the strings with it. */
-        className="relative z-10 text-center mb-14 px-4 w-full"
-        initial={{ opacity: 0, y: 40 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
-        style={{ paddingTop: 26, paddingBottom: 26 }}
-      >
-        {/* Resonating strings behind the hero.  Click anywhere in here to
-            strike them. */}
-        <StringField />
-
-        {/* The content must be positioned to sit above the canvas: an
-            absolutely-positioned sibling paints in a later phase than
-            static block content, so without this the strings would cover
-            the headline rather than sit behind it. */}
-        <div style={{ position: 'relative', zIndex: 1 }}>
-        <motion.div
-          className="float"
-          style={{ display: 'inline-block', marginBottom: 8 }}
-        >
-          <span ref={kickerRef} style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: '0.22em',
-            color: 'rgba(245,158,11,0.6)',
-            fontFamily: 'ui-monospace, monospace',
-          }}>
-            ◈ AI PIANO ARRANGEMENT ◈
-          </span>
-        </motion.div>
-
-        <h1
-          className="text-gradient-animated font-black tracking-tighter leading-none select-none"
-          style={{
-            fontSize: 'clamp(52px, 9vw, 100px)',
-            lineHeight: 0.92,
-            marginBottom: 20,
-            letterSpacing: '-0.03em',
-          }}
-        >
-          Arrangement<br />Transformer
+      {/* ─── I · Overture ─────────────────────────────────────────────── */}
+      <Act id="overture" label="I · Overture" minH="100vh">
+        <h1 className="ct-display" style={{ marginBottom: 32 }}>
+          Any recording.<br />
+          Any keyboard.<br />
+          <em>A playable score.</em>
         </h1>
-
-        <p ref={subtitleRef} style={{
-          fontSize: 18,
-          color: 'rgba(255,255,255,0.38)',
-          fontWeight: 300,
-          letterSpacing: '0.01em',
-        }}>
-          Any song. Any keyboard. Full arrangement.
+        <p className="ct-lead" style={{ marginBottom: 42 }}>
+          Audio goes in. What comes out is an arrangement a human hand can
+          actually play — every note traceable to something the recording
+          really did.
         </p>
-
-        {/* Keys fly in scattered and assemble into a strip; they drift
-            apart again ("exploded view") as the hero scrolls away */}
-        <div style={{ marginTop: 36 }}>
-          <KeyboardAssembly />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+          <button className="ct-cta" onClick={() => scrollToTarget('console')}>
+            <span>Begin</span>
+          </button>
+          <span className="ct-mono">Scroll</span>
         </div>
-        </div>
-      </motion.div>
+      </Act>
 
-      {/* ── Main card: preset board + upload ── */}
-      <motion.div
-        id="console"
-        className="relative z-10 w-full px-4"
-        style={{ maxWidth: 560 }}
-        initial={{ opacity: 0, y: 48 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, delay: 0.15, ease: [0.4, 0, 0.2, 1] }}
-      >
-        <GlassCard tilt tiltStrength={3} className="p-7">
+      {/* ─── II · Console ─────────────────────────────────────────────── */}
+      <Act id="console" label="II · Console" minH="100vh">
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(260px, 1fr) minmax(300px, 1.05fr)',
+          gap: 'clamp(28px, 5vw, 76px)',
+          alignItems: 'start',
+        }}>
+          {/* left — presets */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 18 }}>
+              <h2 className="ct-display" style={{ fontSize: 'clamp(26px, 3vw, 44px)' }}>Voicing</h2>
+              <span className="ct-mono">{preset.octaves} oct · {preset.components} nmf</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  className="ct-key"
+                  data-on={preset.id === p.id}
+                  onClick={() => setPreset(p)}
+                  style={preset.id === p.id ? { '--ct-accent': p.color } : undefined}
+                >
+                  <div style={{
+                    fontSize: 12, fontWeight: 600, letterSpacing: '0.02em',
+                    color: preset.id === p.id ? p.color : 'var(--ct-text)',
+                    marginBottom: 4,
+                  }}>
+                    {p.label}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--ct-faint)', fontFamily: 'ui-monospace,monospace' }}>
+                    {p.desc}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
 
-          {/* Engine readiness — the models load while you pick a file, so
-              this is usually green before the first upload. */}
-          {!uploading && (
-            <div className="flex items-center justify-end gap-2 mb-4">
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: engineReady === true  ? '#34d399'
-                          : engineReady === false ? '#f59e0b'
-                          : 'rgba(255,255,255,0.18)',
-                boxShadow: engineReady === true ? '0 0 8px #34d399'
-                          : engineReady === false ? '0 0 8px #f59e0b' : 'none',
-                transition: 'background .4s, box-shadow .4s',
-              }} />
-              <span style={{
-                fontSize: 8.5, fontWeight: 700, letterSpacing: '0.16em',
-                fontFamily: 'ui-monospace,monospace',
-                color: engineReady === true ? 'rgba(52,211,153,0.75)'
-                                            : 'rgba(255,255,255,0.28)',
-                transition: 'color .4s',
-              }}>
-                {engineReady === true ? 'ENGINE READY'
-                 : engineReady === false ? 'ENGINE WARMING' : 'ENGINE …'}
+          {/* right — upload */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+              <h2 className="ct-display" style={{ fontSize: 'clamp(26px, 3vw, 44px)' }}>Source</h2>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%',
+                  background: engineReady === true ? '#9ef9cc'
+                            : engineReady === false ? 'var(--ct-accent)' : 'rgba(255,255,255,0.2)',
+                  boxShadow: engineReady === true ? '0 0 8px #9ef9cc' : 'none',
+                  transition: 'background .4s, box-shadow .4s',
+                }} />
+                <span className="ct-mono">
+                  {engineReady === true ? 'Ready' : engineReady === false ? 'Warming' : '—'}
+                </span>
               </span>
             </div>
-          )}
 
-          {/* Preset board */}
-          {!uploading && (
-            <div className="mb-7">
-              <PresetBoard selected={preset} onSelect={setPreset} />
-            </div>
-          )}
-
-          {/* Divider */}
-          {!uploading && (
-            <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', marginBottom: 24 }} />
-          )}
-
-          {/* Upload zone */}
-          {!uploading ? (
-            <div
-              onDrop={onDrop}
-              onDragOver={onDragOver}
-              onDragLeave={onDragLeave}
-            >
-              {/* Drop area */}
-              <motion.div
-                className="rounded-xl flex flex-col items-center gap-3 py-8 px-6 mb-5"
+            {!uploading ? (
+              <div
+                onDrop={onDrop}
+                onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                onDragLeave={() => setDragging(false)}
+                className="ct-panel"
                 style={{
-                  border: `1.5px dashed ${dragging ? (preset?.color || 'rgba(245,158,11,0.6)') : 'rgba(255,255,255,0.08)'}`,
-                  background: dragging ? `${preset?.color || '#f59e0b'}06` : 'rgba(255,255,255,0.01)',
-                  transition: 'all 0.2s ease',
-                  cursor: 'default',
+                  padding: 'clamp(28px, 4vw, 54px) 28px',
+                  borderStyle: 'dashed',
+                  borderColor: dragging ? 'var(--ct-accent)' : 'var(--ct-line)',
+                  background: dragging ? 'color-mix(in srgb, var(--ct-accent) 7%, transparent)' : undefined,
+                  textAlign: 'center',
+                  transition: 'border-color .25s, background .25s',
                 }}
-                animate={dragging ? { scale: 1.01 } : { scale: 1 }}
               >
-                {/* Animated icon */}
-                <motion.div
-                  className="float"
-                  style={{
-                    width: 52, height: 52,
-                    borderRadius: '50%',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 22,
-                    background: `linear-gradient(135deg, ${preset?.color || '#f59e0b'}20, ${preset?.color || '#f59e0b'}08)`,
-                    border: `1px solid ${preset?.color || '#f59e0b'}30`,
-                    boxShadow: `0 0 20px ${preset?.color || '#f59e0b'}20`,
-                  }}
-                >
-                  🎹
-                </motion.div>
-
-                <div className="text-center">
-                  <p className="text-sm font-medium text-white mb-1">
-                    Drop your recording here
-                  </p>
-                  <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.04em' }}>
-                    MP3 · WAV · M4A · OGG · FLAC · AIFF
-                  </p>
+                <div className="ct-mono" style={{ marginBottom: 14 }}>Drop audio here</div>
+                <div style={{ fontSize: 11, color: 'var(--ct-faint)', marginBottom: 26 }}>
+                  MP3 · WAV · M4A · OGG · FLAC · AIFF
                 </div>
-              </motion.div>
-
-              {/* CTA */}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => inputRef.current?.click()}
-                  className="flex-1 py-3 rounded-xl text-sm font-bold tracking-wide transition-all duration-200 active:scale-95 relative overflow-hidden"
-                  style={{
-                    background: `linear-gradient(135deg, ${preset?.color || '#f59e0b'} 0%, ${preset?.color || '#d97706'}cc 100%)`,
-                    color: '#0a0a0b',
-                    boxShadow: `0 4px 24px ${preset?.color || '#f59e0b'}40, 0 0 0 1px ${preset?.color || '#f59e0b'}20`,
-                  }}
-                >
-                  <span className="shimmer absolute inset-0 rounded-xl" />
-                  <span className="relative">Choose File</span>
+                <button className="ct-cta" onClick={() => inputRef.current?.click()}>
+                  <span>Choose file</span>
                 </button>
-
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: 'rgba(255,255,255,0.22)',
-                    fontFamily: 'ui-monospace,monospace',
-                    letterSpacing: '0.06em',
-                    lineHeight: 1.5,
-                    textAlign: 'center',
-                    padding: '0 8px',
-                  }}
-                >
-                  PRESET<br />
-                  <span style={{ color: preset?.color || '#f59e0b' }}>{preset?.label.toUpperCase()}</span>
-                </div>
-              </div>
-
-              <input
-                ref={inputRef}
-                type="file"
-                accept={ACCEPTED}
-                className="hidden"
-                onChange={(e) => handleFile(e.target.files[0])}
-              />
-
-              <AnimatePresence>
-                {error && (
-                  <motion.p
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="mt-4 text-sm text-red-400 text-center"
-                  >
-                    {error}
-                  </motion.p>
-                )}
-              </AnimatePresence>
-            </div>
-          ) : (
-            /* Uploading state */
-            <div className="flex flex-col items-center gap-5 py-6">
-              <AudioBars color={preset?.color || '#22c55e'} height={40} />
-              <p className="text-sm font-semibold" style={{ color: preset?.color || '#f59e0b' }}>
-                Uploading…
-              </p>
-              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                <motion.div
-                  className="h-full rounded-full"
-                  style={{ background: `linear-gradient(90deg, ${preset?.color || '#f59e0b'}, ${preset?.color || '#d97706'})` }}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
-                  transition={{ ease: 'easeOut' }}
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept={ACCEPTED}
+                  className="hidden"
+                  onChange={(e) => handleFile(e.target.files[0])}
                 />
               </div>
-              <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontFamily: 'ui-monospace,monospace' }}>
-                {progress}%
-              </p>
-            </div>
-          )}
-        </GlassCard>
-      </motion.div>
+            ) : (
+              <div className="ct-panel" style={{ padding: 34 }}>
+                <div className="ct-mono" style={{ marginBottom: 16 }}>Uploading</div>
+                <div style={{ height: 1, background: 'var(--ct-line)', position: 'relative', marginBottom: 12 }}>
+                  <motion.div
+                    style={{ position: 'absolute', inset: 0, transformOrigin: 'left', background: 'var(--ct-accent)' }}
+                    initial={{ scaleX: 0 }}
+                    animate={{ scaleX: progress / 100 }}
+                    transition={{ ease: 'easeOut' }}
+                  />
+                </div>
+                <div style={{
+                  fontFamily: 'ui-monospace,monospace', fontSize: 32, fontWeight: 300,
+                  color: 'var(--ct-accent)',
+                }}>
+                  {progress}<span style={{ fontSize: 14, color: 'var(--ct-faint)' }}>%</span>
+                </div>
+              </div>
+            )}
 
-      {/* ── The pipeline, told by scrolling ──
-          This replaces the old static SignalChain section: both told the
-          same story, and one where the material visibly persists through
-          every stage tells it far better.  Deliberately NOT wrapped in
-          RackSection — RackSection applies a parallax transform, and a
-          transformed ancestor becomes the containing block for the sticky
-          panel inside, which breaks the pin. */}
-      <div className="relative z-10 w-full mt-36">
-        <PipelineScrolly id="pipeline" />
-      </div>
-
-      {/* ── The engine ── */}
-      <div className="relative z-10 w-full px-4 mt-36"
-           style={{ maxWidth: 900, marginLeft: 'auto', marginRight: 'auto' }}>
-        <RackSection
-          id="engine"
-          label="THE ENGINE"
-          color="#34d399"
-          subtitle="Scroll drives the dial — the page position is the knob."
-        >
-          <div className="flex justify-center">
-            <MasterDial size={400} />
+            <AnimatePresence>
+              {error && (
+                <motion.p
+                  initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                  style={{ marginTop: 16, fontSize: 12, color: '#ff9b8a' }}
+                >
+                  {error}
+                </motion.p>
+              )}
+            </AnimatePresence>
           </div>
-        </RackSection>
-      </div>
+        </div>
+      </Act>
+
+      {/* ─── III · Chain — the pipeline scroll story ───────────────────── */}
+      <PipelineScrolly id="pipeline" />
+
+      {/* ─── IV · Coda ────────────────────────────────────────────────── */}
+      <Act id="coda" label="IV · Coda" minH="100vh">
+        <h2 className="ct-display" style={{ marginBottom: 30 }}>
+          The reduction may<br />only <em>subtract</em>.
+        </h2>
+        <p className="ct-lead" style={{ marginBottom: 34 }}>
+          A smaller keyboard means fewer notes, never different ones. Onsets
+          stay where the performance put them, pitch classes stay what they
+          were, and anything that cannot be reached is released rather than
+          rewritten — held by the pedal, exactly as a player would.
+        </p>
+        <div style={{ display: 'flex', gap: 'clamp(20px, 4vw, 64px)', flexWrap: 'wrap' }}>
+          {[
+            ['0.00%', 'onsets moved'],
+            ['0.00%', 'pitch added'],
+            ['10', 'keys maximum'],
+            ['14st', 'hand reach'],
+          ].map(([v, k]) => (
+            <div key={k}>
+              <div style={{
+                fontSize: 'clamp(26px, 3.4vw, 46px)', fontWeight: 300,
+                letterSpacing: '-0.03em', color: 'var(--ct-accent)',
+              }}>
+                {v}
+              </div>
+              <div className="ct-mono" style={{ marginTop: 4 }}>{k}</div>
+            </div>
+          ))}
+        </div>
+      </Act>
     </div>
   )
 }
