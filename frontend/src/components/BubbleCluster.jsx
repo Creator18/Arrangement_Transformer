@@ -42,8 +42,34 @@ export default function BubbleCluster({
     setPointer({ x: e.clientX - r.left, y: e.clientY - r.top })
   }, [])
 
-  const rows = []
-  for (let i = 0; i < items.length; i += perRow) rows.push(items.slice(i, i + perRow))
+  // Balanced rows, widest in the middle, every row centred.
+  //
+  // The old offset honeycomb split 7 items into 3/3/1 and shifted alternate
+  // rows half a cell, which left a lone bubble hanging off one side.  A
+  // cluster only reads as deliberate if it is symmetric about its own axis,
+  // so rows are now sized as evenly as possible and then re-ordered into a
+  // diamond — 7 becomes 2/3/2 rather than 3/3/1.
+  const rows = (() => {
+    const n = items.length
+    if (n <= perRow) return [items]
+    const nRows = Math.ceil(n / perRow)
+    const base = Math.floor(n / nRows)
+    const extra = n % nRows
+    const sizes = Array.from({ length: nRows }, (_, i) => base + (i < extra ? 1 : 0))
+    sizes.sort((a, b) => a - b)              // ascending
+    // Re-lay ascending sizes outward from the centre so the widest row is
+    // in the middle and the shape mirrors top-to-bottom.
+    const arranged = new Array(nRows)
+    let lo = 0, hi = nRows - 1
+    for (let i = 0; i < nRows; i++) {
+      if (i % 2 === 0) arranged[lo++] = sizes[i]
+      else arranged[hi--] = sizes[i]
+    }
+    const out = []
+    let k = 0
+    for (const sz of arranged) { out.push(items.slice(k, k + sz)); k += sz }
+    return out
+  })()
 
   return (
     <div
@@ -58,8 +84,7 @@ export default function BubbleCluster({
           style={{
             display: 'flex',
             gap,
-            // Honeycomb offset: odd rows sit half a cell across.
-            marginLeft: ri % 2 ? (size + gap) / 2 : 0,
+            justifyContent: 'center',
           }}
         >
           {row.map((it) => {
@@ -116,11 +141,14 @@ function Bubble({ item, size, accent, selected, pointer, dimmed, onEnter, onSele
         height: size,
         borderRadius: '50%',
         flexShrink: 0,
-        border: `1px solid ${lit ? accent : 'rgba(255,255,255,0.10)'}`,
+        border: 'none',
+        // No outline at all.  A hard ring competed with the strings behind it
+        // and made every bubble read as a button; a soft radial body reads as
+        // a light source sitting in the space instead.
         background: lit
-          ? `radial-gradient(circle at 50% 35%, ${accent}26, ${accent}08 60%, transparent)`
-          : 'rgba(255,255,255,0.022)',
-        color: lit ? accent : 'rgba(255,255,255,0.55)',
+          ? `radial-gradient(circle at 50% 34%, ${accent}3d, ${accent}14 55%, rgba(255,255,255,0.02) 100%)`
+          : 'radial-gradient(circle at 50% 34%, rgba(255,255,255,0.075), rgba(255,255,255,0.022) 70%, transparent)',
+        color: lit ? accent : 'rgba(255,255,255,0.82)',
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', gap: 3,
         cursor: 'pointer',
@@ -129,14 +157,26 @@ function Bubble({ item, size, accent, selected, pointer, dimmed, onEnter, onSele
         // the pointer, and easing it as well makes the cluster feel laggy.
         transition: 'border-color .35s, background .35s, color .35s, opacity .35s, box-shadow .35s',
         opacity: dimmed ? 0.42 : 1,
-        boxShadow: lit ? `0 0 26px ${accent}30, inset 0 1px 0 rgba(255,255,255,0.07)` : 'none',
+        boxShadow: lit
+          ? `0 0 34px ${accent}42, 0 0 90px ${accent}1c`
+          : '0 6px 24px rgba(0,0,0,0.45)',
         zIndex: Math.round(scale * 10),
         position: 'relative',
         backdropFilter: 'blur(6px)',
       }}
     >
       {item.symbol && (
-        <span style={{ fontSize: size * 0.2, lineHeight: 1, fontFamily: 'ui-monospace,monospace' }}>
+        <span style={{
+          fontSize: size * 0.30, lineHeight: 1, fontFamily: 'ui-monospace,monospace',
+          fontWeight: 700,
+          // The 3D field behind is bright and moving, so a thin glyph
+          // disappears into it.  Bigger, heavier, and carrying its own
+          // shadow so it holds an edge wherever it lands.
+          textShadow: lit
+            ? `0 0 18px ${accent}, 0 2px 6px rgba(0,0,0,0.8)`
+            : '0 2px 8px rgba(0,0,0,0.9)',
+          marginBottom: 2,
+        }}>
           {item.done ? '✓' : item.symbol}
         </span>
       )}
@@ -144,6 +184,8 @@ function Bubble({ item, size, accent, selected, pointer, dimmed, onEnter, onSele
         fontSize: Math.max(8, size * 0.105),
         fontWeight: 700, letterSpacing: '0.14em',
         fontFamily: 'ui-monospace,monospace', textTransform: 'uppercase',
+        textShadow: '0 2px 8px rgba(0,0,0,0.9)',
+        opacity: lit ? 1 : 0.72,
       }}>
         {item.label}
       </span>
