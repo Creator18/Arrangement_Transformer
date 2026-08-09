@@ -199,6 +199,11 @@ export default function ResultsPage() {
   const [cdef,             setCdef]             = useState('')
   const [loading,          setLoading]          = useState(true)
   const [activePart,       setActivePart]       = useState('all')
+  // Which arrangement the stage shows.  The two rolls used to be stacked, each
+  // squeezed into 370px; only one can be listened to at a time, so showing one
+  // at full height and switching is both clearer and bigger.
+  const [range,            setRange]            = useState('transformed')
+  const [stageH,           setStageH]           = useState(560)
   const [patternClusters,  setPatternClusters]  = useState({})
   const kickerRef  = useRef(null)
   const padsRowRef = useRef(null)
@@ -266,6 +271,15 @@ export default function ResultsPage() {
     ]
   }, [apiLayers])
 
+  // The roll should fill whatever the viewport leaves after the transport and
+  // padding, rather than being pinned to a constant.
+  useEffect(() => {
+    const fit = () => setStageH(Math.max(320, window.innerHeight - 250))
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [])
+
   // Notes shown in the transformed piano roll — filtered by selected layer
   const displayedTransformedNotes = useMemo(() => {
     if (activePart === 'all' || !apiLayers) return transformedNotes
@@ -287,9 +301,88 @@ export default function ResultsPage() {
   }
 
   return (
-    <div className="relative min-h-screen pt-20 pb-24 px-4">
+    <div style={{ position: 'fixed', inset: 0, display: 'flex',
+                  background: 'var(--ct-ink)', paddingTop: 56 }}>
       <StringSpace progressRef={SCENE_POS} />
-      <div className="relative z-10 max-w-4xl mx-auto space-y-5">
+
+      {/* ── Sidebar: everything you can switch, nothing you can read ──────
+          The old page put the view tabs across the top of a 4xl column and
+          gave the roll 370px of it.  The roll IS the artefact here, so it
+          takes the stage and the controls move to an edge. */}
+      <aside style={{
+        width: 232, flexShrink: 0, position: 'relative', zIndex: 3,
+        borderRight: '1px solid var(--ct-line-soft)',
+        padding: '22px 18px', overflowY: 'auto',
+        display: 'flex', flexDirection: 'column', gap: 26,
+      }}>
+        <div>
+          <div className="ct-mono" style={{ marginBottom: 10 }}>View</div>
+          {TABS.map((name, i) => (
+            <button key={name} onClick={() => setTab(i)}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: '7px 0', fontSize: 12,
+                color: tab === i ? 'var(--ct-accent)' : 'rgba(255,255,255,0.46)',
+                transition: 'color .3s',
+              }}>
+              {tab === i ? '— ' : '  '}{name}
+            </button>
+          ))}
+        </div>
+
+        {tab === 0 && (
+          <div>
+            <div className="ct-mono" style={{ marginBottom: 10 }}>Range</div>
+            {[['transformed', 'Transformed', '5 octaves'],
+              ['original',    'Original',    '7 octaves']].map(([k, label, sub]) => (
+              <button key={k} onClick={() => setRange(k)}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '7px 0',
+                  color: range === k ? 'var(--ct-accent)' : 'rgba(255,255,255,0.46)',
+                  transition: 'color .3s',
+                }}>
+                <div style={{ fontSize: 12 }}>{range === k ? '— ' : '  '}{label}</div>
+                <div style={{ fontSize: 9, opacity: 0.55, paddingLeft: 14,
+                              fontFamily: 'ui-monospace,monospace' }}>{sub}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div>
+          <div className="ct-mono" style={{ marginBottom: 10 }}>Part</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {layerPads.map(p => (
+              <button key={p.key} className="sw-pill" data-on={activePart === p.key}
+                onClick={() => setActivePart(p.key)}
+                style={{ padding: '6px 12px', fontSize: 10,
+                         ...(activePart === p.key ? { '--ct-accent': p.color } : {}) }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="ct-mono" style={{ marginBottom: 10 }}>Export</div>
+          {[['MIDI', getMidiUrl(sessionId)],
+            ['MusicXML', getMusicXmlUrl(sessionId)],
+            ['CDEF', getCdefUrl(sessionId)]].map(([label, href]) => (
+            <a key={label} href={href} download
+              style={{ display: 'block', padding: '6px 0', fontSize: 12,
+                       color: 'rgba(255,255,255,0.46)', textDecoration: 'none' }}>
+              ↓ {label}
+            </a>
+          ))}
+        </div>
+      </aside>
+
+      {/* ── Stage ───────────────────────────────────────────────────────── */}
+      <main style={{ flex: 1, minWidth: 0, position: 'relative', zIndex: 2,
+                     overflowY: 'auto', padding: '20px 26px 40px' }}>
 
         {/* ── Header ── */}
         <motion.div
@@ -404,29 +497,6 @@ export default function ResultsPage() {
         {/* ── Tabs: Piano Roll / Sheet / CDEF ── */}
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.18 }}>
           <GlassCard className="overflow-hidden">
-            {/* Tab bar */}
-            <div className="flex" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-              {TABS.map((name, i) => (
-                <button
-                  key={name}
-                  onClick={() => setTab(i)}
-                  className={`flex-1 py-3.5 text-xs font-bold tracking-widest transition-colors duration-200 relative ${
-                    tab === i ? 'text-amber-400' : 'text-zinc-600 hover:text-zinc-400'
-                  }`}
-                  style={{ fontFamily: 'ui-monospace,monospace', letterSpacing: '0.12em' }}
-                >
-                  {name.toUpperCase()}
-                  {tab === i && (
-                    <motion.div
-                      layoutId="tab-indicator"
-                      className="absolute bottom-0 left-0 right-0 h-px"
-                      style={{ background: 'linear-gradient(90deg, transparent, #f59e0b, transparent)' }}
-                    />
-                  )}
-                </button>
-              ))}
-            </div>
-
             {/* Tab content */}
             <div className="p-5">
               <AnimatePresence mode="wait">
@@ -437,25 +507,35 @@ export default function ResultsPage() {
                     transition={{ duration: 0.2 }}
                     className="space-y-6"
                   >
-                    <PianoRollPlayer
-                      notes={originalNotes}
-                      getPartUrl={(part) => getPartAudioUrl(sessionId, 'transcription', part)}
-                      label="Original"
-                      tempo={segmentData?.tempo_bpm ?? 120}
-                      keyboardStart={24}
-                      keyboardOctaves={7}
-                      defaultPart={activePart}
-                    />
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.04)' }} />
-                    <PianoRollPlayer
-                      notes={displayedTransformedNotes}
-                      getPartUrl={(part) => getPartAudioUrl(sessionId, 'transformed', part)}
-                      label="Transformed"
-                      tempo={segmentData?.tempo_bpm ?? 120}
-                      keyboardStart={36}
-                      keyboardOctaves={5}
-                      defaultPart={apiLayers ? 'all' : activePart}
-                    />
+                    {/* One roll, at whatever height the viewport allows.
+                        Both used to be rendered stacked at 370px each, but only
+                        one can be played at a time, so the other was costing
+                        half the screen to sit idle. */}
+                    {range === 'original' ? (
+                      <PianoRollPlayer
+                        key="roll-original"
+                        notes={originalNotes}
+                        getPartUrl={(part) => getPartAudioUrl(sessionId, 'transcription', part)}
+                        label="Original"
+                        tempo={segmentData?.tempo_bpm ?? 120}
+                        keyboardStart={24}
+                        keyboardOctaves={7}
+                        defaultPart={activePart}
+                        rollHeight={stageH}
+                      />
+                    ) : (
+                      <PianoRollPlayer
+                        key="roll-transformed"
+                        notes={displayedTransformedNotes}
+                        getPartUrl={(part) => getPartAudioUrl(sessionId, 'transformed', part)}
+                        label="Transformed"
+                        tempo={segmentData?.tempo_bpm ?? 120}
+                        keyboardStart={36}
+                        keyboardOctaves={5}
+                        defaultPart={apiLayers ? 'all' : activePart}
+                        rollHeight={stageH}
+                      />
+                    )}
                   </motion.div>
                 )}
                 {tab === 1 && (
@@ -643,7 +723,7 @@ export default function ResultsPage() {
             </div>
           </motion.div>
         )}
-      </div>
+      </main>
     </div>
   )
 }

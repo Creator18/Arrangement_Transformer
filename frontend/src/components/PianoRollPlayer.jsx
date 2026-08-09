@@ -11,7 +11,10 @@ const NOTE_W_MAX      = 14    // ceiling so keys don't get cartoonishly wide
 const KEY_H           = 78    // keyboard panel height (fixed at bottom)
 const PX_PER_S        = 80    // px per second (time → Y axis)
 const TIMELINE_W      = 28    // left strip for measure / beat labels
-const ROLL_MAX_H      = 370   // max height of the scrollable roll viewport
+// Default roll viewport height.  Overridable per instance via `rollHeight`,
+// because the results view now gives the roll the whole screen while smaller
+// embeds (the Layers tab) still want a compact one.
+const ROLL_MAX_H      = 370
 // "Future-empty" padding at the top of the SVG so the now-line can stay glued
 // to the bottom of the viewport (= top of the keyboard) at the very end of
 // the song without the scroll going negative.
@@ -344,6 +347,8 @@ export default function PianoRollPlayer({
   keyboardStart   = 36,   // lowest MIDI note shown (C2)
   keyboardOctaves = 7,
   defaultPart     = 'all', // controlled from parent (results page part pads)
+  rollHeight      = ROLL_MAX_H,
+  chrome          = true,  // false hides the header/transport for embedded use
 }) {
   const [activePart,  setActivePart]  = useState(defaultPart)
   const [playing,     setPlaying]     = useState(false)
@@ -738,7 +743,7 @@ export default function PianoRollPlayer({
           style={{
             overflowY: 'auto',
             overflowX: 'hidden',
-            maxHeight: ROLL_MAX_H,
+            maxHeight: rollHeight,
             cursor: 'row-resize',
             width: rollSvgW,
           }}
