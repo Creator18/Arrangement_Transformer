@@ -136,3 +136,14 @@ export function getCdefUrl(sessionId) {
 export async function cleanupSession(sessionId) {
   await api.delete(`/cleanup/${sessionId}`)
 }
+
+/**
+ * Backend readiness. Calling this also STARTS warming if it hasn't begun —
+ * so simply opening the landing page begins loading models, and the ~9.6s of
+ * construction overlaps with the user choosing a file instead of landing on
+ * the critical path after upload.
+ */
+export async function getWarmupStatus() {
+  const { data } = await api.get('/warmup')
+  return data
+}

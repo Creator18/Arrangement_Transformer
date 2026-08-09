@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.routers import upload, transcribe, separate, segment, transform, score, export, previews
 from app.services.session import TEMP_BASE
+from app.services import warmup
 
 app = FastAPI(
     title="Arrangement Transformer API",
@@ -50,6 +51,23 @@ app.include_router(export.router, tags=["export"])
 app.mount("/session-data", StaticFiles(directory=str(TEMP_BASE)), name="session-data")
 
 
+@app.on_event("startup")
+def _startup_warm():
+    """
+    Begin loading models the moment the server is up, on a daemon thread so
+    this does not delay the first request.  By the time a user has picked a
+    file, the ~4.6s of model construction is usually already paid.
+    """
+    warmup.start()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/warmup")
+def warmup_status():
+    """Readiness of each heavy component. Also (re)starts warming if idle."""
+    warmup.start()
+    return warmup.status()

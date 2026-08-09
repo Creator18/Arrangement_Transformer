@@ -6,7 +6,7 @@ import SectionRail from '../components/SectionRail'
 import RackSection from '../components/RackSection'
 import GlassCard from '../components/GlassCard'
 import AudioBars from '../components/AudioBars'
-import { uploadAudio } from '../utils/api'
+import { uploadAudio, getWarmupStatus } from '../utils/api'
 import { letterReveal, gridRise } from '../utils/animefx'
 import KeyboardAssembly from '../components/KeyboardAssembly'
 import StringField from '../components/StringField'
@@ -220,6 +220,7 @@ export default function LandingPage() {
   const [error,     setError]     = useState(null)
   const [preset,    setPreset]    = useState(PRESETS[0])   // Standard is default
 
+  const [engineReady, setEngineReady] = useState(null)   // null = unknown
   const inputRef    = useRef(null)
   const kickerRef   = useRef(null)
   const subtitleRef = useRef(null)
@@ -231,6 +232,27 @@ export default function LandingPage() {
   useEffect(() => {
     letterReveal(kickerRef.current,   { delay: 300, stagger: 22 })
     letterReveal(subtitleRef.current, { delay: 750, stagger: 12, translate: 10 })
+  }, [])
+
+  // Start the backend warming as soon as the page is open, and poll until
+  // it reports ready.  The GET both reports status and kicks warming off, so
+  // a freshly started server begins loading models the moment anyone looks at
+  // the page rather than when they upload.
+  useEffect(() => {
+    let alive = true
+    let timer = null
+    const poll = async () => {
+      try {
+        const st = await getWarmupStatus()
+        if (!alive) return
+        setEngineReady(!!st.ready)
+        if (!st.ready) timer = setTimeout(poll, 1500)
+      } catch {
+        if (alive) { setEngineReady(false); timer = setTimeout(poll, 4000) }
+      }
+    }
+    poll()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
   }, [])
 
   const handleFile = useCallback(async (file) => {
@@ -341,6 +363,32 @@ export default function LandingPage() {
         transition={{ duration: 0.8, delay: 0.15, ease: [0.4, 0, 0.2, 1] }}
       >
         <GlassCard tilt tiltStrength={3} className="p-7">
+
+          {/* Engine readiness — the models load while you pick a file, so
+              this is usually green before the first upload. */}
+          {!uploading && (
+            <div className="flex items-center justify-end gap-2 mb-4">
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: engineReady === true  ? '#34d399'
+                          : engineReady === false ? '#f59e0b'
+                          : 'rgba(255,255,255,0.18)',
+                boxShadow: engineReady === true ? '0 0 8px #34d399'
+                          : engineReady === false ? '0 0 8px #f59e0b' : 'none',
+                transition: 'background .4s, box-shadow .4s',
+              }} />
+              <span style={{
+                fontSize: 8.5, fontWeight: 700, letterSpacing: '0.16em',
+                fontFamily: 'ui-monospace,monospace',
+                color: engineReady === true ? 'rgba(52,211,153,0.75)'
+                                            : 'rgba(255,255,255,0.28)',
+                transition: 'color .4s',
+              }}>
+                {engineReady === true ? 'ENGINE READY'
+                 : engineReady === false ? 'ENGINE WARMING' : 'ENGINE …'}
+              </span>
+            </div>
+          )}
 
           {/* Preset board */}
           {!uploading && (
