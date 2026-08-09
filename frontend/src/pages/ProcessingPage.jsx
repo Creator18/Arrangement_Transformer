@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import StringSpace from '../components/StringSpace'
+import BubbleCluster from '../components/BubbleCluster'
 
 // Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
 // when this prop changes, and an inline {current: x} is a NEW object every
@@ -320,16 +321,32 @@ export default function ProcessingPage() {
           </div>
         </div>
 
-        {/* Step pads grid */}
-        <div className="space-y-2.5">
-          {STEPS.map((step, i) => (
-            <StepPad
-              key={step.key}
-              step={step}
-              index={i}
-              status={i < currentStep ? 'done' : i === currentStep ? 'active' : 'pending'}
-            />
-          ))}
+        {/* Stage cluster.  The stacked rectangular cards read as a build log;
+            a cluster reads as one machine with parts lighting up.  The active
+            stage's detail moves into a single spotlight line below rather than
+            every row carrying its own copy. */}
+        <BubbleCluster
+          perRow={3}
+          size={96}
+          gap={14}
+          selectedKey={STEPS[Math.min(currentStep, STEPS.length - 1)]?.key}
+          items={STEPS.map((step, i) => ({
+            key:    step.key,
+            label:  step.label,
+            symbol: step.sym,
+            color:  step.color,
+            done:   i < currentStep,
+            active: i === currentStep,
+          }))}
+        />
+
+        <div style={{ minHeight: 44, textAlign: 'center', marginTop: 22 }}>
+          <p style={{
+            fontSize: 12, color: 'rgba(255,255,255,0.42)', lineHeight: 1.5,
+            maxWidth: 380, margin: '0 auto',
+          }}>
+            {STEPS[Math.min(currentStep, STEPS.length - 1)]?.detail}
+          </p>
         </div>
 
         {/* Error */}

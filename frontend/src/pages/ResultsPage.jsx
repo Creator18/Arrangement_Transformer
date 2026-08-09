@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import StringSpace from '../components/StringSpace'
+import BubbleCluster from '../components/BubbleCluster'
 
 // Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
 // when this prop changes, and an inline {current: x} is a NEW object every
@@ -345,15 +346,18 @@ export default function ResultsPage() {
             </span>
             <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
           </div>
-          <div className="flex gap-2.5" ref={padsRowRef}>
-            {layerPads.map(p => (
-              <PartPad
-                key={p.key}
-                part={p}
-                selected={activePart === p.key}
-                onSelect={setActivePart}
-              />
-            ))}
+          <div ref={padsRowRef}>
+            <BubbleCluster
+              perRow={4}
+              size={86}
+              gap={14}
+              selectedKey={activePart}
+              onSelect={(it) => setActivePart(it.key)}
+              items={layerPads.map(p => ({
+                key: p.key, label: p.label, sub: p.hint || p.sub,
+                symbol: p.sym, color: p.color,
+              }))}
+            />
           </div>
           <p style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', textAlign: 'center', marginTop: 8, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
             Pad selection applies to piano roll playback and key glow

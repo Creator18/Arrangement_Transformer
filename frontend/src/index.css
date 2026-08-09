@@ -420,3 +420,30 @@ html.lenis.lenis-stopped      { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .act-in, .act-in > * { animation: none !important; opacity: 1 !important; transform: none !important; }
 }
+
+/* ── Soundwave controls ──────────────────────────────────────────────────────
+   Replaces the workstation's rectangular pads and slabs.  Fully-round pills
+   and circular nodes, because the subject is waves: nothing in a waveform has
+   a corner.  The moving highlight is an arc sweep rather than a linear
+   shimmer for the same reason. */
+.sw-pill {
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.02);
+  color: rgba(255,255,255,0.62);
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: border-color .3s, background .3s, color .3s, transform .3s;
+}
+.sw-pill:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.22); }
+.sw-pill[data-on='true'] {
+  border-color: var(--ct-accent);
+  color: var(--ct-accent);
+  background: color-mix(in srgb, var(--ct-accent) 10%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--ct-accent) 22%, transparent);
+}
