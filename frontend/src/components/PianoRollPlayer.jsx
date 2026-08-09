@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { playNote } from '../utils/tonesynth'
+import { playNote } from '../utils/pianovoice'
+import { heldKeys } from '../utils/hands'
 import { motion, AnimatePresence } from 'framer-motion'
 import { wipeReveal } from '../utils/animefx'
 
@@ -28,10 +29,6 @@ const isBlack   = p => BLACK_PCS.has(p % 12)
 const PC_TO_WHITE_IDX = { 0: 0, 2: 1, 4: 2, 5: 3, 7: 4, 9: 5, 11: 6 }
 const BLACK_BOUNDARY  = { 1: 1, 3: 2, 6: 4, 8: 5, 10: 6 }
 const isWhitePc       = (pc) => pc in PC_TO_WHITE_IDX
-
-// Five fingers, two hands.  A hard ceiling on how many keys may be drawn as
-// held at once; anything still ringing beyond this is sustain, not a press.
-const MAX_KEYS_DOWN = 10
 
 // Compute the visual { x, w } of a pitch within the keyboard.
 //   wkw    = white-key bottom width = octave_width / 7 = (12·noteW)/7
@@ -433,25 +430,21 @@ export default function PianoRollPlayer({
   // two strikes even though the roll clearly showed two. Keying the flash on
   // the onset makes a re-strike re-trigger.
   const activeKeys = useMemo(() => {
-    const found = []
     if (currentTime <= 0) return new Map()
+    const sounding = []
     for (const n of notes) {
       const p = parseInt(n.pitch, 10)
       if (p < midiLo || p > midiHi) continue
       const inPart = activePart === 'all' || (p >= partLo && p <= partHi)
       if (inPart && currentTime >= n.onset && currentTime < (n.offset ?? n.onset + 0.25)) {
-        found.push([p, n.onset])
+        sounding.push({ pitch: p, onset: n.onset })
       }
     }
-    // Most recently struck first, then keep at most ten distinct keys.
-    found.sort((a, b) => b[1] - a[1])
-    const m = new Map()
-    for (const [p, onset] of found) {
-      if (m.has(p)) continue          // same key re-listed: newest wins
-      if (m.size >= MAX_KEYS_DOWN) break
-      m.set(p, onset)
-    }
-    return m
+    // heldKeys applies the reach model: each hand is at most five fingers
+    // inside a ~14-semitone window, and the two hands do not interleave.
+    // Anything sounding that no hand could be on is still ringing under the
+    // pedal — it is just not a pressed key, so it is not drawn as one.
+    return heldKeys(sounding)
   }, [notes, currentTime, activePart, partLo, partHi, midiLo, midiHi])
 
   // Click-to-hear.  Only when stopped: while the arrangement plays, clicks on
@@ -459,7 +452,7 @@ export default function PianoRollPlayer({
   // very thing the user is trying to judge.
   const strikeKey = useCallback((pitch) => {
     if (playing) return
-    playNote(pitch, { velocity: 0.75 })
+    playNote(pitch, { velocity: 80 })
   }, [playing])
 
   // ── Audio events ────────────────────────────────────────────────────────────

@@ -53,3 +53,6 @@ backend/eval/runs/
 Thumbs.db
 backend/retrieval/corpus/
 backend/correction/data/
+
+# Rendered single-note piano samples (regenerated on demand)
+backend/.cache/

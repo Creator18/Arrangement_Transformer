@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 import json
 import soundfile as sf
@@ -8,6 +8,7 @@ from typing import List, Dict, Any
 from app.services.session import get_session_dir, cleanup_session
 from app.services.cdef_format import notes_to_cdef
 from app.services.sampler import render_notes as render_notes_to_audio
+from app.services.ranged import ranged_file_response
 
 router = APIRouter()
 
@@ -40,7 +41,7 @@ async def export_original_recording(session_id: str):
 # ── full-arrangement previews ────────────────────────────────────────────────
 
 @router.get("/export/{session_id}/audio/transcription")
-async def export_transcription_audio(session_id: str):
+async def export_transcription_audio(request: Request, session_id: str):
     """Render the original transcribed notes to WAV (pre-transform)."""
     session_dir = get_session_dir(session_id)
     transcription_file = session_dir / "transcription.json"
@@ -56,12 +57,11 @@ async def export_transcription_audio(session_id: str):
         audio = render_notes_to_audio(transcription["notes"], sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
-    return FileResponse(str(audio_path), media_type="audio/wav",
-                        filename="transcription_preview.wav")
+    return ranged_file_response(request, Path(audio_path), "audio/wav","transcription_preview.wav")
 
 
 @router.get("/export/{session_id}/audio/transformed")
-async def export_transformed_audio(session_id: str):
+async def export_transformed_audio(request: Request, session_id: str):
     """Render the transformed arrangement to WAV."""
     session_dir = get_session_dir(session_id)
     transformed_file = session_dir / "transformed.json"
@@ -77,8 +77,7 @@ async def export_transformed_audio(session_id: str):
         audio = render_notes_to_audio(transformed["transformed_notes"], sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
-    return FileResponse(str(audio_path), media_type="audio/wav",
-                        filename="arrangement_preview.wav")
+    return ranged_file_response(request, Path(audio_path), "audio/wav","arrangement_preview.wav")
 
 
 # ── per-layer audio (bass / pattern / melody, by `layer` field) ──────────────
@@ -101,7 +100,7 @@ _CLUSTER_LAYERS = {
 
 
 @router.get("/export/{session_id}/audio/layer/{layer}")
-async def export_layer_audio(session_id: str, layer: str):
+async def export_layer_audio(request: Request, session_id: str, layer: str):
     if layer not in _LAYER_NAMES:
         raise HTTPException(400, f"layer must be one of {list(_LAYER_NAMES)}")
 
@@ -111,8 +110,7 @@ async def export_layer_audio(session_id: str, layer: str):
     components_dir = session_dir / "components"
     stem_path = components_dir / f"{layer}.wav"
     if stem_path.exists():
-        return FileResponse(str(stem_path), media_type="audio/wav",
-                            filename=f"{layer}.wav")
+        return ranged_file_response(request, Path(stem_path), "audio/wav",f"{layer}.wav")
 
     # 2. Fall back: synthesize from layer-labeled notes
     transcription_file = session_dir / "transcription.json"
@@ -133,8 +131,7 @@ async def export_layer_audio(session_id: str, layer: str):
         audio = render_notes_to_audio(layer_notes, sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
-    return FileResponse(str(audio_path), media_type="audio/wav",
-                        filename=cache_name)
+    return ranged_file_response(request, Path(audio_path), "audio/wav",cache_name)
 
 
 # ── pattern clusters (Pattern 1 … N per pattern stem) ─────────────────────────
@@ -170,7 +167,7 @@ async def get_pattern_clusters(session_id: str):
 
 
 @router.get("/export/{session_id}/audio/pattern-cluster/{layer}/{cluster_idx}")
-async def export_pattern_cluster_audio(session_id: str, layer: str, cluster_idx: int):
+async def export_pattern_cluster_audio(request: Request, session_id: str, layer: str, cluster_idx: int):
     """
     Serve the audio for one cluster of one pattern stem.
 
@@ -195,8 +192,7 @@ async def export_pattern_cluster_audio(session_id: str, layer: str, cluster_idx:
     components_dir = session_dir / "components"
     wav_path = components_dir / f"{layer}_cluster_{cluster_idx}.wav"
     if wav_path.exists():
-        return FileResponse(str(wav_path), media_type="audio/wav",
-                            filename=wav_path.name)
+        return ranged_file_response(request, Path(wav_path), "audio/wav",wav_path.name)
 
     # 2. Fall back to SF2/SFZ resynth from layer + pattern_idx filtered notes
     transcription_file = session_dir / "transcription.json"
@@ -214,8 +210,7 @@ async def export_pattern_cluster_audio(session_id: str, layer: str, cluster_idx:
                 sr = 22050
                 audio = render_notes_to_audio(notes, sr=sr)
                 sf.write(str(audio_path), audio, sr, subtype="PCM_16")
-            return FileResponse(str(audio_path), media_type="audio/wav",
-                                filename=cache_name)
+            return ranged_file_response(request, Path(audio_path), "audio/wav",cache_name)
 
     raise HTTPException(404, f"No audio for cluster {cluster_idx} of {layer}.")
 
@@ -223,7 +218,7 @@ async def export_pattern_cluster_audio(session_id: str, layer: str, cluster_idx:
 # ── per-part audio (bass / melody / voice / all) ─────────────────────────────
 
 @router.get("/export/{session_id}/audio/{arrangement}/{part}")
-async def export_part_audio(session_id: str, arrangement: str, part: str):
+async def export_part_audio(request: Request, session_id: str, arrangement: str, part: str):
     """
     Render a single register of an arrangement to WAV on demand.
     arrangement: 'transcription' | 'transformed'
@@ -242,8 +237,8 @@ async def export_part_audio(session_id: str, arrangement: str, part: str):
                         else "arrangement_preview.wav")
         preview_path = session_dir / preview_name
         if preview_path.exists():
-            return FileResponse(str(preview_path), media_type="audio/wav",
-                                filename=preview_name)
+            return ranged_file_response(request, preview_path,
+                                        "audio/wav", preview_name)
         # If /previews hasn't run yet, fall through to the normal lazy path below.
 
     if part not in PART_RANGES:
@@ -274,8 +269,8 @@ async def export_part_audio(session_id: str, arrangement: str, part: str):
         audio = render_notes_to_audio(notes, sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
-    return FileResponse(str(audio_path), media_type="audio/wav",
-                        filename=f"{arrangement}_{part}.wav")
+    return ranged_file_response(request, audio_path, "audio/wav",
+                                f"{arrangement}_{part}.wav")
 
 
 # ── MIDI ─────────────────────────────────────────────────────────────────────
@@ -444,3 +439,44 @@ async def get_cdef_text(session_id: str):
 async def cleanup(session_id: str):
     cleanup_session(session_id)
     return {"status": "cleaned", "session_id": session_id}
+
+
+# ── single-note piano samples (for the interactive keyboard) ─────────────────
+# Rendered through the SAME sampler the arrangements use, so a key the user
+# clicks sounds like the instrument they are listening to.  A Web Audio synth
+# was the first version of this; it proved pitch but not timbre, and the point
+# of a playable keyboard is to check our output against your ear — comparing
+# against a different instrument undercuts that.
+#
+# Cached on disk after the first render: Salamander loads a large sample set,
+# so the first note of a session pays for it and every note afterwards is a
+# static file.  88 keys at ~2s mono 22.05kHz is only a few MB in total.
+
+_NOTE_CACHE = Path(__file__).resolve().parents[2] / ".cache" / "notes"
+
+
+@router.get("/export/note/{midi}")
+async def export_single_note(request: Request, midi: int, velocity: int = 80):
+    """Render one piano note to WAV.  Session-independent and cacheable."""
+    if not (21 <= midi <= 108):
+        raise HTTPException(400, "midi must be in 21..108 (A0..C8)")
+    velocity = max(1, min(127, int(velocity)))
+
+    _NOTE_CACHE.mkdir(parents=True, exist_ok=True)
+    out = _NOTE_CACHE / f"n{midi}_v{velocity}.wav"
+
+    if not out.exists():
+        sr = 22050
+        # Key held 0.9s, then left to ring: the tail is the instrument's own
+        # release, which is most of what makes a piano sound like a piano.
+        audio = render_notes_to_audio(
+            [{"pitch": int(midi), "onset": 0.0, "offset": 0.9,
+              "velocity": velocity}],
+            sr=sr,
+        )
+        sf.write(str(out), audio, sr, subtype="PCM_16")
+
+    resp = ranged_file_response(request, out, "audio/wav", out.name)
+    # Immutable: a given pitch and velocity always render identically.
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
