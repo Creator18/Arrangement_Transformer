@@ -100,6 +100,10 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         seg_data = json.load(f)
 
     notes       = transcription["notes"]
+    # Damper-down intervals from the model's pedal head.  Without these,
+    # enforce_sounding_limits counts sustained notes as occupied fingers and
+    # cuts real ones to make room; measured, 100% of those cuts were spurious.
+    pedal_events = transcription.get("pedal", []) or []
     tempo       = float(seg_data["tempo_bpm"])
     source_span = body.source_octave_range or transcription["octave_range"]["octave_span"]
     tgt_low, tgt_high = _OCTAVE_BOUNDS.get(body.target_octave_range, (TARGET_LOW, TARGET_HIGH))
@@ -238,7 +242,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             # hides inside the exception.  Voice leading reassigns pitches,
             # and "no note can change" leaves no room for that.
             merged = remove_beat_outliers(merged, tempo)
-            merged = enforce_sounding_limits(merged)
+            merged = enforce_sounding_limits(merged, pedal=pedal_events)
         else:
             merged = post_process_notes(
             merged,
@@ -346,7 +350,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                     tempo          = tempo,
                     beats_per_bar  = beats_per_bar,
                 )
-                retrieved = enforce_sounding_limits(retrieved)
+                retrieved = enforce_sounding_limits(retrieved, pedal=pedal_events)
 
                 export_notes = retrieved
                 retrieval_provenance = arranged["provenance"]

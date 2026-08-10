@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import librosa
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -462,6 +462,7 @@ def enforce_sounding_limits(
     max_total:    int = 10,
     release_gap:  float = 0.015,
     min_dur:      float = 0.05,
+    pedal:        Optional[Sequence[Dict]] = None,
 ) -> List[Dict]:
     """
     Keep the number of notes HELD DOWN at any instant within what hands can
@@ -479,6 +480,24 @@ def enforce_sounding_limits(
     under-emits by ~29%, so any fix that removes notes pays in the currency
     we can least afford.
 
+    `pedal` is what stops this cutting notes that were never in the way.
+    Measured over 4 pieces, EVERY ONE of the 365 releases this made fired at
+    an instant when the ground truth had ~2 notes sounding — not five fingers,
+    let alone ten.  The crowding was manufactured by our own offsets: O&F's
+    offset head reports when the SOUND stops, not when the key is released,
+    because it is trained on sustained piano where the damper decides that.
+    Our durations run 2.10x true on average (median 1.18, p90 4.06 — a long
+    tail, not a uniform stretch), and that tail piles up into phantom chords.
+
+    Counting fingers with sound durations is a category error.  A pianist
+    lifts the hand as soon as the damper can hold the note, so once the pedal
+    is down a sustained note stops consuming a finger.  That is what
+    `occupies_finger` below encodes, and it is the OPPOSITE use of the pedal
+    from an earlier attempt that tried to choose WHICH note to release —
+    that could not work, because pedal state at the release instant is
+    identical for every candidate.  Per-note sustain is where the information
+    is.
+
     When a hand is full and a new note arrives, the note that has been held
     LONGEST is released just before the new attack.  If it cannot be
     shortened without falling under `min_dur` it is left alone — a genuine
@@ -488,12 +507,30 @@ def enforce_sounding_limits(
         return notes
 
     out = [dict(n) for n in notes]
+    ped = [(float(p["onset"]), float(p.get("offset", p["onset"])))
+           for p in (pedal or [])]
+
+    # Shortest a finger must stay down before the damper can take over.
+    MIN_FINGER = 0.05
+
+    def pedalled(t: float) -> bool:
+        return any(a - 1e-6 <= t <= b + 1e-6 for a, b in ped)
+
+    def occupies_finger(j: int, t: float) -> bool:
+        """Is a finger still on this key at t — not merely: is it sounding."""
+        if float(out[j]["offset"]) <= t + 1e-9:
+            return False
+        # Damper down and the note is struck: the hand is free to leave.
+        if ped and pedalled(t) and t - float(out[j]["onset"]) >= MIN_FINGER:
+            return False
+        return True
+
     order = sorted(range(len(out)), key=lambda i: float(out[i]["onset"]))
-    active: List[int] = []            # indices currently sounding
+    active: List[int] = []            # indices still under a finger
 
     for idx in order:
         t = float(out[idx]["onset"])
-        active = [j for j in active if float(out[j]["offset"]) > t + 1e-9]
+        active = [j for j in active if occupies_finger(j, t)]
 
         def hand_of(j: int) -> int:
             # Prefer the corrector's predicted hand over the pitch proxy.
