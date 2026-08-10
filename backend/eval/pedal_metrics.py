@@ -110,3 +110,24 @@ def report(agg: Dict) -> str:
         f"F1 {agg['f1_always_down']:.4f}\n"
         f"  so the headline is only meaningful above that line.\n"
     )
+
+
+# ── First real measurement, 2026-08-10 (49 pieces, pedalled eval audio) ──────
+#
+#   frame F1        0.7522
+#   precision       0.8085
+#   recall          0.7190
+#   IoU             0.6211
+#   down-rate  pred 0.511    truth 0.592
+#
+#   always-down baseline    0.7025
+#   MARGIN                 +0.0498
+#
+# Read that margin, not the headline.  0.75 sounds respectable and is only
+# five points better than a detector that holds the pedal down for the entire
+# piece and thinks about nothing.  IoU 0.62 says the same thing more bluntly.
+#
+# We also UNDER-pedal slightly (0.511 vs 0.592), which is worth noting against
+# the offset-inflation finding: our note offsets run 2.10x long, so the
+# pipeline is simultaneously holding notes too long and the pedal not long
+# enough — two different mechanisms pushing sustain in opposite directions.

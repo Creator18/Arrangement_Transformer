@@ -1,0 +1,875 @@
+{
+  "git_sha": "eafb976",
+  "timestamp": "20260810_014613",
+  "aggregate": {
+    "n_pieces": 50,
+    "onset_only": {
+      "mean_f1": 0.918,
+      "median_f1": 0.9221,
+      "min_f1": 0.8415,
+      "max_f1": 0.9695,
+      "min_piece": "midi_unprocessed_12_r1_2006_01_08_orig_mid_audio_12_r1_2006_07_track07_wav",
+      "max_piece": "midi_unprocessed_01_03_r1_2014_mid_audio_01_r1_2014_wav_2"
+    },
+    "onset_and_offset": {
+      "mean_f1": 0.1327,
+      "median_f1": 0.1158,
+      "min_f1": 0.0086,
+      "max_f1": 0.3877,
+      "min_piece": "midi_unprocessed_05_r1_2008_01_04_orig_mid_audio_05_r1_2008_wav_3",
+      "max_piece": "midi_unprocessed_r1_d1_1_8_mid_audio_from_mp3_07_r1_2015_wav_1"
+    }
+  },
+  "pieces": [
+    {
+      "id": "midi_unprocessed_02_r1_2009_03_06_orig_mid_audio_02_r1_2009_02_r1_2009_04_wav",
+      "composer": "Alexander Scriabin",
+      "title": "Etude Op. 42, Nos. 4 & 5",
+      "notes_pred": 809,
+      "notes_truth": 783,
+      "onset_only": {
+        "precision": 0.9159,
+        "recall": 0.9464,
+        "f1": 0.9309
+      },
+      "onset_and_offset": {
+        "precision": 0.026,
+        "recall": 0.0268,
+        "f1": 0.0264
+      }
+    },
+    {
+      "id": "midi_unprocessed_01_r1_2006_01_09_orig_mid_audio_01_r1_2006_04_track04_wav",
+      "composer": "Alexander Scriabin",
+      "title": "Sonata No. 9",
+      "notes_pred": 3661,
+      "notes_truth": 3648,
+      "onset_only": {
+        "precision": 0.8976,
+        "recall": 0.9008,
+        "f1": 0.8992
+      },
+      "onset_and_offset": {
+        "precision": 0.0888,
+        "recall": 0.0891,
+        "f1": 0.0889
+      }
+    },
+    {
+      "id": "midi_unprocessed_04_r3_2011_mid_audio_r3_d2_05_track05_wav",
+      "composer": "Claude Debussy",
+      "title": "Jardins sous la pluie from Estampes",
+      "notes_pred": 2711,
+      "notes_truth": 2730,
+      "onset_only": {
+        "precision": 0.9277,
+        "recall": 0.9212,
+        "f1": 0.9245
+      },
+      "onset_and_offset": {
+        "precision": 0.0564,
+        "recall": 0.056,
+        "f1": 0.0562
+      }
+    },
+    {
+      "id": "midi_unprocessed_05_r1_2008_01_04_orig_mid_audio_05_r1_2008_wav_3",
+      "composer": "Claude Debussy",
+      "title": "Pagodas from Estampes No. 1",
+      "notes_pred": 2574,
+      "notes_truth": 2774,
+      "onset_only": {
+        "precision": 0.946,
+        "recall": 0.8778,
+        "f1": 0.9106
+      },
+      "onset_and_offset": {
+        "precision": 0.0089,
+        "recall": 0.0083,
+        "f1": 0.0086
+      }
+    },
+    {
+      "id": "midi_unprocessed_01_03_r1_2014_mid_audio_01_r1_2014_wav_1",
+      "composer": "Domenico Scarlatti",
+      "title": "Sonata in D Major, K. 118",
+      "notes_pred": 1386,
+      "notes_truth": 1376,
+      "onset_only": {
+        "precision": 0.9336,
+        "recall": 0.9404,
+        "f1": 0.937
+      },
+      "onset_and_offset": {
+        "precision": 0.127,
+        "recall": 0.1279,
+        "f1": 0.1274
+      }
+    },
+    {
+      "id": "midi_unprocessed_10_r2_2008_01_05_orig_mid_audio_10_r2_2008_wav_2",
+      "composer": "Domenico Scarlatti",
+      "title": "Sonata in D Major, K. 96 L. 465",
+      "notes_pred": 1801,
+      "notes_truth": 1770,
+      "onset_only": {
+        "precision": 0.9423,
+        "recall": 0.9588,
+        "f1": 0.9504
+      },
+      "onset_and_offset": {
+        "precision": 0.1627,
+        "recall": 0.1655,
+        "f1": 0.1641
+      }
+    },
+    {
+      "id": "midi_unprocessed_01_03_r1_2014_mid_audio_01_r1_2014_wav_2",
+      "composer": "Domenico Scarlatti",
+      "title": "Sonata in A Major, K. 208",
+      "notes_pred": 512,
+      "notes_truth": 505,
+      "onset_only": {
+        "precision": 0.9629,
+        "recall": 0.9762,
+        "f1": 0.9695
+      },
+      "onset_and_offset": {
+        "precision": 0.0977,
+        "recall": 0.099,
+        "f1": 0.0983
+      }
+    },
+    {
+      "id": "midi_unprocessed_19_21_r3_2014_mid_audio_21_r3_2014_wav_1",
+      "composer": "Domenico Scarlatti",
+      "title": "Sonata in C Major, K. 132",
+      "notes_pred": 1937,
+      "notes_truth": 1864,
+      "onset_only": {
+        "precision": 0.9231,
+        "recall": 0.9592,
+        "f1": 0.9408
+      },
+      "onset_and_offset": {
+        "precision": 0.1218,
+        "recall": 0.1266,
+        "f1": 0.1242
+      }
+    },
+    {
+      "id": "midi_unprocessed_02_r1_2011_mid_audio_r1_d1_10_track10_wav",
+      "composer": "Franz Liszt",
+      "title": "Concert Etude No. 2, \"Gnomenreigen\", S. 145/2",
+      "notes_pred": 2770,
+      "notes_truth": 3126,
+      "onset_only": {
+        "precision": 0.9137,
+        "recall": 0.8097,
+        "f1": 0.8585
+      },
+      "onset_and_offset": {
+        "precision": 0.0975,
+        "recall": 0.0864,
+        "f1": 0.0916
+      }
+    },
+    {
+      "id": "midi_unprocessed_14_r1_2008_01_05_orig_mid_audio_14_r1_2008_wav_3",
+      "composer": "Franz Liszt",
+      "title": "Concert Etude \"Gnomenreigen\"",
+      "notes_pred": 2740,
+      "notes_truth": 3097,
+      "onset_only": {
+        "precision": 0.9303,
+        "recall": 0.8231,
+        "f1": 0.8734
+      },
+      "onset_and_offset": {
+        "precision": 0.0737,
+        "recall": 0.0652,
+        "f1": 0.0692
+      }
+    },
+    {
+      "id": "orig_midi_02_7_6_13_group_mid_audio_08_r1_2013_wav_4",
+      "composer": "Franz Liszt",
+      "title": "Au bord d'une source",
+      "notes_pred": 2604,
+      "notes_truth": 2787,
+      "onset_only": {
+        "precision": 0.9516,
+        "recall": 0.8891,
+        "f1": 0.9193
+      },
+      "onset_and_offset": {
+        "precision": 0.0349,
+        "recall": 0.0327,
+        "f1": 0.0338
+      }
+    },
+    {
+      "id": "midi_unprocessed_04_r3_2008_01_07_orig_mid_audio_04_r3_2008_wav_3",
+      "composer": "Franz Liszt",
+      "title": "Transcendental Etude No. 3 \"Paysage\"",
+      "notes_pred": 1899,
+      "notes_truth": 1911,
+      "onset_only": {
+        "precision": 0.9105,
+        "recall": 0.9048,
+        "f1": 0.9076
+      },
+      "onset_and_offset": {
+        "precision": 0.0964,
+        "recall": 0.0958,
+        "f1": 0.0961
+      }
+    },
+    {
+      "id": "midi_unprocessed_14_r1_2011_mid_audio_r1_d6_04_track04_wav",
+      "composer": "Franz Liszt",
+      "title": "Transcendental Etude No. 8, \"Wilde Jagd\", S. 139/8",
+      "notes_pred": 5856,
+      "notes_truth": 6391,
+      "onset_only": {
+        "precision": 0.9225,
+        "recall": 0.8453,
+        "f1": 0.8822
+      },
+      "onset_and_offset": {
+        "precision": 0.1159,
+        "recall": 0.1062,
+        "f1": 0.1109
+      }
+    },
+    {
+      "id": "midi_unprocessed_083_piano083_mid_audio_split_07_09_17_piano_e_2_06_wav_3",
+      "composer": "Franz Schubert",
+      "title": "Sonata in A Minor, D. 537, I. Allegro ma non troppo",
+      "notes_pred": 2804,
+      "notes_truth": 3066,
+      "onset_only": {
+        "precision": 0.9223,
+        "recall": 0.8434,
+        "f1": 0.8811
+      },
+      "onset_and_offset": {
+        "precision": 0.1248,
+        "recall": 0.1142,
+        "f1": 0.1193
+      }
+    },
+    {
+      "id": "midi_unprocessed_23_r2_2011_mid_audio_r2_d6_03_track03_wav",
+      "composer": "Franz Schubert",
+      "title": "Moment Musical Op. 94 No. 4, in C-sharp Minor, D780",
+      "notes_pred": 2663,
+      "notes_truth": 2625,
+      "onset_only": {
+        "precision": 0.8855,
+        "recall": 0.8983,
+        "f1": 0.8918
+      },
+      "onset_and_offset": {
+        "precision": 0.1735,
+        "recall": 0.176,
+        "f1": 0.1747
+      }
+    },
+    {
+      "id": "midi_unprocessed_071_piano071_mid_audio_split_07_08_17_piano_e_1_04_wav_2",
+      "composer": "Franz Schubert",
+      "title": "Sonata in A Major, D. 664, I. Allegro moderato",
+      "notes_pred": 2286,
+      "notes_truth": 2363,
+      "onset_only": {
+        "precision": 0.9348,
+        "recall": 0.9044,
+        "f1": 0.9193
+      },
+      "onset_and_offset": {
+        "precision": 0.1142,
+        "recall": 0.1105,
+        "f1": 0.1123
+      }
+    },
+    {
+      "id": "midi_unprocessed_r2_d1_2_3_6_7_8_11_mid_audio_from_mp3_06_r2_2015_wav_1",
+      "composer": "Franz Schubert",
+      "title": "Impromptu Op. 90 No. 4 in A-flat Major",
+      "notes_pred": 4212,
+      "notes_truth": 4310,
+      "onset_only": {
+        "precision": 0.9399,
+        "recall": 0.9186,
+        "f1": 0.9291
+      },
+      "onset_and_offset": {
+        "precision": 0.0731,
+        "recall": 0.0715,
+        "f1": 0.0723
+      }
+    },
+    {
+      "id": "midi_unprocessed_r2_d2_19_21_22_mid_audio_from_mp3_19_r2_2015_wav_3",
+      "composer": "Franz Schubert",
+      "title": "Impromptu Op. 90 No. 4 in A-flat Major",
+      "notes_pred": 4476,
+      "notes_truth": 4425,
+      "onset_only": {
+        "precision": 0.9149,
+        "recall": 0.9254,
+        "f1": 0.9201
+      },
+      "onset_and_offset": {
+        "precision": 0.0547,
+        "recall": 0.0554,
+        "f1": 0.055
+      }
+    },
+    {
+      "id": "midi_unprocessed_xp_18_r1_2004_01_02_orig_mid_audio_18_r1_2004_03_track03_wav",
+      "composer": "Franz Schubert / Franz Liszt",
+      "title": "Song Transcriptions: Aufenthalt, Gretchen am Spinnrade, Standchen von Shakespeare, Der Erlkonig",
+      "notes_pred": 2532,
+      "notes_truth": 2655,
+      "onset_only": {
+        "precision": 0.9479,
+        "recall": 0.904,
+        "f1": 0.9254
+      },
+      "onset_and_offset": {
+        "precision": 0.0415,
+        "recall": 0.0395,
+        "f1": 0.0405
+      }
+    },
+    {
+      "id": "midi_unprocessed_recital9_11_mid_audio_09_r1_2018_wav_2",
+      "composer": "Franz Schubert / Franz Liszt",
+      "title": "Gretchen am Spinnrade",
+      "notes_pred": 2614,
+      "notes_truth": 2644,
+      "onset_only": {
+        "precision": 0.9292,
+        "recall": 0.9187,
+        "f1": 0.9239
+      },
+      "onset_and_offset": {
+        "precision": 0.034,
+        "recall": 0.0337,
+        "f1": 0.0339
+      }
+    },
+    {
+      "id": "midi_unprocessed_r1_d1_9_12_mid_audio_from_mp3_11_r1_2015_wav_3",
+      "composer": "Fr\u00e9d\u00e9ric Chopin",
+      "title": "Etude Op. 10 No. 12",
+      "notes_pred": 2095,
+      "notes_truth": 2089,
+      "onset_only": {
+        "precision": 0.9365,
+        "recall": 0.9392,
+        "f1": 0.9379
+      },
+      "onset_and_offset": {
+        "precision": 0.1752,
+        "recall": 0.1757,
+        "f1": 0.1754
+      }
+    },
+    {
+      "id": "midi_unprocessed_r1_d1_9_12_mid_audio_from_mp3_12_r1_2015_wav_3",
+      "composer": "Fr\u00e9d\u00e9ric Chopin",
+      "title": "Nocturne Op. 15 No. 1 in F Major",
+      "notes_pred": 1889,
+      "notes_truth": 1780,
+      "onset_only": {
+        "precision": 0.8751,
+        "recall": 0.9287,
+        "f1": 0.9011
+      },
+      "onset_and_offset": {
+        "precision": 0.0842,
+        "recall": 0.0893,
+        "f1": 0.0867
+      }
+    },
+    {
+      "id": "midi_unprocessed_22_r2_2011_mid_audio_r2_d5_10_track10_wav",
+      "composer": "Fr\u00e9d\u00e9ric Chopin",
+      "title": "Nocturne Op. 27 No. 1 in C-sharp Minor",
+      "notes_pred": 1665,
+      "notes_truth": 1647,
+      "onset_only": {
+        "precision": 0.9237,
+        "recall": 0.9338,
+        "f1": 0.9287
+      },
+      "onset_and_offset": {
+        "precision": 0.0685,
+        "recall": 0.0692,
+        "f1": 0.0688
+      }
+    },
+    {
+      "id": "midi_unprocessed_r1_d2_13_20_mid_audio_from_mp3_15_r1_2015_wav_4",
+      "composer": "Fr\u00e9d\u00e9ric Chopin",
+      "title": "Valse brillante No. 1 in A-flat Major, Op. 34",
+      "notes_pred": 3501,
+      "notes_truth": 3601,
+      "onset_only": {
+        "precision": 0.9215,
+        "recall": 0.8959,
+        "f1": 0.9085
+      },
+      "onset_and_offset": {
+        "precision": 0.0754,
+        "recall": 0.0733,
+        "f1": 0.0743
+      }
+    },
+    {
+      "id": "orig_midi_03_7_8_13_group_mid_audio_19_r2_2013_wav_4",
+      "composer": "Fr\u00e9d\u00e9ric Chopin",
+      "title": "Polonaise Op. 53 in A-flat Major",
+      "notes_pred": 5738,
+      "notes_truth": 6146,
+      "onset_only": {
+        "precision": 0.9109,
+        "recall": 0.8505,
+        "f1": 0.8797
+      },
+      "onset_and_offset": {
+        "precision": 0.0957,
+        "recall": 0.0893,
+        "f1": 0.0924
+      }
+    },
+    {
+      "id": "midi_unprocessed_07_r1_2011_mid_audio_r1_d3_02_track02_wav",
+      "composer": "Johann Sebastian Bach",
+      "title": "Prelude and Fugue in F-sharp Major, WTC I, BWV 858",
+      "notes_pred": 1419,
+      "notes_truth": 1374,
+      "onset_only": {
+        "precision": 0.9486,
+        "recall": 0.9796,
+        "f1": 0.9638
+      },
+      "onset_and_offset": {
+        "precision": 0.2678,
+        "recall": 0.2766,
+        "f1": 0.2721
+      }
+    },
+    {
+      "id": "midi_unprocessed_r1_d1_1_8_mid_audio_from_mp3_07_r1_2015_wav_1",
+      "composer": "Johann Sebastian Bach",
+      "title": "Prelude and Fugue in G-sharp Minor, WTC I, BWV 863",
+      "notes_pred": 1540,
+      "notes_truth": 1354,
+      "onset_only": {
+        "precision": 0.8597,
+        "recall": 0.9778,
+        "f1": 0.915
+      },
+      "onset_and_offset": {
+        "precision": 0.3643,
+        "recall": 0.4143,
+        "f1": 0.3877
+      }
+    },
+    {
+      "id": "midi_unprocessed_11_r1_2011_mid_audio_r1_d4_07_track07_wav",
+      "composer": "Johann Sebastian Bach",
+      "title": "Prelude and Fuge in G-sharp Minor, WTC I, BWV 863",
+      "notes_pred": 1603,
+      "notes_truth": 1363,
+      "onset_only": {
+        "precision": 0.8384,
+        "recall": 0.9861,
+        "f1": 0.9063
+      },
+      "onset_and_offset": {
+        "precision": 0.3568,
+        "recall": 0.4197,
+        "f1": 0.3857
+      }
+    },
+    {
+      "id": "midi_unprocessed_03_r1_2008_01_04_orig_mid_audio_03_r1_2008_wav_1",
+      "composer": "Johann Sebastian Bach",
+      "title": "Prelude and Fugue in B-flat Minor, WTC II",
+      "notes_pred": 3172,
+      "notes_truth": 2945,
+      "onset_only": {
+        "precision": 0.9117,
+        "recall": 0.982,
+        "f1": 0.9456
+      },
+      "onset_and_offset": {
+        "precision": 0.3124,
+        "recall": 0.3365,
+        "f1": 0.324
+      }
+    },
+    {
+      "id": "orig_midi_01_7_10_13_group_mid_audio_07_r3_2013_wav_1",
+      "composer": "Johann Sebastian Bach",
+      "title": "Overture in the French Style in B Minor, BWV 831",
+      "notes_pred": 3520,
+      "notes_truth": 3271,
+      "onset_only": {
+        "precision": 0.9159,
+        "recall": 0.9856,
+        "f1": 0.9495
+      },
+      "onset_and_offset": {
+        "precision": 0.3139,
+        "recall": 0.3378,
+        "f1": 0.3254
+      }
+    },
+    {
+      "id": "midi_unprocessed_05_r1_2011_mid_audio_r1_d2_10_track10_wav",
+      "composer": "Joseph Haydn",
+      "title": "Sonata in G Major, Hob. XVI:6, First Movement",
+      "notes_pred": 2293,
+      "notes_truth": 2254,
+      "onset_only": {
+        "precision": 0.9324,
+        "recall": 0.9485,
+        "f1": 0.9404
+      },
+      "onset_and_offset": {
+        "precision": 0.1422,
+        "recall": 0.1446,
+        "f1": 0.1434
+      }
+    },
+    {
+      "id": "midi_unprocessed_xp_19_r1_2004_01_02_orig_mid_audio_19_r1_2004_02_track02_wav",
+      "composer": "Joseph Haydn",
+      "title": "Sonata in D Major, Hob. XVI:24",
+      "notes_pred": 1659,
+      "notes_truth": 1601,
+      "onset_only": {
+        "precision": 0.9162,
+        "recall": 0.9494,
+        "f1": 0.9325
+      },
+      "onset_and_offset": {
+        "precision": 0.0886,
+        "recall": 0.0918,
+        "f1": 0.0902
+      }
+    },
+    {
+      "id": "midi_unprocessed_04_r1_2011_mid_audio_r1_d2_03_track03_wav",
+      "composer": "Joseph Haydn",
+      "title": "Sonata E-Flat Major, Hob. XVI:49, First Movement",
+      "notes_pred": 2672,
+      "notes_truth": 2622,
+      "onset_only": {
+        "precision": 0.9319,
+        "recall": 0.9497,
+        "f1": 0.9407
+      },
+      "onset_and_offset": {
+        "precision": 0.2017,
+        "recall": 0.2056,
+        "f1": 0.2036
+      }
+    },
+    {
+      "id": "midi_unprocessed_23_r1_2011_mid_audio_r1_d9_03_track03_wav",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata No. 5 in C Minor, Op. 10 No. 1, First Movement",
+      "notes_pred": 2168,
+      "notes_truth": 2111,
+      "onset_only": {
+        "precision": 0.9313,
+        "recall": 0.9564,
+        "f1": 0.9437
+      },
+      "onset_and_offset": {
+        "precision": 0.1208,
+        "recall": 0.1241,
+        "f1": 0.1225
+      }
+    },
+    {
+      "id": "midi_unprocessed_17_r1_2008_01_04_orig_mid_audio_17_r1_2008_wav_2",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata No. 16 in G Major, Op. 31 No. 1, First movement",
+      "notes_pred": 3341,
+      "notes_truth": 3306,
+      "onset_only": {
+        "precision": 0.9419,
+        "recall": 0.9519,
+        "f1": 0.9469
+      },
+      "onset_and_offset": {
+        "precision": 0.2655,
+        "recall": 0.2683,
+        "f1": 0.2669
+      }
+    },
+    {
+      "id": "midi_unprocessed_09_r1_2011_mid_audio_r1_d3_13_track13_wav",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata No. 10 in G Major, Op. 14 No. 2, First Movement",
+      "notes_pred": 2630,
+      "notes_truth": 2609,
+      "onset_only": {
+        "precision": 0.9437,
+        "recall": 0.9513,
+        "f1": 0.9475
+      },
+      "onset_and_offset": {
+        "precision": 0.1768,
+        "recall": 0.1782,
+        "f1": 0.1775
+      }
+    },
+    {
+      "id": "midi_unprocessed_066_piano066_mid_audio_split_07_07_17_piano_e_3_02_wav_2",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata No. 18, Op. 31 No. 3 in E-flat Major, I. Allegro",
+      "notes_pred": 3293,
+      "notes_truth": 3260,
+      "onset_only": {
+        "precision": 0.9189,
+        "recall": 0.9282,
+        "f1": 0.9235
+      },
+      "onset_and_offset": {
+        "precision": 0.1998,
+        "recall": 0.2018,
+        "f1": 0.2008
+      }
+    },
+    {
+      "id": "orig_midi_02_7_7_13_group_mid_audio_16_r1_2013_wav_2",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata in C Major, Op. 2 No. 3, 1st mov.",
+      "notes_pred": 4454,
+      "notes_truth": 4355,
+      "onset_only": {
+        "precision": 0.9091,
+        "recall": 0.9297,
+        "f1": 0.9193
+      },
+      "onset_and_offset": {
+        "precision": 0.1504,
+        "recall": 0.1538,
+        "f1": 0.1521
+      }
+    },
+    {
+      "id": "midi_unprocessed_065_piano065_mid_audio_split_07_07_17_piano_e_3_01_wav_2",
+      "composer": "Ludwig van Beethoven",
+      "title": "Sonata No. 3, Op. 2 No. 3 in C major, I. Allegro con brio",
+      "notes_pred": 4314,
+      "notes_truth": 4279,
+      "onset_only": {
+        "precision": 0.9411,
+        "recall": 0.9488,
+        "f1": 0.945
+      },
+      "onset_and_offset": {
+        "precision": 0.1595,
+        "recall": 0.1608,
+        "f1": 0.1601
+      }
+    },
+    {
+      "id": "midi_unprocessed_17_r1_2009_01_03_orig_mid_audio_17_r1_2009_17_r1_2009_02_wav",
+      "composer": "Richard Wagner / Franz Liszt",
+      "title": "Isolde's Liebestod",
+      "notes_pred": 4198,
+      "notes_truth": 4403,
+      "onset_only": {
+        "precision": 0.9319,
+        "recall": 0.8885,
+        "f1": 0.9097
+      },
+      "onset_and_offset": {
+        "precision": 0.0317,
+        "recall": 0.0302,
+        "f1": 0.0309
+      }
+    },
+    {
+      "id": "midi_unprocessed_smf_02_r1_2004_01_05_orig_mid_audio_02_r1_2004_10_track10_wav",
+      "composer": "Robert Schumann",
+      "title": "Toccata in C Major, Opus 7",
+      "notes_pred": 6014,
+      "notes_truth": 6369,
+      "onset_only": {
+        "precision": 0.9308,
+        "recall": 0.8789,
+        "f1": 0.9041
+      },
+      "onset_and_offset": {
+        "precision": 0.1016,
+        "recall": 0.0959,
+        "f1": 0.0987
+      }
+    },
+    {
+      "id": "midi_unprocessed_11_13_r1_2014_mid_audio_13_r1_2014_wav_4",
+      "composer": "Robert Schumann",
+      "title": "Toccata in C Major, Op. 7",
+      "notes_pred": 7937,
+      "notes_truth": 8266,
+      "onset_only": {
+        "precision": 0.9396,
+        "recall": 0.9023,
+        "f1": 0.9206
+      },
+      "onset_and_offset": {
+        "precision": 0.1114,
+        "recall": 0.1069,
+        "f1": 0.1091
+      }
+    },
+    {
+      "id": "midi_unprocessed_23_r3_2011_mid_audio_r3_d8_04_track04_wav",
+      "composer": "Robert Schumann",
+      "title": "Romances Op. 28, Nos. 2 and 3",
+      "notes_pred": 4502,
+      "notes_truth": 4368,
+      "onset_only": {
+        "precision": 0.8858,
+        "recall": 0.913,
+        "f1": 0.8992
+      },
+      "onset_and_offset": {
+        "precision": 0.1573,
+        "recall": 0.1621,
+        "f1": 0.1596
+      }
+    },
+    {
+      "id": "midi_unprocessed_08_r1_2008_01_05_orig_mid_audio_08_r1_2008_wav_3",
+      "composer": "Sergei Rachmaninoff",
+      "title": "Etude Tableaux Op. 39 No. 1 in C Minor",
+      "notes_pred": 2862,
+      "notes_truth": 3154,
+      "onset_only": {
+        "precision": 0.9172,
+        "recall": 0.8323,
+        "f1": 0.8727
+      },
+      "onset_and_offset": {
+        "precision": 0.1377,
+        "recall": 0.1249,
+        "f1": 0.131
+      }
+    },
+    {
+      "id": "midi_unprocessed_12_r1_2006_01_08_orig_mid_audio_12_r1_2006_07_track07_wav",
+      "composer": "Sergei Rachmaninoff",
+      "title": "Etudes-Tableaux",
+      "notes_pred": 3447,
+      "notes_truth": 3816,
+      "onset_only": {
+        "precision": 0.8866,
+        "recall": 0.8008,
+        "f1": 0.8415
+      },
+      "onset_and_offset": {
+        "precision": 0.1732,
+        "recall": 0.1564,
+        "f1": 0.1644
+      }
+    },
+    {
+      "id": "midi_unprocessed_05_r1_2008_01_04_orig_mid_audio_05_r1_2008_wav_4",
+      "composer": "Sergei Rachmaninoff",
+      "title": "Etude-Tableaux Op. 39 No. 5 in E-flat Minor",
+      "notes_pred": 3772,
+      "notes_truth": 3944,
+      "onset_only": {
+        "precision": 0.8937,
+        "recall": 0.8547,
+        "f1": 0.8738
+      },
+      "onset_and_offset": {
+        "precision": 0.0329,
+        "recall": 0.0314,
+        "f1": 0.0321
+      }
+    },
+    {
+      "id": "midi_unprocessed_recital17_19_mid_audio_17_r1_2018_wav_2",
+      "composer": "Sergei Rachmaninoff",
+      "title": "Etude Tableau Op. 39 No. 5",
+      "notes_pred": 3624,
+      "notes_truth": 3821,
+      "onset_only": {
+        "precision": 0.9098,
+        "recall": 0.8629,
+        "f1": 0.8857
+      },
+      "onset_and_offset": {
+        "precision": 0.0276,
+        "recall": 0.0262,
+        "f1": 0.0269
+      }
+    },
+    {
+      "id": "orig_midi_03_7_6_13_group_mid_audio_09_r1_2013_wav_3",
+      "composer": "Wolfgang Amadeus Mozart",
+      "title": "Sonata in F Major, K. 280, 1st mov.",
+      "notes_pred": 1865,
+      "notes_truth": 1832,
+      "onset_only": {
+        "precision": 0.926,
+        "recall": 0.9427,
+        "f1": 0.9343
+      },
+      "onset_and_offset": {
+        "precision": 0.1292,
+        "recall": 0.1316,
+        "f1": 0.1304
+      }
+    },
+    {
+      "id": "midi_unprocessed_052_piano052_mid_audio_split_07_06_17_piano_e_3_03_wav_3",
+      "composer": "Wolfgang Amadeus Mozart",
+      "title": "Sonata in B-flat Major, K. 333, I. Allegro",
+      "notes_pred": 2825,
+      "notes_truth": 2828,
+      "onset_only": {
+        "precision": 0.9465,
+        "recall": 0.9455,
+        "f1": 0.946
+      },
+      "onset_and_offset": {
+        "precision": 0.2092,
+        "recall": 0.209,
+        "f1": 0.2091
+      }
+    },
+    {
+      "id": "orig_midi_03_7_10_13_group_mid_audio_17_r3_2013_wav_1",
+      "composer": "Wolfgang Amadeus Mozart",
+      "title": "Sonata in B-flat Major, K. 333, 1st mov.",
+      "notes_pred": 2849,
+      "notes_truth": 2873,
+      "onset_only": {
+        "precision": 0.9481,
+        "recall": 0.9401,
+        "f1": 0.9441
+      },
+      "onset_and_offset": {
+        "precision": 0.1288,
+        "recall": 0.1277,
+        "f1": 0.1283
+      }
+    }
+  ]
+}
