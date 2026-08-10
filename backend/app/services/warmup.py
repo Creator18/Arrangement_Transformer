@@ -50,6 +50,12 @@ _thread: threading.Thread | None = None
 # Keys the interactive keyboard is most likely to be clicked on: the 5-octave
 # target range. Rendering these up front makes the first key press instant
 # instead of waiting on a Salamander render.
+# Must match the endpoint's rate and cache-key scheme exactly.  They drifted
+# once — warmup kept writing 22 kHz files under the old name while the
+# endpoint looked for 44.1 kHz ones, so warmup reported "0 rendered" and every
+# key press paid a lazy render instead.
+NOTE_SR = 44100
+
 _NOTE_WARM_LO = 36      # C2
 _NOTE_WARM_HI = 96      # C7
 
@@ -96,7 +102,9 @@ def _warm_madmom() -> None:
 def _warm_sampler() -> None:
     from app.services import sfz_sampler
     if sfz_sampler.is_available():
-        sfz_sampler._get_synth(22050)
+        # Same rate the renders actually use, or the synth is rebuilt
+        # on the first real render and the warm was wasted.
+        sfz_sampler._get_synth(NOTE_SR)
 
 
 def _warm_note_samples() -> None:
@@ -106,9 +114,9 @@ def _warm_note_samples() -> None:
     from app.services.sampler import render_notes
 
     _NOTE_CACHE.mkdir(parents=True, exist_ok=True)
-    sr, made = 22050, 0
+    sr, made = NOTE_SR, 0
     for midi in range(_NOTE_WARM_LO, _NOTE_WARM_HI + 1):
-        out = _NOTE_CACHE / f"n{midi}_v80.wav"
+        out = _NOTE_CACHE / f"n{midi}_v80_{sr}.wav"
         if out.exists():
             continue
         audio = render_notes(
