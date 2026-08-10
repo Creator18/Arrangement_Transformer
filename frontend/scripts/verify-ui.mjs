@@ -65,16 +65,29 @@ console.log(`\nverify-ui  ${URL}  ${W}x${H}`)
 console.log(`  frames composite : ${moved > 0 ? 'YES' : 'NO'}  (${(moved * 100).toFixed(2)}% of bytes changed in 700ms)`)
 
 // ── scroll-position shots, the thing the old harness could never do ────────
-const doc = await page.evaluate(() => document.documentElement.scrollHeight)
-const stops = [0, 0.25, 0.5, 0.75, 0.98]
-for (const s of stops) {
-  const y = Math.round((doc - H) * s)
+// Sample where the SECTIONS are, not at arbitrary fractions of the document.
+// Fixed fractions land mid-transition on a page whose sections differ in
+// height by 5x, which produces screenshots of nothing in particular and
+// invites false alarms about missing content.
+const stops = await page.evaluate(() => {
+  const secs = [...document.querySelectorAll('section[id]')]
+  if (!secs.length) return [0]
+  const doc = document.documentElement.scrollHeight
+  return secs.map((el) => {
+    const r = el.getBoundingClientRect()
+    const top = r.top + window.scrollY
+    // Centre of the section, clamped to a reachable scroll position.
+    return Math.max(0, Math.min(doc - window.innerHeight,
+      Math.round(top + r.height / 2 - window.innerHeight / 2)))
+  })
+})
+for (const y of stops) {
   // Real wheel input, not scrollTo: Lenis drives the page off wheel events,
   // and a programmatic jump bypasses it entirely — which is exactly how the
   // old harness produced scroll positions the page had never actually been in.
   await page.evaluate((target) => window.scrollTo({ top: target, behavior: 'instant' }), y)
   await page.waitForTimeout(900)
-  const shot = join(OUT, `scroll-${Math.round(s * 100)}.png`)
+  const shot = join(OUT, `y${String(y).padStart(5, '0')}.png`)
   writeFileSync(shot, await page.screenshot())
   console.log(`  captured ${shot}  (y=${y})`)
 }

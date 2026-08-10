@@ -81,7 +81,22 @@ export default function LandingPage() {
       const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight)
       const p = window.scrollY / max
       progressRef.current = p
-      const idx = Math.min(ACTS.length - 1, Math.round(p * (ACTS.length - 1)))
+      // Which act is on screen, from GEOMETRY not from a fraction of the
+      // document.  Fractions assume the acts are evenly spaced; the pipeline
+      // is five viewports where the others are one, so at 25% scrolled the
+      // rail said CONSOLE while the pipeline filled the screen.  Same mistake
+      // ScrollStage had, caught here by screenshotting the page.
+      const mid = window.scrollY + window.innerHeight / 2
+      let idx = 0, best = Infinity
+      ACTS.forEach((a, i) => {
+        const el = document.getElementById(a.id)
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        const top = r.top + window.scrollY
+        const d = mid < top ? top - mid
+                : mid > top + r.height ? mid - (top + r.height) : 0
+        if (d < best) { best = d; idx = i }
+      })
       setAct((prev) => (prev === idx ? prev : idx))
     }
     const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(read) } }
