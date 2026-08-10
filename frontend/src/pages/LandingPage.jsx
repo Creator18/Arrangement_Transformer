@@ -322,7 +322,7 @@ export default function LandingPage() {
             ['0.00%', 'onsets moved'],
             ['0.00%', 'pitch added'],
             ['10', 'keys maximum'],
-            ['14st', 'hand reach'],
+            ['14', 'semitone reach'],
           ].map(([v, k]) => (
             <div key={k}>
               <div style={{
