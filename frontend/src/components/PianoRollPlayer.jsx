@@ -7,7 +7,12 @@ import { wipeReveal } from '../utils/animefx'
 // ── layout constants ──────────────────────────────────────────────────────────
 const NOTE_W_FALLBACK = 8     // initial px per semitone before container is measured
 const NOTE_W_MIN      = 6     // floor — keyboard scrolls horizontally if narrower
-const NOTE_W_MAX      = 14    // ceiling so keys don't get cartoonishly wide
+// Ceiling on per-semitone width.  Was 14, sized when the roll was a 370px
+// embed — on the full-screen results stage that left the keyboard ending
+// ~120px short of its own container, which looked like a bug rather than a
+// margin.  22 lets a 5-octave keyboard fill a ~1400px stage while still
+// stopping a 4-octave preset from turning into piano-shaped furniture.
+const NOTE_W_MAX      = 22
 const KEY_H           = 78    // keyboard panel height (fixed at bottom)
 const PX_PER_S        = 80    // px per second (time → Y axis)
 const TIMELINE_W      = 28    // left strip for measure / beat labels
@@ -731,7 +736,15 @@ export default function PianoRollPlayer({
         className="rounded-xl overflow-hidden select-none flex flex-col items-center"
         style={{
           background: 'linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.40) 100%)',
-          border: `1px solid ${dragging ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.07)'}`,
+          // No outline.  This was the last hard rectangle on the results
+          // page, and a box around the roll makes it read as a widget placed
+          // on the page rather than the page's subject.  While dragging to
+          // seek, a soft accent glow says "you are steering this" without
+          // reinstating the frame.
+          border: 'none',
+          boxShadow: dragging
+            ? '0 0 0 1px rgba(245,158,11,0.22), 0 0 40px rgba(245,158,11,0.07)'
+            : 'none',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 18px rgba(0,0,0,0.35)',
           transition: 'border-color 0.15s ease',
           overflowX: 'auto',

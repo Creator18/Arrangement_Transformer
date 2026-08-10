@@ -511,3 +511,60 @@ html.lenis.lenis-stopped      { overflow: hidden; }
 @media (min-width: 1024px) {
   section[data-act] { padding-left: 190px !important; }
 }
+
+/* ── Dissolve the panes ──────────────────────────────────────────────────────
+   The output pages read as boxes sitting ON a background rather than content
+   living IN a space: a bordered LISTEN card, a bordered export card, a
+   bordered tab strip, a hard rule down the sidebar.  Each border is a seam,
+   and enough seams turn a page into a form.
+
+   Separation now comes from SPACE and TYPE — the two things that separate
+   without drawing a line.  Borders survive only where an element is genuinely
+   interactive (a control you can press) or genuinely contains something
+   scrollable.
+
+   Kept deliberately: the ribbon field behind is alive, so a surface that is
+   fully transparent lets moving light run under text and hurt legibility.
+   A near-black wash at 55% opacity, no border, is enough to seat content
+   without boxing it. */
+.glass,
+.glass-dark {
+  background: linear-gradient(180deg,
+              rgba(6, 8, 14, 0.62) 0%,
+              rgba(6, 8, 14, 0.48) 100%) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Hairlines fade at both ends instead of stopping dead, so a divider reads as
+   a change of subject rather than the edge of a container. */
+.ct-hairline,
+.glass + .glass {
+  background: linear-gradient(90deg, transparent,
+              rgba(255, 255, 255, 0.09) 22%,
+              rgba(255, 255, 255, 0.09) 78%, transparent) !important;
+}
+
+/* The results sidebar had a hard rule down its full height — the single most
+   sectioning line on the page.  Replaced with a vertical gradient that is
+   strongest beside the controls and dissolves at top and bottom. */
+aside[data-lenis-prevent] {
+  border-right: none !important;
+  position: relative;
+}
+aside[data-lenis-prevent]::after {
+  content: '';
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent,
+              rgba(255, 255, 255, 0.07) 18%,
+              rgba(255, 255, 255, 0.07) 82%, transparent);
+  pointer-events: none;
+}
+
+/* Panels that only ever held content get their outline back off too. */
+.ct-panel { background: rgba(255, 255, 255, 0.008) !important; }
