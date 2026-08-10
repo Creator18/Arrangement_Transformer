@@ -51,6 +51,39 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.services.sampler import render_notes
 
 
+def _midi_to_pedal(midi_path: Path) -> List[Dict]:
+    """
+    Damper-down intervals from the MIDI's CC64, as {"onset", "offset"}.
+
+    This was missing, and its absence made pedal unmeasurable.  The eval audio
+    was rendered from MAESTRO with the sustain pedal stripped, so the model's
+    pedal head had nothing to detect and any pedal accuracy figure — or any
+    change to pedal handling — was meaningless on this corpus.
+
+    MAESTRO is Disklavier-captured, so its CC64 is a real pedal performance
+    rather than a quantised approximation.  Half-pedalling is collapsed to
+    a binary at 64, which is what our own pipeline models; capturing partial
+    depths would need the sampler to model them too.
+    """
+    pm = pretty_midi.PrettyMIDI(str(midi_path))
+    downs: List[Dict] = []
+    for inst in pm.instruments:
+        if inst.is_drum:
+            continue
+        start = None
+        for cc in sorted((c for c in inst.control_changes if c.number == 64),
+                         key=lambda c: c.time):
+            if cc.value >= 64 and start is None:
+                start = float(cc.time)
+            elif cc.value < 64 and start is not None:
+                downs.append({"onset": start, "offset": float(cc.time)})
+                start = None
+        if start is not None:
+            downs.append({"onset": start, "offset": float(pm.get_end_time())})
+    downs.sort(key=lambda d: d["onset"])
+    return downs
+
+
 def _midi_to_notes(midi_path: Path) -> List[Dict]:
     """
     Load a MIDI file and emit the pipeline's standard note-dict list.
@@ -92,7 +125,8 @@ def _render_one(piece: Dict, force: bool) -> Dict:
     if not notes:
         return {"id": piece["id"], "status": "empty_midi"}
 
-    audio = render_notes(notes, sr=SAMPLE_RATE)
+    pedal = _midi_to_pedal(midi_path)
+    audio = render_notes(notes, sr=SAMPLE_RATE, pedal=pedal)
     sf.write(str(audio_path), audio.astype(np.float32),
              SAMPLE_RATE, subtype="PCM_16")
 
@@ -100,6 +134,7 @@ def _render_one(piece: Dict, force: bool) -> Dict:
         "id":         piece["id"],
         "status":     "rendered",
         "notes":      len(notes),
+        "pedal":      len(pedal),
         "duration_s": round(audio.size / SAMPLE_RATE, 2),
         "render_s":   round(time.time() - t0, 2),
         "size_kb":    audio_path.stat().st_size // 1024,
