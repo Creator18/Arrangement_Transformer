@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { playNote } from '../utils/pianovoice'
 import { heldKeys } from '../utils/hands'
+import { attach as attachTone, setTone } from '../utils/tonechain'
 import { motion, AnimatePresence } from 'framer-motion'
 import { wipeReveal } from '../utils/animefx'
 
@@ -360,6 +361,7 @@ export default function PianoRollPlayer({
   keyboardStart   = 36,   // lowest MIDI note shown (C2)
   keyboardOctaves = 7,
   defaultPart     = 'all', // controlled from parent (results page part pads)
+  tone            = null,  // { bassDb, trebleDb, room } — live monitoring EQ
   rollHeight      = ROLL_MAX_H,
   chrome          = true,  // false hides the header/transport for embedded use
 }) {
@@ -504,6 +506,17 @@ export default function PianoRollPlayer({
     }
   }, [])
 
+  // Live tone shaping over the playing audio.  Attached lazily on the first
+  // real play attempt rather than on mount: createMediaElementSource re-routes
+  // the element permanently, and browsers will not start an AudioContext
+  // before a user gesture anyway.
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio || !tone) return
+    attachTone(audio)
+    setTone(audio, tone)
+  }, [tone])
+
   // Reload audio when the SOURCE actually changes.
   //
   // This effect used to depend on `getPartUrl`, which every caller passes as
@@ -571,12 +584,15 @@ export default function PianoRollPlayer({
     if (!audio) return
     if (playing) { audio.pause(); setPlaying(false) }
     else {
+      // Inside the click handler, which is the only place a browser will let
+      // an AudioContext start.
+      if (tone) { attachTone(audio); setTone(audio, tone) }
       setLoading(true)
       audio.play()
         .then(() => { setPlaying(true); setLoading(false) })
         .catch(() => setLoading(false))
     }
-  }, [playing])
+  }, [playing, tone])
 
   // ── Seek (y-based: click = time position) ──────────────────────────────────
   // With falling notes, smaller SVG-y ⇒ later time.  Click higher in viewport

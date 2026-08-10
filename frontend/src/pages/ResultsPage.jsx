@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AuroraRibbons from '../components/AuroraRibbons'
 import BubbleCluster from '../components/BubbleCluster'
+import { DEFAULTS as TONE_DEFAULTS } from '../utils/tonechain'
 
 // Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
 // when this prop changes, and an inline {current: x} is a NEW object every
@@ -204,6 +205,9 @@ export default function ResultsPage() {
   // at full height and switching is both clearer and bigger.
   const [range,            setRange]            = useState('transformed')
   const [stageH,           setStageH]           = useState(560)
+  // Live monitoring tone.  Starts at the server's own settings so moving a
+  // slider adjusts from where the render already sits rather than jumping.
+  const [tone,             setTone]             = useState(TONE_DEFAULTS)
   const [patternClusters,  setPatternClusters]  = useState({})
   const kickerRef  = useRef(null)
   const padsRowRef = useRef(null)
@@ -381,6 +385,43 @@ export default function ResultsPage() {
         </div>
 
         <div>
+          <div className="ct-mono" style={{ marginBottom: 10 }}>Tone</div>
+          {[
+            ['bassDb',   'Bass',   -6,  6,  0.5, 'dB'],
+            ['trebleDb', 'Treble', -6,  6,  0.5, 'dB'],
+            ['room',     'Room',    0,  0.9, 0.05, ''],
+          ].map(([key, label, min, max, step, unit]) => (
+            <div key={key} style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between',
+                            fontSize: 10, color: 'var(--ct-faint)',
+                            fontFamily: 'ui-monospace,monospace', marginBottom: 4 }}>
+                <span>{label}</span>
+                <span style={{ color: 'var(--ct-accent)' }}>
+                  {key === 'room' ? `${Math.round(tone[key] * 100)}%`
+                                  : `${tone[key] > 0 ? '+' : ''}${tone[key].toFixed(1)}${unit}`}
+                </span>
+              </div>
+              <input
+                type="range" min={min} max={max} step={step} value={tone[key]}
+                onChange={(e) => setTone(t => ({ ...t, [key]: parseFloat(e.target.value) }))}
+                style={{ width: '100%', accentColor: 'var(--ct-accent)', height: 2 }}
+              />
+            </div>
+          ))}
+          <button
+            onClick={() => setTone(TONE_DEFAULTS)}
+            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                     fontSize: 10, color: 'var(--ct-faint)',
+                     fontFamily: 'ui-monospace,monospace' }}>
+            reset
+          </button>
+          <p style={{ fontSize: 9, color: 'rgba(255,255,255,0.20)', marginTop: 8,
+                      lineHeight: 1.5 }}>
+            Affects playback only — exports carry the server settings.
+          </p>
+        </div>
+
+        <div>
           <div className="ct-mono" style={{ marginBottom: 10 }}>Export</div>
           {[['MIDI', getMidiUrl(sessionId)],
             ['MusicXML', getMusicXmlUrl(sessionId)],
@@ -425,6 +466,7 @@ export default function ResultsPage() {
                         keyboardStart={24}
                         keyboardOctaves={7}
                         defaultPart={activePart}
+                        tone={tone}
                         rollHeight={stageH}
                       />
                     ) : (
@@ -437,6 +479,7 @@ export default function ResultsPage() {
                         keyboardStart={36}
                         keyboardOctaves={5}
                         defaultPart={apiLayers ? 'all' : activePart}
+                        tone={tone}
                         rollHeight={stageH}
                       />
                     )}
