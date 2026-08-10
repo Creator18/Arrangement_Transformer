@@ -24,13 +24,12 @@ the thing being fixed here is gross — the near-total absence of a tail — and
 plausible decay answers that question honestly enough to tell us whether ROOM
 is the missing ingredient before anyone downloads anything.
 
-Why the defaults are conservative
----------------------------------
-Note offsets already run 2.10x longer than ground truth, so the render is
-over-sustained before any reverb is added.  Piling a long wet tail on top of
-that would turn a measurable defect into audible mud.  WET_DEFAULT is
-deliberately low; the goal is for notes to stop decaying into silence, not to
-put the piano in a cathedral.
+Level is preserved
+------------------
+The mix is gain-compensated back to the dry peak.  Without that, 45% wet makes
+the dry component 55% and the whole render lands about 5 dB quieter — which
+would turn a room comparison into a loudness comparison, and quieter reads as
+worse regardless of what else changed.
 """
 from __future__ import annotations
 
@@ -39,10 +38,30 @@ from typing import Optional
 
 import numpy as np
 
-# Room, not hall.  See the note above about existing over-sustain.
-RT60_S = 1.5          # time for the tail to fall 60 dB
-PREDELAY_S = 0.018    # gap before the first reflection — reads as distance
-WET_DEFAULT = 0.22    # proportion of wet in the mix
+# Set from a dB measurement, not from caution.
+#
+# The first values here were RT60 1.5 s at 22% wet, chosen to avoid mud
+# because note offsets already run 2.10x long.  Measured against the dry
+# render — tail level 1.0 s after the last key release, in dB below peak:
+#
+#     dry                    -47.5 dB
+#     wet 0.22 / 1.5 s       -46.8 dB     <- 0.7 dB.  inaudible.
+#     wet 0.35 / 2.0 s       -43.1 dB
+#     wet 0.45 / 2.4 s       -39.7 dB     <- chosen, ~8 dB over dry
+#     wet 0.55 / 2.8 s       -37.1 dB
+#
+# Roughly 3 dB is the threshold for noticing anything and 6-10 dB is where a
+# room becomes obvious, so the original setting was doing nothing at all.  Two
+# earlier changes today (44.1 kHz, resonance CCs) also measured real and landed
+# below the perceptual threshold; shipping a third would have been the same
+# mistake made knowingly.
+#
+# The over-sustain concern is real but it is a SEPARATE defect — offsets run
+# 2.10x long and COnPOff is 0.1327.  Keeping the room inaudible to compensate
+# for a bug elsewhere fixes neither.
+RT60_S = 2.4          # time for the tail to fall 60 dB
+PREDELAY_S = 0.020    # gap before the first reflection — reads as distance
+WET_DEFAULT = 0.45    # proportion of wet in the mix
 HF_DAMP = 0.55        # how fast highs die relative to lows; real rooms damp them
 
 _IR_CACHE: dict = {}
@@ -132,8 +151,17 @@ def apply_reverb(audio: np.ndarray, sr: int, wet: float = WET_DEFAULT) -> np.nda
         out.append(mixed.astype(np.float32))
 
     res = out[0] if mono else np.stack(out, axis=1)
-    peak = np.abs(res).max()
-    # Convolution adds energy; guard the ceiling without squashing dynamics.
-    if peak > 0.99:
+
+    # Makeup gain back to the dry peak.  At 45% wet the dry term is only 55%
+    # of its former self, so without this the render arrives ~5 dB down and any
+    # A/B becomes a loudness test — and quieter always loses, whatever else
+    # improved.  Matching peaks keeps the comparison about the room.
+    dry_peak = float(np.abs(y).max())
+    cur_peak = float(np.abs(res).max())
+    if cur_peak > 1e-9 and dry_peak > 1e-9:
+        res = res * (dry_peak / cur_peak)
+
+    peak = float(np.abs(res).max())
+    if peak > 0.99:                     # guard the ceiling, keep the dynamics
         res = res * (0.99 / peak)
     return res
