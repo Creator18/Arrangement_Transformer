@@ -53,7 +53,7 @@ async def export_transcription_audio(request: Request, session_id: str):
 
     audio_path = session_dir / "transcription_preview.wav"
     if not audio_path.exists():
-        sr = 22050
+        sr = 44100
         audio = render_notes_to_audio(transcription["notes"], sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
@@ -73,7 +73,7 @@ async def export_transformed_audio(request: Request, session_id: str):
 
     audio_path = session_dir / "arrangement_preview.wav"
     if not audio_path.exists():
-        sr = 22050
+        sr = 44100
         audio = render_notes_to_audio(transformed["transformed_notes"], sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
@@ -127,7 +127,7 @@ async def export_layer_audio(request: Request, session_id: str, layer: str):
     audio_path = session_dir / cache_name
 
     if not audio_path.exists():
-        sr = 22050
+        sr = 44100
         audio = render_notes_to_audio(layer_notes, sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
@@ -207,7 +207,7 @@ async def export_pattern_cluster_audio(request: Request, session_id: str, layer:
             cache_name = f"cluster_{layer}_{cluster_idx}.wav"
             audio_path = session_dir / cache_name
             if not audio_path.exists():
-                sr = 22050
+                sr = 44100
                 audio = render_notes_to_audio(notes, sr=sr)
                 sf.write(str(audio_path), audio, sr, subtype="PCM_16")
             return ranged_file_response(request, Path(audio_path), "audio/wav",cache_name)
@@ -265,7 +265,7 @@ async def export_part_audio(request: Request, session_id: str, arrangement: str,
     audio_path = session_dir / cache_name
 
     if not audio_path.exists():
-        sr = 22050
+        sr = 44100
         audio = render_notes_to_audio(notes, sr=sr)
         sf.write(str(audio_path), audio, sr, subtype="PCM_16")
 
@@ -463,10 +463,10 @@ async def export_single_note(request: Request, midi: int, velocity: int = 80):
     velocity = max(1, min(127, int(velocity)))
 
     _NOTE_CACHE.mkdir(parents=True, exist_ok=True)
-    out = _NOTE_CACHE / f"n{midi}_v{velocity}.wav"
+    sr = 44100
+    out = _NOTE_CACHE / f"n{midi}_v{velocity}_{sr}.wav"
 
     if not out.exists():
-        sr = 22050
         # Key held 0.9s, then left to ring: the tail is the instrument's own
         # release, which is most of what makes a piano sound like a piano.
         audio = render_notes_to_audio(

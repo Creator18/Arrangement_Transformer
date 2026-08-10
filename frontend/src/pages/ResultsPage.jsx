@@ -309,7 +309,13 @@ export default function ResultsPage() {
           The old page put the view tabs across the top of a 4xl column and
           gave the roll 370px of it.  The roll IS the artefact here, so it
           takes the stage and the controls move to an edge. */}
-      <aside style={{
+      <aside
+        // Lenis hijacks the wheel globally to drive its smooth page scroll,
+        // which leaves nested scrollers dead to the wheel — you could only
+        // drag the bar.  data-lenis-prevent hands wheel events back to this
+        // element.  The CSS for it shipped with Lenis; it was never applied.
+        data-lenis-prevent
+        style={{
         width: 232, flexShrink: 0, position: 'relative', zIndex: 3,
         borderRight: '1px solid var(--ct-line-soft)',
         padding: '22px 18px', overflowY: 'auto',

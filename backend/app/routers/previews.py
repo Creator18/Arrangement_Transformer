@@ -39,7 +39,16 @@ from app.services.sampler import render_notes
 
 router = APIRouter()
 
-PREVIEW_SR = 22050
+# 44.1 kHz, not 22.05.  At 22 kHz the Nyquist limit is 11 kHz, which discards
+# everything above roughly the top octave's third partial — precisely the
+# brilliance and hammer noise that make a piano sound like a piano.  Salamander
+# ships 48 kHz samples; we were rendering them into mud.
+#
+# Costs about 2x the render time and 2x the file size.  Render was ~38% of
+# upload-to-result, so this is a real trade — made deliberately, because the
+# instrument is the product here and the warmup already moved model loading
+# off the critical path.
+PREVIEW_SR = 44100
 
 
 def _render_one(session_dir: Path, src_file: Path, notes_key: str,
