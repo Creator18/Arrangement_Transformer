@@ -205,8 +205,9 @@ export default function ResultsPage() {
   // at full height and switching is both clearer and bigger.
   const [range,            setRange]            = useState('transformed')
   const [stageH,           setStageH]           = useState(560)
-  // Live monitoring tone.  Starts at the server's own settings so moving a
-  // slider adjusts from where the render already sits rather than jumping.
+  // Live monitoring trim, RELATIVE to what the server already rendered.
+  // Zero means untouched — see the note in tonechain.js about why mirroring
+  // the server's values here would double-apply them.
   const [tone,             setTone]             = useState(TONE_DEFAULTS)
   const [patternClusters,  setPatternClusters]  = useState({})
   const kickerRef  = useRef(null)
@@ -417,7 +418,8 @@ export default function ResultsPage() {
           </button>
           <p style={{ fontSize: 9, color: 'rgba(255,255,255,0.20)', marginTop: 8,
                       lineHeight: 1.5 }}>
-            Affects playback only — exports carry the server settings.
+            0 = as rendered. Playback only; exports keep the server's
+            own +2.5 dB bass / −2.0 dB treble / 45% room.
           </p>
         </div>
 

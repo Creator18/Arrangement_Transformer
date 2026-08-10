@@ -1,9 +1,10 @@
 /**
  * tonechain — live tone control over the playing audio.
  *
- * The same shaping the server applies (low shelf, high shelf, convolution
- * room), rebuilt as a Web Audio graph so it can be moved while the track
- * plays.  Doing this server-side would mean a full re-render per knob turn,
+ * A RELATIVE trim over the server's already-shaped render — low shelf, high
+ * shelf and convolution room as a Web Audio graph, so it can be moved while
+ * the track plays.  Not a duplicate of the server chain: the server's shaping
+ * is already in the audio, and these controls adjust from there.  Doing this server-side would mean a full re-render per knob turn,
  * and rendering is roughly 38% of upload-to-result — a tone control that
  * takes thirty seconds to respond is not a tone control.
  *
@@ -27,9 +28,21 @@
  * outcome than an absent tone control.
  */
 
-// Server-side defaults, mirrored so the UI starts where the render already is
-// rather than jumping when the first slider moves.
-export const DEFAULTS = { bassDb: 2.5, trebleDb: -2.0, room: 0.45 }
+// ZERO is neutral, and that is the whole point.
+//
+// These were first set to mirror the server's values (+2.5 dB, -2.0 dB, 45%)
+// on the reasoning that the UI should "start where the render already is".
+// That is backwards: the server has ALREADY baked those into the WAV, so
+// mirroring them re-applies them.  First load would have been roughly +5 dB
+// bass, -4 dB treble and reverb on top of reverb.
+//
+// These sliders are a RELATIVE trim over an already-shaped render.  0/0/0
+// means "exactly as rendered", and moving one adjusts from there.
+export const DEFAULTS = { bassDb: 0, trebleDb: 0, room: 0 }
+
+// Where the server currently sits, for display only — so the UI can say what
+// zero actually means rather than leaving it as an unexplained centre.
+export const SERVER_TONE = { bassDb: 2.5, trebleDb: -2.0, room: 0.45 }
 
 const LOW_HZ = 220
 const HIGH_HZ = 3000
