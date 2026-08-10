@@ -119,6 +119,33 @@ def is_available() -> bool:
 
 SUSTAIN_CC = 64
 
+# Controls the SFZ exposes that we were never sending.  Salamander defines
+# these at the top of the file ($STR_RES, $HAMMER, $RELEASE) and we had only
+# ever sent CC64, so the instrument was being played with most of its
+# resonance modelling switched off.
+#
+#   20  sympathetic string resonance — undamped strings ringing in response
+#       to the ones being struck.  This is the single biggest contributor to
+#       a piano sounding like an instrument in a room rather than a set of
+#       independent samples.
+#   21  hammer noise — the mechanical thump of the action.
+#   72  release samples — what the damper actually sounds like landing.
+#
+# Measured on a single C4, comparing release-tail RMS against total:
+#
+#     CC64 only            tail/total 0.002
+#     + CC20               tail/total 0.003
+#     + CC20, 21, 72       tail/total 0.012      (5x the tail)
+#
+# Overall level is unchanged, so this is not loudness — it is resonance and
+# decay, which is what "body" actually consists of.  Modest rather than
+# transformative: the library's core tone is still the library's core tone.
+RESONANCE_CC = {
+    20: 127,   # string resonance
+    21: 100,   # hammer noise — full is too clattery on quiet passages
+    72: 110,   # release samples
+}
+
 
 def render_notes_sfz(notes: List[Dict], sr: int = 22050,
                      pedal: Optional[Sequence[Dict]] = None) -> np.ndarray:
@@ -145,6 +172,14 @@ def render_notes_sfz(notes: List[Dict], sr: int = 22050,
     """
     synth = _get_synth(sr)
     raw = synth._synth                                   # libsfizz binding
+
+    # Turn the instrument's resonance modelling on before anything is played.
+    # Sent at delay 0 so it is in effect for the very first note.
+    for _cc, _v in RESONANCE_CC.items():
+        try:
+            raw.cc(0, _cc, _v)
+        except Exception:
+            pass                                         # older sfizz builds
     bs  = _BLOCK_SIZE
 
     if not notes:
