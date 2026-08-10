@@ -97,8 +97,13 @@ def render_with(sfz_path: str | None) -> np.ndarray:
         os.environ["ARRANGEMENT_SFZ"] = sfz_path
     for m in [m for m in list(sys.modules) if "sfz_sampler" in m or "sampler" in m]:
         sys.modules.pop(m, None)
-    from app.services.sfz_sampler import render_notes_sfz
-    return np.asarray(render_notes_sfz(PASSAGE, sr=SR, pedal=PEDAL))
+    # The SHIPPED entry point, not render_notes_sfz directly.  The first
+    # version called the sampler straight and therefore measured audio no user
+    # ever hears — it silently skipped the reverb stage and reported a
+    # completely unchanged release tail after reverb was wired in.  A harness
+    # that bypasses the pipeline it is meant to evaluate is worse than none.
+    from app.services.sampler import render_notes
+    return np.asarray(render_notes(PASSAGE, sr=SR, pedal=PEDAL))
 
 
 def main():

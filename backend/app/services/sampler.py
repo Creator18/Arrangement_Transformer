@@ -45,6 +45,26 @@ def _try_sfz() -> bool:
         return False
 
 
+# Convolution reverb over every render.  Salamander is close-miked with a
+# release tail of 0.071% of total energy — notes stop dead at the edge of the
+# sample instead of decaying into a space, which is what makes it sound like
+# samples rather than a piano in a room.  One switch, because it is a
+# post-process and reverts cleanly.
+APPLY_REVERB = True
+
+
+def _room(audio, sr):
+    """Put the render in a space.  Never fatal — dry audio beats no audio."""
+    if not APPLY_REVERB:
+        return audio
+    try:
+        from app.services.reverb import apply_reverb
+        return apply_reverb(audio, sr)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[sampler] reverb skipped: {type(e).__name__}: {e}")
+        return audio
+
+
 def render_notes(notes: List[Dict], sr: int = 22050,
                  pedal: Optional[List[Dict]] = None) -> np.ndarray:
     """
@@ -66,13 +86,15 @@ def render_notes(notes: List[Dict], sr: int = 22050,
         try:
             from app.services.sfz_sampler import render_notes_sfz, SFZ_PATH
             _log_backend("sfizz", str(SFZ_PATH.name) if SFZ_PATH else "")
-            return render_notes_sfz(notes, sr=sr, pedal=pedal)
+            return _room(render_notes_sfz(notes, sr=sr, pedal=pedal), sr)
         except Exception as e:
             print(f"[sampler] sfizz render failed ({e}); falling back to SF2")
 
     from app.services.sf2_sampler import render_notes_sf2, SF2_PATH
     _log_backend("sf2", str(SF2_PATH.name) if SF2_PATH else "additive-fallback")
-    return render_notes_sf2(notes, sr=sr)
+    # Fallback path gets the room too, or switching backends would
+    # audibly change the space as well as the instrument.
+    return _room(render_notes_sf2(notes, sr=sr), sr)
 
 
 # Alias for legacy callers
