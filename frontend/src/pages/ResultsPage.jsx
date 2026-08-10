@@ -315,6 +315,14 @@ export default function ResultsPage() {
         padding: '22px 18px', overflowY: 'auto',
         display: 'flex', flexDirection: 'column', gap: 26,
       }}>
+        {/* Status — read-only, so it sits above the switches. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {scoreData && (
+            <FidelityBadge score={scoreData.fidelity_score} tier={scoreData.tier} />
+          )}
+          <DetectedKeyBadge detected_scale={transformData?.detected_scale} />
+        </div>
+
         <div>
           <div className="ct-mono" style={{ marginBottom: 10 }}>View</div>
           {TABS.map((name, i) => (
@@ -383,116 +391,6 @@ export default function ResultsPage() {
       {/* ── Stage ───────────────────────────────────────────────────────── */}
       <main style={{ flex: 1, minWidth: 0, position: 'relative', zIndex: 2,
                      overflowY: 'auto', padding: '20px 26px 40px' }}>
-
-        {/* ── Header ── */}
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-          className="text-center space-y-4 pt-4"
-        >
-          <span ref={kickerRef} style={{
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: '0.22em',
-            color: 'rgba(255,255,255,0.2)',
-            fontFamily: 'ui-monospace,monospace',
-          }}>
-            YOUR ARRANGEMENT
-          </span>
-          <h1
-            className="text-gradient-animated font-black tracking-tight"
-            style={{ fontSize: 'clamp(28px, 5vw, 48px)', letterSpacing: '-0.02em' }}
-          >
-            Ready to Play
-          </h1>
-          {scoreData && (
-            <div className="flex justify-center">
-              <FidelityBadge score={scoreData.fidelity_score} tier={scoreData.tier} />
-            </div>
-          )}
-          <DetectedKeyBadge detected_scale={transformData?.detected_scale} />
-        </motion.div>
-
-        {/* ── Listen ── */}
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.08 }}>
-          <GlassCard className="p-6">
-            <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(245,158,11,0.7)', fontFamily: 'ui-monospace,monospace', marginBottom: 16 }}>
-              LISTEN
-            </p>
-            <AudioPlayer
-              tracks={[
-                { label: 'Original Recording',   url: getOriginalAudioUrl(sessionId),      downloadName: 'original.wav'      },
-                { label: 'Original Arrangement',  url: getTranscriptionAudioUrl(sessionId), downloadName: 'transcription.wav' },
-                { label: 'Transformed',           url: getTransformedAudioUrl(sessionId),   downloadName: 'transformed.wav'   },
-              ]}
-            />
-          </GlassCard>
-        </motion.div>
-
-        {/* ── Part layer selector (soundboard pads) ── */}
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.12 }}>
-          <div className="mb-2 flex items-center gap-3">
-            <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(255,255,255,0.20)', fontFamily: 'ui-monospace,monospace' }}>
-              ISOLATE LAYER
-            </span>
-            <div style={{ height: 1, flex: 1, background: 'rgba(255,255,255,0.05)' }} />
-          </div>
-          <div ref={padsRowRef}>
-            <BubbleCluster
-              perRow={4}
-              size={86}
-              gap={14}
-              selectedKey={activePart}
-              onSelect={(it) => setActivePart(it.key)}
-              items={layerPads.map(p => ({
-                key: p.key, label: p.label, sub: p.hint || p.sub,
-                symbol: p.sym, color: p.color,
-              }))}
-            />
-          </div>
-          <p style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', textAlign: 'center', marginTop: 8, fontFamily: 'ui-monospace,monospace', letterSpacing: '0.06em' }}>
-            Pad selection applies to piano roll playback and key glow
-          </p>
-        </motion.div>
-
-        {/* ── Downloads ── */}
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.14 }}>
-          <GlassCard className="p-5">
-            <div className="flex flex-wrap gap-3 justify-center">
-              {[
-                { label: 'MIDI',     url: getMidiUrl(sessionId),     ext: '.mid',  color: '#f59e0b' },
-                { label: 'MusicXML', url: getMusicXmlUrl(sessionId), ext: '.xml',  color: '#06b6d4' },
-                { label: 'CDEF',     url: getCdefUrl(sessionId),     ext: '.cdef', color: '#a78bfa' },
-              ].map(({ label, url, color }) => (
-                <a
-                  key={label}
-                  href={url}
-                  download
-                  className="relative overflow-hidden inline-flex items-center gap-2 px-6 py-2.5 rounded-sm text-xs font-bold tracking-widest transition-all duration-200 hover:scale-[1.03] active:scale-95"
-                  style={{
-                    background: `${color}10`,
-                    border: `1px solid ${color}30`,
-                    color: color,
-                    boxShadow: `0 2px 12px rgba(0,0,0,0.3), 0 0 0 0 ${color}40`,
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = `${color}18`
-                    e.currentTarget.style.boxShadow  = `0 0 16px ${color}30, 0 2px 12px rgba(0,0,0,0.3)`
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = `${color}10`
-                    e.currentTarget.style.boxShadow  = '0 2px 12px rgba(0,0,0,0.3)'
-                  }}
-                >
-                  <span className="shimmer absolute inset-0" />
-                  <span className="relative">↓ {label}</span>
-                </a>
-              ))}
-            </div>
-          </GlassCard>
-        </motion.div>
 
         {/* ── Tabs: Piano Roll / Sheet / CDEF ── */}
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.18 }}>
@@ -643,6 +541,22 @@ export default function ResultsPage() {
                 )}
               </AnimatePresence>
             </div>
+          </GlassCard>
+        </motion.div>
+
+        {/* ── Listen ── */}
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.08 }}>
+          <GlassCard className="p-6">
+            <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(245,158,11,0.7)', fontFamily: 'ui-monospace,monospace', marginBottom: 16 }}>
+              LISTEN
+            </p>
+            <AudioPlayer
+              tracks={[
+                { label: 'Original Recording',   url: getOriginalAudioUrl(sessionId),      downloadName: 'original.wav'      },
+                { label: 'Original Arrangement',  url: getTranscriptionAudioUrl(sessionId), downloadName: 'transcription.wav' },
+                { label: 'Transformed',           url: getTransformedAudioUrl(sessionId),   downloadName: 'transformed.wav'   },
+              ]}
+            />
           </GlassCard>
         </motion.div>
 
