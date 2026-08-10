@@ -7,12 +7,20 @@ import { wipeReveal } from '../utils/animefx'
 // ── layout constants ──────────────────────────────────────────────────────────
 const NOTE_W_FALLBACK = 8     // initial px per semitone before container is measured
 const NOTE_W_MIN      = 6     // floor — keyboard scrolls horizontally if narrower
-// Ceiling on per-semitone width.  Was 14, sized when the roll was a 370px
-// embed — on the full-screen results stage that left the keyboard ending
-// ~120px short of its own container, which looked like a bug rather than a
-// margin.  22 lets a 5-octave keyboard fill a ~1400px stage while still
-// stopping a 4-octave preset from turning into piano-shaped furniture.
-const NOTE_W_MAX      = 22
+// Ceiling on per-semitone width, and it has to depend on context.
+//
+// This was 14, sized when the roll was only ever a 370px embed.  On the
+// full-screen results stage that left the keyboard ~120px short of its own
+// container, so it was raised to 22 — which then inflated the Layers embeds
+// too, giving five stacked review panels giant keyboards and ~550px each.
+// Caught by screenshotting the Layers tab; a global constant was the wrong
+// shape for a component that now renders at two very different sizes.
+//
+// Derived from rollHeight rather than added as another prop, so no call site
+// has to know about it: a roll given the screen gets keys to match, and a
+// compact embed keeps the original proportions.
+const NOTE_W_MAX_STAGE   = 22
+const NOTE_W_MAX_COMPACT = 14
 const KEY_H           = 78    // keyboard panel height (fixed at bottom)
 const PX_PER_S        = 80    // px per second (time → Y axis)
 const TIMELINE_W      = 28    // left strip for measure / beat labels
@@ -372,6 +380,9 @@ export default function PianoRollPlayer({
   useEffect(() => { setActivePart(defaultPart) }, [defaultPart])
 
   // MIDI range
+  // Stage rolls get wide keys; compact review embeds keep the old scale.
+  const noteWMax   = rollHeight > 450 ? NOTE_W_MAX_STAGE : NOTE_W_MAX_COMPACT
+
   const midiLo     = keyboardStart
   const midiHi     = keyboardStart + keyboardOctaves * 12 - 1
   const pitchRange  = midiHi - midiLo + 1
@@ -393,7 +404,7 @@ export default function PianoRollPlayer({
   }, [])
 
   const noteW = wrapperW > 0
-    ? Math.max(NOTE_W_MIN, Math.min(NOTE_W_MAX, (wrapperW - TIMELINE_W) / pitchRange))
+    ? Math.max(NOTE_W_MIN, Math.min(noteWMax, (wrapperW - TIMELINE_W) / pitchRange))
     : NOTE_W_FALLBACK
 
   // SVG dimensions
