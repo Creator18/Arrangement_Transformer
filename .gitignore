@@ -56,3 +56,6 @@ backend/correction/data/
 
 # Rendered single-note piano samples (regenerated on demand)
 backend/.cache/
+
+# Playwright screenshots — regenerated, never reviewed in diffs
+frontend/shots/
