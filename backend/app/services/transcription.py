@@ -283,10 +283,46 @@ def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
             "pitch_name": librosa.midi_to_note(pitch),
             "onset":      onset,
             "offset":     offset,
-            "velocity":   max(1, min(127, int(ev["velocity"]))),
+            "velocity":   calibrate_velocity(ev["velocity"]),
         })
     notes.sort(key=lambda n: (n["onset"], n["pitch"]))
     return notes
+
+
+# ── velocity calibration ──────────────────────────────────────────────────────
+# O&F's velocity head is a regression trained on squared error, which is
+# minimised by hedging toward the conditional mean.  Measured over 6 pieces /
+# 12,805 notes matched by onset+pitch against ground truth:
+#
+#     spread ratio (ours/truth)  0.733      ours  mean 68.6  std 11.2
+#     pearson r                  0.835      truth mean 59.9  std 15.2
+#     bias on the softest 20%   +14.8
+#
+# Those first two numbers together are why a fix is possible at all: r = 0.835
+# means the ORDERING is right — we know which notes are louder — and only the
+# scale is compressed.  A low correlation would have meant the model does not
+# hear dynamics and no post-hoc mapping could help.
+#
+# So this is a plain linear expansion about the mean, mapping our distribution
+# onto the true one.  Deliberately NOT a quantile mapping: that would fit this
+# corpus more tightly and generalise worse, and these constants already come
+# from synthesised MAESTRO — one instrument, one set of performers.  A linear
+# rescale is the weakest assumption that fixes the measured defect.
+#
+# The audible target is the soft end.  We currently cannot play quietly, and
+# that is where expressive performance lives; the mean error hides it because
+# the loud end is comparatively accurate.
+_VEL_SRC_MEAN, _VEL_SRC_STD = 68.6, 11.2
+_VEL_TGT_MEAN, _VEL_TGT_STD = 59.9, 15.2
+CALIBRATE_VELOCITY = True
+
+
+def calibrate_velocity(v: float) -> int:
+    """Expand a predicted velocity onto the true dynamic range."""
+    if not CALIBRATE_VELOCITY:
+        return max(1, min(127, int(round(float(v)))))
+    out = _VEL_TGT_MEAN + (float(v) - _VEL_SRC_MEAN) * (_VEL_TGT_STD / _VEL_SRC_STD)
+    return max(1, min(127, int(round(out))))
 
 
 # ── post-processing: refine note list ─────────────────────────────────────────

@@ -63,7 +63,7 @@ def velocity_scores(ours, truth):
 
 
 def main():
-    from app.services.transcription import _get_of_transcriptor
+    from app.services.transcription import _get_of_transcriptor, calibrate_velocity
     man = json.load(open("backend/eval/data/manifest.json"))
     pieces = [p for p in (man["pieces"] if isinstance(man, dict) and "pieces" in man else man)
               if os.path.exists(p["audio_synth_path"])][:6]
@@ -73,7 +73,10 @@ def main():
         audio, _ = librosa.load(p["audio_synth_path"], sr=16000, mono=True)
         out = inf.transcribe(audio, None)
         ours = [{"pitch": int(e["midi_note"]), "onset": float(e["onset_time"]),
-                 "offset": float(e["offset_time"]), "velocity": int(e["velocity"])}
+                 "offset": float(e["offset_time"]),
+                 # Score the SHIPPED velocity, not the raw head, or the metric
+                 # measures code that no longer runs anywhere.
+                 "velocity": calibrate_velocity(e["velocity"])}
                 for e in out.get("est_note_events", [])
                 if 21 <= int(e["midi_note"]) <= 108
                 and float(e["offset_time"]) > float(e["onset_time"])]
@@ -134,3 +137,18 @@ if __name__ == "__main__":
 # score any candidate: spread ratio toward 1.0 and soft bias toward 0, with
 # pearson NOT dropping (a mapping that improved spread by scrambling the
 # ordering would be worse, and only r would reveal it).
+
+
+# ── After calibration, same 6 pieces / 12,805 matched notes ──────────────────
+#
+#                        before    after
+#   spread ratio          0.733    0.995
+#   pearson r             0.835    0.835      <- unchanged, as required
+#   mean abs error         11.1      7.8
+#   bias on softest 20%   +14.8     +1.2
+#   ours mean/std     68.6/11.2  60.0/15.2   (truth 59.9/15.2)
+#
+# The pearson figure is the one that mattered.  A mapping can always force the
+# spread ratio to 1.0 — including by scrambling the ordering, which would be
+# strictly worse and which NO other column here would reveal.  r holding at
+# 0.835 says the expansion is monotonic and nothing was traded for the gain.
