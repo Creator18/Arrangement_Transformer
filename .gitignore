@@ -60,3 +60,5 @@ backend/.cache/
 # Playwright screenshots — regenerated, never reviewed in diffs
 frontend/shots/
 frontend/shots-results/
+frontend/shots-proc/
+frontend/shots-mobile/

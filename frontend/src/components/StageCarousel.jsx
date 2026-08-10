@@ -23,7 +23,15 @@ export default function StageCarousel({ items, activeIndex = 0, accent }) {
   const n = Math.max(1, items.length)
 
   return (
-    <div style={{ position: 'relative', height: 150, width: '100%', overflow: 'hidden' }}>
+    <div style={{
+      position: 'relative', height: 150, overflow: 'hidden',
+      // Break out of the narrow column this sits in.  Processing wraps its
+      // content at 480px, but SPACING puts the neighbouring stage 300px from
+      // centre — so "Transcribe" was rendered at x=540 inside a 480px box and
+      // clipped to a single "T".  It was never invisible, it was outside.
+      // The row is conceptually full-bleed, so it takes the viewport width.
+      width: '100vw', marginLeft: 'calc(50% - 50vw)',
+    }}>
       {items.map((it, i) => {
         const d = i - activeIndex                    // signed distance in slots
         const ad = Math.abs(d)
@@ -33,7 +41,14 @@ export default function StageCarousel({ items, activeIndex = 0, accent }) {
         }
         // Fade and shrink with distance. No rotation anywhere, so the
         // letterforms stay flat whatever slot they are in.
-        const fade = Math.max(0, 1 - ad / (VISIBLE + 0.6))
+        //
+        // These values were guesses and they were far too timid: neighbours
+        // rendered at ~0.25 opacity, blurred and scaled to 0.72 against a
+        // near-black page, which made them invisible.  The carousel then read
+        // as ONE word floating alone — no sense of a row, no sense of moving
+        // through stages, which is the only thing this component exists to
+        // show.  Seen for the first time by screenshotting the page.
+        const fade = Math.max(0, 1 - ad / (VISIBLE + 1.4))
         return (
           <div
             key={it.key}
@@ -45,9 +60,9 @@ export default function StageCarousel({ items, activeIndex = 0, accent }) {
               marginLeft: -SPACING / 2,
               marginTop: -32,
               textAlign: 'center',
-              transform: `translateX(${d * SPACING}px) scale(${isNow ? 1 : 0.72})`,
-              opacity: isNow ? 1 : fade * 0.4,
-              filter: isNow ? 'none' : `blur(${ad * 1.1}px)`,
+              transform: `translateX(${d * SPACING}px) scale(${isNow ? 1 : 0.82})`,
+              opacity: isNow ? 1 : fade * 0.95,
+              filter: isNow ? 'none' : `blur(${ad * 0.5}px)`,
               // One long weighted ease so the row glides as a whole when the
               // stage advances, rather than each word animating on its own.
               transition:
@@ -63,7 +78,7 @@ export default function StageCarousel({ items, activeIndex = 0, accent }) {
                 fontWeight: 300,
                 letterSpacing: '-0.02em',
                 whiteSpace: 'nowrap',
-                color: isNow ? (accent || 'var(--ct-accent)') : 'rgba(255,255,255,0.75)',
+                color: isNow ? (accent || 'var(--ct-accent)') : 'rgba(255,255,255,0.85)',
                 textShadow: isNow ? `0 0 38px ${accent || 'var(--ct-accent)'}55` : 'none',
                 transition: 'color 700ms',
               }}
