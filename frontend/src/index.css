@@ -447,3 +447,54 @@ html.lenis.lenis-stopped      { overflow: hidden; }
   background: color-mix(in srgb, var(--ct-accent) 10%, transparent);
   box-shadow: 0 0 20px color-mix(in srgb, var(--ct-accent) 22%, transparent);
 }
+
+/* ── Legacy surfaces, retuned to CONCERT ─────────────────────────────────────
+   GlassCard and .glass predate this design language and are still used by
+   Results, SignalChain and a few smaller panels.  Rather than rewrite those
+   components — which is where breakage would come from — the utilities they
+   already depend on are redefined here.  One stylesheet change, no JSX
+   touched, and every legacy surface adopts the new language at once.
+
+   The specific problem: heavy backdrop blur reads as a frosted slab floating
+   ABOVE the page.  There is a live ribbon field behind everything now, and a
+   frosted slab in front of a moving field flattens it into wallpaper.  So the
+   blur goes almost entirely and the border does the work instead. */
+.glass,
+.glass-dark {
+  background: rgba(255, 255, 255, 0.014) !important;
+  backdrop-filter: blur(3px) !important;
+  -webkit-backdrop-filter: blur(3px) !important;
+  border: 1px solid var(--ct-line) !important;
+  border-radius: 3px !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45) !important;
+}
+
+.glass-hover:hover {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border-color: color-mix(in srgb, var(--ct-accent) 45%, transparent) !important;
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.5),
+    0 0 0 1px color-mix(in srgb, var(--ct-accent) 22%, transparent) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* The old amber-everywhere accents now follow the page's single accent, so a
+   legacy panel cannot sit in a violet act glowing gold. */
+.neon-amber      { box-shadow: 0 0 10px color-mix(in srgb, var(--ct-accent) 40%, transparent),
+                               0 0 28px color-mix(in srgb, var(--ct-accent) 18%, transparent) !important; }
+.neon-text-amber { text-shadow: 0 0 12px color-mix(in srgb, var(--ct-accent) 65%, transparent) !important; }
+.amber-glow      { box-shadow: 0 0 12px color-mix(in srgb, var(--ct-accent) 35%, transparent) !important; }
+
+/* Corners: CONCERT is architectural, so nothing is a pill except controls
+   that are deliberately round (.sw-pill, .ct-index, bubbles). */
+.rounded-sm, .rounded-md, .rounded-lg { border-radius: 3px !important; }
+
+/* Legacy display type used an animated rainbow gradient that fights the
+   one-accent-per-act rule.  Reduced to a quiet vertical fade. */
+.text-gradient-animated {
+  background: linear-gradient(180deg, #ffffff 0%, rgba(255,255,255,0.62) 100%) !important;
+  animation: none !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
