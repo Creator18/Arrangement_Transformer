@@ -480,7 +480,11 @@ export default function PianoRollPlayer({
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
-    const onTime    = () => { if (!isDragging.current) setCurrentTime(audio.currentTime) }
+    // Only needed while paused/seeking; during playback the rAF loop above
+    // samples at 60 Hz and this would just duplicate its work.
+    const onTime    = () => {
+      if (!isDragging.current && audio.paused) setCurrentTime(audio.currentTime)
+    }
     const onDur     = () => setDuration(audio.duration)
     const onEnded   = () => { setPlaying(false); setCurrentTime(0) }
     const onCanPlay = () => setLoading(false)
@@ -536,6 +540,18 @@ export default function PianoRollPlayer({
     function tick() {
       const audio = audioRef.current
       const roll  = rollRef.current
+      if (audio && !isDragging.current) {
+        // Sample the clock every FRAME, not every `timeupdate`.
+        //
+        // timeupdate fires roughly 4 times a second in Chrome, so the
+        // keyboard's active-key set was being resolved at 4 Hz.  Two notes
+        // 150 ms apart fell inside one sample and read as a single held
+        // press — which is exactly why fast repeated notes looked wrong while
+        // the audio was correct: the audio element plays continuously, only
+        // the visual sampling was coarse.  At 60 Hz a re-strike as short as
+        // ~17 ms apart now resolves.
+        setCurrentTime(audio.currentTime)
+      }
       if (audio && roll && !isDragging.current) {
         // Pin the now-line to the bottom edge of the viewport (= top of the
         // keyboard).  Future notes sit above; as time advances the SVG
@@ -870,6 +886,21 @@ export default function PianoRollPlayer({
               )
             })}
 
+            {/* Octave banding: a faint stripe on every C..B group so pitch
+                is readable at a glance instead of by counting keys.  Drawn
+                behind the notes, above the hand tint. */}
+            {Array.from({ length: Math.ceil((midiHi - midiLo + 1) / 12) }, (_, o) => {
+              const lo = midiLo + o * 12
+              const a = pitchPos(lo, midiLo, noteW)
+              return o % 2 === 0 ? null : (
+                <rect key={`oct${o}`}
+                  x={TIMELINE_W + a.x} y={0}
+                  width={noteW * 12} height={rollSvgH}
+                  fill="rgba(255,255,255,0.014)"
+                />
+              )
+            })}
+
             {/* ── Notes (vertical bars) ─────────────────────────────────── */}
             {/*    Bar's BOTTOM edge sits at the onset — it's the leading    */}
             {/*    edge that falls into the keyboard.  Bar's TOP is the      */}
@@ -890,14 +921,37 @@ export default function PianoRollPlayer({
               const reg      = classify(p)
               const inPart   = activePart === 'all' || (p >= partLo && p <= partHi)
 
+              // Velocity drives brightness.  The model's velocity head is
+              // now calibrated to the true dynamic range, so this is real
+              // expression rather than decoration: a quiet note should LOOK
+              // quiet, and the roll should show phrasing at a glance.
+              const vel = Math.max(1, Math.min(127, parseInt(n.velocity ?? 80, 10)))
+              const v   = vel / 127
+              const w   = Math.max(2, pos.w - 2)
+              const x   = TIMELINE_W + pos.x + 1
+
               return (
-                <rect key={i}
-                  x={TIMELINE_W + pos.x + 1} y={yTop}
-                  width={Math.max(2, pos.w - 2)} height={h}
-                  rx={2}
-                  fill={`url(#note-${reg})`}
-                  opacity={inPart ? 0.85 : 0.10}
-                />
+                <g key={i} opacity={inPart ? 1 : 0.10}>
+                  <rect
+                    x={x} y={yTop} width={w} height={h}
+                    rx={Math.min(3, w / 2)}
+                    fill={`url(#note-${reg})`}
+                    opacity={0.42 + v * 0.5}
+                  />
+                  {/* Attack edge.  The bar's BOTTOM is the onset — the edge
+                      that meets the keyboard — so a bright cap there reads as
+                      the strike, and makes two repeated notes legible as two
+                      events rather than one long bar. */}
+                  {inPart && h > 5 && (
+                    <rect
+                      x={x} y={Math.max(yTop, yBot - 2.5)}
+                      width={w} height={2.5}
+                      rx={1.2}
+                      fill={REG_COLOR[reg].fill}
+                      opacity={0.55 + v * 0.45}
+                    />
+                  )}
+                </g>
               )
             })}
 
