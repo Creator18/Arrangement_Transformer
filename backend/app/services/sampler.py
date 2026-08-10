@@ -54,7 +54,21 @@ APPLY_REVERB = True
 
 
 def _room(audio, sr):
-    """Put the render in a space.  Never fatal — dry audio beats no audio."""
+    """
+    Finish the render: tone shaping, then the room.
+
+    Order matters.  EQ goes BEFORE reverb so the room is fed the shaped
+    signal and its tail inherits the same balance — shelving after the
+    convolution would leave the tail brighter than the notes that produced
+    it, which reads as a different instrument playing in the distance.
+
+    Never fatal at any step: dry, unshaped audio beats no audio.
+    """
+    try:
+        from app.services.tone import apply_tone
+        audio = apply_tone(audio, sr)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[sampler] tone skipped: {type(e).__name__}: {e}")
     if not APPLY_REVERB:
         return audio
     try:
