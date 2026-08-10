@@ -32,8 +32,8 @@ const arg = (k, d) => {
 
 const URL = arg('url', 'http://localhost:5173')
 const OUT = arg('out', 'shots')
-const W = 1440
-const H = 900
+const W = Number(arg('w', 1440))
+const H = Number(arg('h', 900))
 
 mkdirSync(OUT, { recursive: true })
 
