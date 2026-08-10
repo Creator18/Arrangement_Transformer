@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import StringSpace from '../components/StringSpace'
+import AuroraRibbons from '../components/AuroraRibbons'
 import Act from '../components/Act'
 import PipelineScrolly from '../components/PipelineScrolly'
 import { uploadAudio, getWarmupStatus } from '../utils/api'
@@ -11,7 +11,7 @@ import { scrollToTarget } from '../utils/smoothscroll'
  * LandingPage — rebuilt as a scroll story.
  *
  * The previous page was a centred column of glass cards over a flat canvas.
- * This one is four full-viewport ACTS travelling through a 3D string field,
+ * This one is four full-viewport ACTS over a simplex-noise ribbon field,
  * with one accent colour at a time and type doing the work that decoration
  * used to.  Functionally identical: same eight presets, same drag-and-drop
  * upload, same progress, same warm-up lamp, same navigation payload.
@@ -68,7 +68,7 @@ export default function LandingPage() {
 
   const inputRef  = useRef(null)
   const navigate  = useNavigate()
-  // Scroll progress for the WebGL camera. A ref, not state: the scene reads
+  // Scroll progress for the ribbon field. A ref, not state: the canvas reads
   // it every frame and re-rendering React 60x a second for a number nothing
   // in the DOM displays would be pure waste.
   const progressRef = useRef(0)
@@ -140,7 +140,7 @@ export default function LandingPage() {
 
   return (
     <div style={{ position: 'relative', background: 'var(--ct-ink)' }}>
-      <StringSpace progressRef={progressRef} />
+      <AuroraRibbons progressRef={progressRef} />
       <ActIndex acts={ACTS} current={act} />
 
       {/* ─── I · Overture ─────────────────────────────────────────────── */}
