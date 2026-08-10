@@ -250,6 +250,9 @@ export default function PipelineScrolly({ id = 'pipeline' }) {
     <section
       id={id}
       ref={outerRef}
+      // Five viewports of scroll-scrubbed narrative: the snap system must
+      // step THROUGH this, not over it.
+      data-free-scroll
       // Runway: one viewport per transition, plus one to read the last
       // stage. Less than this and the morphs go by too fast to follow.
       style={{ position: 'relative', height: `${STAGES.length * 100}vh` }}

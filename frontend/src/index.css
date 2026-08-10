@@ -337,6 +337,7 @@ html.lenis.lenis-stopped      { overflow: hidden; }
 .ct-index {
   position: fixed;
   left: clamp(12px, 2.2vw, 34px);
+  max-width: 120px;
   top: 50%;
   transform: translateY(-50%);
   z-index: 40;
@@ -497,4 +498,16 @@ html.lenis.lenis-stopped      { overflow: hidden; }
   -webkit-background-clip: text !important;
   background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
+}
+
+
+/* ── Act content must clear the fixed index ──────────────────────────────────
+   Caught by the Playwright harness on its first run: the index sits at
+   left:34px with labels running to ~140px, while Act padding was
+   clamp(24px, 7vw, 130px) — 100px at 1440 wide.  The 107px display type ran
+   straight over OVERTURE/CONSOLE/CHAIN/CODA.  Both elements were present and
+   correctly positioned, which is exactly why every structural check passed
+   and only a screenshot could show it. */
+@media (min-width: 1024px) {
+  section[data-act] { padding-left: 190px !important; }
 }

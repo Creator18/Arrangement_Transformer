@@ -6,6 +6,7 @@ import Act from '../components/Act'
 import PipelineScrolly from '../components/PipelineScrolly'
 import { uploadAudio, getWarmupStatus } from '../utils/api'
 import { scrollToTarget } from '../utils/smoothscroll'
+import { initScrollSnap } from '../utils/scrollsnap'
 
 /**
  * LandingPage — rebuilt as a scroll story.
@@ -92,6 +93,10 @@ export default function LandingPage() {
       window.removeEventListener('resize', onScroll)
     }
   }, [])
+
+  // One wheel gesture advances one act.  The pipeline section opts out via
+  // data-free-scroll so its five-stage narrative still scrubs.
+  useEffect(() => initScrollSnap(ACTS.map((a) => a.id)), [])
 
   // One accent for the whole page, following the act. Everything that uses
   // --ct-accent moves together, which is what keeps it feeling like one
