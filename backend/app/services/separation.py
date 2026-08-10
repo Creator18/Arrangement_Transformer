@@ -223,6 +223,49 @@ def _normalise(audio: np.ndarray) -> np.ndarray:
     return audio.astype(np.float32)
 
 
+# One switch to put Demucs back on the critical path for everything.
+SKIP_DEMUCS_FOR_PIANO = True
+
+
+def _separate_piano_only(wav_path: Path, session_dir: Path,
+                         content: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Solo-piano path: beat-track the raw mix and write the same on-disk layout,
+    without running Demucs at all.
+
+    `bass.wav` and `upper.wav` are the raw mix here rather than stems.  That
+    is honest for this content — there is nothing to separate — and it keeps
+    every downstream consumer working unchanged, since transcription reads the
+    full mix anyway under of_fullmix.
+    """
+    import librosa
+    import soundfile as sf
+
+    audio, _ = librosa.load(str(wav_path), sr=SR, mono=True)
+    beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(audio, SR)
+
+    comp_dir = session_dir / "components"
+    comp_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("bass", "upper"):
+        sf.write(str(comp_dir / f"{name}.wav"), audio, SR, subtype="PCM_16")
+
+    meta = {
+        "method": "raw+madmom",          # not "demucs+madmom" — say what ran
+        "sr": SR,
+        "hop_length": 512,
+        "beat_frames": list(map(int, beat_frames)),
+        "downbeat_frames": list(map(int, downbeat_frames)),
+        "beats_per_bar": int(beats_per_bar),
+        "tempo_bpm": float(tempo),
+        "content": content,
+        "separation_skipped": True,
+    }
+    with open(session_dir / "components.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    print(f"[separation] solo piano — Demucs skipped, tempo {tempo:.1f}")
+    return meta
+
+
 def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     """
     Run Demucs over the input, build bass/upper register stems, and save the
@@ -235,6 +278,23 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     """
     import torch
     import torchaudio
+    import librosa as _lb
+
+    # ── 0. Is there anything to separate? ─────────────────────────────────
+    # On solo piano the "drum-less harmonic mix" Demucs produces IS the input:
+    # measured, beat-tracking the raw mix reproduces the Demucs-derived grid
+    # exactly (F = 1.000) for zero cost.  So Demucs is skipped when the
+    # content is confidently piano-only, and runs otherwise.
+    #
+    # The detector is deliberately biased: anything not confidently piano
+    # falls through to the slow, safe path, because a false "piano" degrades
+    # the arrangement silently while a false "song" only costs ~10 s.
+    from app.services.content_detect import analyse as _detect
+    _probe, _psr = _lb.load(str(wav_path), sr=22050, mono=True)
+    content = _detect(_probe, _psr)
+    print(f"[separation] content: {content}")
+    if SKIP_DEMUCS_FOR_PIANO and content.get("piano_only"):
+        return _separate_piano_only(wav_path, session_dir, content)
 
     model = _get_separator()
     sr_model = int(model.samplerate)
