@@ -82,15 +82,25 @@ function layout(s, i, n) {
 
     // ── 2 · piano roll: time on x, pitch on y, both quantised ───────────
     case 2: {
-      const COLS = 32, ROWS = 22
+      const COLS = 34, ROWS = 24
       const col = Math.floor(u * COLS)
-      // Pitch follows a slow contour so the roll looks like music, not hash
-      const centre = 11 + Math.round(6.5 * Math.sin(col * 0.42) + 3 * Math.sin(col * 0.17))
-      const row = Math.max(0, Math.min(ROWS - 1, centre + Math.round((r2 - 0.5) * 5)))
+      const perCol = Math.max(1, Math.round(n / COLS))
+      // Index of this token WITHIN its column.  Without this every token in a
+      // column landed on the same row and they stacked invisibly — 260 tokens
+      // rendered as about 50 dots, which read as scattered noise rather than
+      // a roll.  Fanning them into a chord is what makes the stage legible.
+      const k = i - col * perCol
+      // Melody line follows a slow contour so it reads as music, not hash.
+      const lead = 15 + Math.round(5.5 * Math.sin(col * 0.42) + 2.5 * Math.sin(col * 0.17))
+      // Voices stack downward from the melody in thirds-ish steps, so each
+      // column is a little chord under a moving top line.
+      const row = Math.max(0, Math.min(ROWS - 1, lead - k * 3 - Math.round(r2 * 1.6)))
       return {
-        x: 0.06 + (col / COLS) * 0.88 + 0.008,
-        y: 0.88 - (row / ROWS) * 0.74,
-        sz: 1.25, a: 0.9,
+        // Slight sub-column spread so simultaneous notes are not one column
+        // of perfectly aligned pixels.
+        x: 0.06 + (col / COLS) * 0.88 + (r1 - 0.5) * 0.006,
+        y: 0.90 - (row / ROWS) * 0.78,
+        sz: 1.5, a: 0.92,
       }
     }
 
