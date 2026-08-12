@@ -131,6 +131,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     beat_times_arr:     Optional[np.ndarray] = None
     downbeat_times_arr: Optional[np.ndarray] = None
     beats_per_bar:      int                  = 4
+    is_song:            bool                 = False
     try:
         with open(session_dir / "components.json") as _f:
             _comp = json.load(_f)
@@ -139,6 +140,11 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         _sr     = float(_comp.get("sr", 22050))
         _hop    = float(_comp.get("hop_length", 512))
         beats_per_bar = int(_comp.get("beats_per_bar", 4))
+        # Songs went through piano_projection, not Onsets & Frames.  Same gate
+        # separation and transcription use, so there is one detector to be
+        # wrong rather than three that can disagree.
+        is_song = not (_comp.get("separation_skipped")
+                       or _comp.get("method") == "raw+madmom")
         if _frames:
             beat_times_arr = np.array(_frames, dtype=float) * _hop / _sr
         if _dbf:
@@ -260,6 +266,52 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if not SOURCE_FIDELITY:
             merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
+        # Song-arrangement reduction.  SOURCE_FIDELITY protects Onsets & Frames
+        # onsets, which are worth protecting; it should not protect projection
+        # onsets, which come from peak-picking at precision 0.31-0.47.  So the
+        # rule is SCOPED to the path it was written for rather than dropped.
+        if is_song:
+            from app.services.transformation import (
+                snap_to_beat_grid, cap_polyphony, MAX_SOUNDING)
+            from app.services.arpeggiator import arpeggiate
+            from app.services.melody_cleanup import clean_melody
+            from app.services.music_theory import _scale_pitch_classes
+            before = len(merged)
+            # Snap the ACCOMPANIMENT only.  The melody arrives from
+            # melody_decode, whose metrical prior already placed its onsets by
+            # evidence — measured at 73.9% on sixteenths against a human 76.4%.
+            # Snapping would force that to 100%, which is further from how
+            # people actually sing, not closer.
+            from app.services.melody_decode import MEL_LO, DECODE_MELODY
+            if DECODE_MELODY:
+                low_part = [n for n in merged if int(n["pitch"]) < MEL_LO]
+                high_part = [n for n in merged if int(n["pitch"]) >= MEL_LO]
+                merged = sorted(snap_to_beat_grid(low_part, beat_times_arr) + high_part,
+                                key=lambda n: (float(n["onset"]), int(n["pitch"])))
+            else:
+                merged = snap_to_beat_grid(merged, beat_times_arr)
+
+            # Reduce the voice register to one line BEFORE the arpeggiator
+            # runs, so its melody/accompaniment split reads a clean top voice
+            # rather than a cloud of re-strikes.
+            try:
+                scale_pcs = _scale_pitch_classes(root, scale_name)
+            except Exception:                                   # noqa: BLE001
+                scale_pcs = None
+            merged = clean_melody(merged, beat_times_arr, scale_pcs=scale_pcs)
+            # Rebuild the accompaniment as a repeating figure BEFORE capping:
+            # the arpeggio is sparse by construction, so the cap then only has
+            # to police the melody against it rather than thin out a cloud.
+            merged = arpeggiate(
+                merged, beat_times_arr,
+                downbeat_times_arr if downbeat_times_arr is not None else None,
+                beats_per_bar, scale_pcs, root,
+            )
+            merged = cap_polyphony(merged, MAX_SOUNDING)
+            print(f"[transform] song reduction: beat snap + arpeggiated "
+                  f"accompaniment + cap {MAX_SOUNDING} — "
+                  f"{before} -> {len(merged)} notes")
+
         # Phase 6a/6b/6c — physical playability:
         #   6a: hard constraints (≤5/hand, ≤1-octave span/hand, ≤10 total)
         #   6b: comfort-aware assignment (movement vs spread, phrase coherence,
@@ -274,6 +326,16 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             tempo          = tempo,
             beats_per_bar  = beats_per_bar,
         )
+
+        # Last stage, deliberately.  Applied after generation AND after the
+        # hand constraints so no later step can put an out-of-key note back.
+        if is_song:
+            from app.services.transformation import drop_non_scale
+            _n0 = len(merged)
+            merged = drop_non_scale(merged, scale_pcs)
+            if len(merged) != _n0:
+                print(f"[transform] scale enforcement: dropped {_n0 - len(merged)} "
+                      f"non-scale notes ({_NOTE_NAMES[root]} {scale_name})")
 
         export_notes = merged
 

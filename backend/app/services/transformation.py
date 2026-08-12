@@ -326,3 +326,117 @@ def notes_to_pretty_midi(
 
     pm.instruments.append(piano)
     return pm
+
+
+# ── song-arrangement reduction ────────────────────────────────────────────────
+#
+# These two run on the PROJECTION path only (songs), never on a piano
+# transcription.  The distinction matters: Onsets & Frames onsets are worth
+# preserving to the millisecond (note F1 0.9677), so rule R2 protects them.
+# Projection onsets come from peak-picking at precision 0.31-0.47, so
+# preserving them exactly preserves noise.
+#
+# Compared against a human Synthesia arrangement of the same track, ours
+# differed in three ways: no repeating figure, onsets scattered off the grid,
+# and roughly ten times the note count.  These address the second and third.
+# The first needs pattern reconstruction and is a bigger job.
+
+SNAP_SUBDIVISIONS = 4      # sixteenths at 4/4
+MAX_SOUNDING = 4           # the human arrangement never exceeded about this
+
+
+def snap_to_beat_grid(notes: List[Dict[str, Any]],
+                      beat_times: Optional[np.ndarray],
+                      subdivisions: int = SNAP_SUBDIVISIONS,
+                      min_dur: float = 0.05) -> List[Dict[str, Any]]:
+    """Snap onsets to subdivisions of the MEASURED beat grid.
+
+    Deliberately not `quantize_notes` or `enforce_uniform_tempo`: both impose a
+    metronomic grid derived from a single tempo, which flattens real tempo
+    drift and was the direct cause of the "rushing" complaint.  madmom's beat
+    times follow the performance, so snapping between consecutive real beats
+    keeps the piece's own timing while removing the sub-beat scatter that makes
+    a chord read as a staircase.
+    """
+    if beat_times is None or len(beat_times) < 2 or not notes:
+        return notes
+
+    grid = []
+    bt = np.asarray(beat_times, dtype=float)
+    for a, b in zip(bt[:-1], bt[1:]):
+        for k in range(subdivisions):
+            grid.append(a + (b - a) * k / subdivisions)
+    grid.append(float(bt[-1]))
+    grid = np.asarray(grid)
+
+    out = []
+    for n in notes:
+        m = dict(n)
+        on = float(m["onset"])
+        off = float(m.get("offset", on + 0.25))
+        on_s = float(grid[int(np.argmin(np.abs(grid - on)))])
+        off_s = float(grid[int(np.argmin(np.abs(grid - off)))])
+        if off_s - on_s < min_dur:
+            off_s = on_s + max(min_dur, off - on)
+        m["onset"], m["offset"] = on_s, off_s
+        out.append(m)
+    out.sort(key=lambda x: (float(x["onset"]), int(x["pitch"])))
+    return out
+
+
+def cap_polyphony(notes: List[Dict[str, Any]],
+                  max_sounding: int = MAX_SOUNDING) -> List[Dict[str, Any]]:
+    """Keep at most `max_sounding` notes ringing at once, strongest first.
+
+    enforce_hand_constraints already caps at five per hand and ten total, which
+    is what a pianist can physically reach.  An arranger writes far less than
+    they can reach: in the reference arrangement, two to four notes sound at
+    any instant.  Velocity is the ranking, because on this path it comes from
+    activation strength, so the weakest notes are also the least likely to be
+    real.
+    """
+    if not notes:
+        return notes
+    ordered = sorted(notes, key=lambda n: (float(n["onset"]), -int(n.get("velocity", 80))))
+    kept: List[Dict[str, Any]] = []
+    for n in ordered:
+        on = float(n["onset"])
+        active = [k for k in kept if float(k["offset"]) > on + 1e-6]
+        if len(active) < max_sounding:
+            kept.append(n)
+            continue
+        weakest = min(active, key=lambda k: int(k.get("velocity", 80)))
+        if int(n.get("velocity", 80)) > int(weakest.get("velocity", 80)):
+            # Release the weaker note here rather than deleting it outright —
+            # it has already been sounding, and truncating preserves the
+            # attack the listener has heard.
+            weakest["offset"] = on
+            if float(weakest["offset"]) - float(weakest["onset"]) < 0.03:
+                kept.remove(weakest)
+            kept.append(n)
+    kept.sort(key=lambda x: (float(x["onset"]), int(x["pitch"])))
+    return kept
+
+
+# ── scale enforcement ─────────────────────────────────────────────────────────
+
+DROP_NON_SCALE = True     # remove every note outside the detected scale
+
+
+def drop_non_scale(notes: List[Dict[str, Any]], scale_pcs) -> List[Dict[str, Any]]:
+    """Remove every note whose pitch class is outside the detected scale.
+
+    A blunt instrument on purpose.  The scale cleanup at /segment runs on the
+    TRANSCRIPTION, so anything created later — the whole arpeggiated
+    accompaniment — has never been checked against the key: measured, 20.3% of
+    generated accompaniment notes sat outside it, and only 47% of bars were
+    given a fully diatonic chord.  This closes that hole wherever notes come
+    from.
+
+    It is applied last, after generation and after the hand constraints, so
+    nothing downstream can reintroduce an out-of-key note.
+    """
+    if not DROP_NON_SCALE or not notes or not scale_pcs:
+        return notes
+    pcs = set(int(p) % 12 for p in scale_pcs)
+    return [n for n in notes if (int(n["pitch"]) % 12) in pcs]
