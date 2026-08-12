@@ -62,3 +62,16 @@ frontend/shots/
 frontend/shots-results/
 frontend/shots-proc/
 frontend/shots-mobile/
+
+# POP909 (downloaded dataset; priors derived from it ARE committed)
+data/POP909/
+data/POP909.zip
+
+# Dev server logs
+*.log
+
+# Generated eval audio and demo renders
+backend/eval/data/
+
+# Dictionary caches — rebuilt on demand by piano_projection.get_dictionary()
+*_dict88.npy
