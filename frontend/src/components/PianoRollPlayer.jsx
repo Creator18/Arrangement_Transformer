@@ -778,18 +778,26 @@ export default function PianoRollPlayer({
         ref={wrapperRef}
         className="rounded-xl overflow-hidden select-none flex flex-col items-center"
         style={{
-          background: 'linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.40) 100%)',
+          // OPAQUE, not translucent.  This was rgba(0,0,0,0.55) over a moving
+          // backdrop, so the waveform field showed through the roll and
+          // crossed the note bars — two things animating in the same pixels,
+          // and the roll is the one that carries information.  Giving it a
+          // solid surface removes the conflict at the source instead of
+          // dimming the backdrop until it no longer reads.
+          background: 'linear-gradient(180deg, #0b0b0f 0%, #08080b 100%)',
           // No outline.  This was the last hard rectangle on the results
           // page, and a box around the roll makes it read as a widget placed
           // on the page rather than the page's subject.  While dragging to
           // seek, a soft accent glow says "you are steering this" without
           // reinstating the frame.
           border: 'none',
+          // One boxShadow, not two.  This object declared the key twice — the
+          // static shadow silently overwrote the drag-state one, so the accent
+          // glow never rendered and the `dragging` branch was dead code.
           boxShadow: dragging
-            ? '0 0 0 1px rgba(245,158,11,0.22), 0 0 40px rgba(245,158,11,0.07)'
-            : 'none',
-          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 18px rgba(0,0,0,0.35)',
-          transition: 'border-color 0.15s ease',
+            ? 'inset 0 1px 0 rgba(255,255,255,0.04), 0 0 0 1px rgba(245,158,11,0.22), 0 0 40px rgba(245,158,11,0.07)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 18px rgba(0,0,0,0.35)',
+          transition: 'box-shadow 0.15s ease',
           overflowX: 'auto',
         }}
       >

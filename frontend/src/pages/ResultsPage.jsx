@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import AuroraRibbons from '../components/AuroraRibbons'
+import SonicWaveform from '../components/SonicWaveform'
 import BubbleCluster from '../components/BubbleCluster'
 import { DEFAULTS as TONE_DEFAULTS } from '../utils/tonechain'
 
@@ -295,7 +295,7 @@ export default function ResultsPage() {
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <AuroraRibbons progressRef={SCENE_POS} />
+        <SonicWaveform accent="#a78bfa" progressRef={SCENE_POS} />
         <AudioBars color="#a78bfa" height={40} className="relative z-10" />
         <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.28)', fontFamily: 'ui-monospace,monospace', letterSpacing: '0.12em' }}
           className="relative z-10">
@@ -308,7 +308,7 @@ export default function ResultsPage() {
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex',
                   background: 'var(--ct-ink)', paddingTop: 56 }}>
-      <AuroraRibbons progressRef={SCENE_POS} />
+      <SonicWaveform accent="#a78bfa" progressRef={SCENE_POS} />
 
       {/* ── Sidebar: everything you can switch, nothing you can read ──────
           The old page put the view tabs across the top of a 4xl column and

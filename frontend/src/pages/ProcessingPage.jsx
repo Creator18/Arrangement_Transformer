@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import AuroraRibbons from '../components/AuroraRibbons'
+import SonicWaveform from '../components/SonicWaveform'
 import StageCarousel from '../components/StageCarousel'
 
 // Stable ref identity on purpose.  StringSpace rebuilds its whole WebGL scene
@@ -255,7 +255,7 @@ export default function ProcessingPage() {
       {/* Same 3D field as the landing page, parked deep in the run so the
           scene reads as continuous across the navigation rather than the
           user arriving somewhere else. */}
-      <AuroraRibbons progressRef={SCENE_POS} />
+      <SonicWaveform accent="#f59e0b" progressRef={SCENE_POS} />
 
       <motion.div
         className="relative z-10 w-full"

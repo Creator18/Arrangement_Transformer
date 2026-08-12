@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import AuroraRibbons from '../components/AuroraRibbons'
+import { ArrowRight, ChevronDown, AudioWaveform } from 'lucide-react'
+import SonicWaveform from '../components/SonicWaveform'
 import Act from '../components/Act'
 import PipelineScrolly from '../components/PipelineScrolly'
 import { uploadAudio, getWarmupStatus } from '../utils/api'
@@ -160,11 +161,32 @@ export default function LandingPage() {
 
   return (
     <div style={{ position: 'relative', background: 'var(--ct-ink)' }}>
-      <AuroraRibbons progressRef={progressRef} />
+      {/* The backdrop takes the current act's accent, so scrolling through the
+          page drifts the whole field from amber to blue to mint to violet
+          instead of holding one colour behind four different sections. */}
+      <SonicWaveform progressRef={progressRef} accent={ACTS[act]?.accent} />
       <ActIndex acts={ACTS} current={act} />
 
       {/* ─── I · Overture ─────────────────────────────────────────────── */}
       <Act id="overture" label="I · Overture" minH="100vh">
+        <motion.div
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.7, delay: 0.15 }}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '6px 14px', marginBottom: 26, borderRadius: 999,
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          <AudioWaveform size={15} style={{ color: ACTS[0].accent }} />
+          <span className="ct-mono" style={{ letterSpacing: '0.06em' }}>
+            Audio → playable arrangement
+          </span>
+        </motion.div>
+
         <h1 className="ct-display" style={{ marginBottom: 32 }}>
           Any recording.<br />
           Any keyboard.<br />
@@ -177,9 +199,13 @@ export default function LandingPage() {
         </p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
           <button className="ct-cta" onClick={() => scrollToTarget('console')}>
-            <span>Begin</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              Begin <ArrowRight size={17} />
+            </span>
           </button>
-          <span className="ct-mono">Scroll</span>
+          <span className="ct-mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            <ChevronDown size={14} className="ct-nudge" /> Scroll
+          </span>
         </div>
       </Act>
 

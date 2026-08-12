@@ -568,3 +568,14 @@ aside[data-lenis-prevent]::after {
 
 /* Panels that only ever held content get their outline back off too. */
 .ct-panel { background: rgba(255, 255, 255, 0.008) !important; }
+
+/* Scroll hint on the hero — a small vertical nudge, stopped for anyone who
+   has asked for reduced motion. */
+@keyframes ct-nudge {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(3px); }
+}
+.ct-nudge { animation: ct-nudge 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ct-nudge { animation: none; }
+}
