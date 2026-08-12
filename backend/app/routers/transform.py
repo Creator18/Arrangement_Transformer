@@ -83,6 +83,64 @@ class TransformRequest(BaseModel):
     nmf_components: int = 16
 
 
+def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
+                       downbeat_times_arr, beats_per_bar, label="main"):
+    """Every song-only arrangement stage, in one place.
+
+    Factored out because it lived only in the main branch: when an exception
+    upstream sent execution to the fallback arm, beat snapping, the arpeggiated
+    accompaniment, the polyphony cap and scale enforcement all vanished at once
+    while /transform still returned 200.  Both arms now call this, so they
+    cannot drift apart again.
+    """
+    from app.services.transformation import (
+        snap_to_beat_grid, cap_polyphony, drop_non_scale, MAX_SOUNDING)
+    from app.services.arpeggiator import arpeggiate
+    from app.services.melody_cleanup import clean_melody
+    from app.services.melody_decode import MEL_LO, DECODE_MELODY
+    from app.services.music_theory import _scale_pitch_classes
+
+    before = len(notes)
+    try:
+        scale_pcs = _scale_pitch_classes(key_root, scale_name)
+    except Exception:                                       # noqa: BLE001
+        scale_pcs = None
+
+    # Snap the ACCOMPANIMENT only.  The melody comes from melody_decode, whose
+    # metrical prior already placed its onsets by evidence — 73.9% on
+    # sixteenths against a human 76.4%.  Snapping would force 100%, which is
+    # further from how people sing, not closer.
+    if DECODE_MELODY:
+        low = [n for n in notes if int(n["pitch"]) < MEL_LO]
+        high = [n for n in notes if int(n["pitch"]) >= MEL_LO]
+        notes = sorted(snap_to_beat_grid(low, beat_times_arr) + high,
+                       key=lambda n: (float(n["onset"]), int(n["pitch"])))
+    else:
+        notes = snap_to_beat_grid(notes, beat_times_arr)
+
+    # Reduce the voice register before the arpeggiator, so its
+    # melody/accompaniment split reads a clean top voice.  (No-op while
+    # melody_decode owns the melody; kept for the A/B switch.)
+    notes = clean_melody(notes, beat_times_arr, scale_pcs=scale_pcs)
+
+    # Rebuild the accompaniment as a repeating figure BEFORE capping: the
+    # figure is sparse by construction, so the cap only has to police the
+    # melody against it rather than thin out a cloud.
+    notes = arpeggiate(
+        notes, beat_times_arr,
+        downbeat_times_arr if downbeat_times_arr is not None else None,
+        beats_per_bar, scale_pcs, key_root,
+    )
+    notes = cap_polyphony(notes, MAX_SOUNDING)
+
+    n_pre = len(notes)
+    notes = drop_non_scale(notes, scale_pcs)
+    print(f"[transform:{label}] song reduction: beat snap + arpeggiated "
+          f"accompaniment + cap {MAX_SOUNDING} + scale enforcement — "
+          f"{before} -> {n_pre} -> {len(notes)} notes")
+    return notes
+
+
 @router.post("/transform/{session_id}")
 async def transform_arrangement(session_id: str, body: TransformRequest = TransformRequest()):
     session_dir = get_session_dir(session_id)
@@ -161,7 +219,13 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     method       = "pattern_extraction"
 
     try:
-        if USE_ML_PIPELINE and model_available():
+        # The ML generator is NOT used for songs.  It was trained for the
+        # piano -> 5-octave compression task, and the projection path feeds it
+        # far longer input than it has ever seen: its positional encoding stops
+        # at 4096 and this song produced 28,423, so it raised RuntimeError,
+        # the handler below caught it silently, and every song stage was
+        # skipped while /transform still returned 200.
+        if USE_ML_PIPELINE and model_available() and not is_song:
             # ── ML path ───────────────────────────────────────────────────
             method = "ml"
             # Estimate piece duration from the latest note offset (+1s tail).
@@ -267,50 +331,13 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             merged = enforce_uniform_tempo(merged, beat_times_arr, tempo)
 
         # Song-arrangement reduction.  SOURCE_FIDELITY protects Onsets & Frames
-        # onsets, which are worth protecting; it should not protect projection
-        # onsets, which come from peak-picking at precision 0.31-0.47.  So the
-        # rule is SCOPED to the path it was written for rather than dropped.
+        # onsets, which deserve it; it should not protect projection onsets,
+        # which come from peak-picking at precision 0.31-0.47.  So the rule is
+        # SCOPED to the path it was written for rather than dropped.
         if is_song:
-            from app.services.transformation import (
-                snap_to_beat_grid, cap_polyphony, MAX_SOUNDING)
-            from app.services.arpeggiator import arpeggiate
-            from app.services.melody_cleanup import clean_melody
-            from app.services.music_theory import _scale_pitch_classes
-            before = len(merged)
-            # Snap the ACCOMPANIMENT only.  The melody arrives from
-            # melody_decode, whose metrical prior already placed its onsets by
-            # evidence — measured at 73.9% on sixteenths against a human 76.4%.
-            # Snapping would force that to 100%, which is further from how
-            # people actually sing, not closer.
-            from app.services.melody_decode import MEL_LO, DECODE_MELODY
-            if DECODE_MELODY:
-                low_part = [n for n in merged if int(n["pitch"]) < MEL_LO]
-                high_part = [n for n in merged if int(n["pitch"]) >= MEL_LO]
-                merged = sorted(snap_to_beat_grid(low_part, beat_times_arr) + high_part,
-                                key=lambda n: (float(n["onset"]), int(n["pitch"])))
-            else:
-                merged = snap_to_beat_grid(merged, beat_times_arr)
-
-            # Reduce the voice register to one line BEFORE the arpeggiator
-            # runs, so its melody/accompaniment split reads a clean top voice
-            # rather than a cloud of re-strikes.
-            try:
-                scale_pcs = _scale_pitch_classes(root, scale_name)
-            except Exception:                                   # noqa: BLE001
-                scale_pcs = None
-            merged = clean_melody(merged, beat_times_arr, scale_pcs=scale_pcs)
-            # Rebuild the accompaniment as a repeating figure BEFORE capping:
-            # the arpeggio is sparse by construction, so the cap then only has
-            # to police the melody against it rather than thin out a cloud.
-            merged = arpeggiate(
-                merged, beat_times_arr,
-                downbeat_times_arr if downbeat_times_arr is not None else None,
-                beats_per_bar, scale_pcs, root,
-            )
-            merged = cap_polyphony(merged, MAX_SOUNDING)
-            print(f"[transform] song reduction: beat snap + arpeggiated "
-                  f"accompaniment + cap {MAX_SOUNDING} — "
-                  f"{before} -> {len(merged)} notes")
+            merged = _apply_song_stages(
+                merged, root, scale_name, beat_times_arr,
+                downbeat_times_arr, beats_per_bar, label="main")
 
         # Phase 6a/6b/6c — physical playability:
         #   6a: hard constraints (≤5/hand, ≤1-octave span/hand, ≤10 total)
@@ -327,19 +354,19 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             beats_per_bar  = beats_per_bar,
         )
 
-        # Last stage, deliberately.  Applied after generation AND after the
-        # hand constraints so no later step can put an out-of-key note back.
-        if is_song:
-            from app.services.transformation import drop_non_scale
-            _n0 = len(merged)
-            merged = drop_non_scale(merged, scale_pcs)
-            if len(merged) != _n0:
-                print(f"[transform] scale enforcement: dropped {_n0 - len(merged)} "
-                      f"non-scale notes ({_NOTE_NAMES[root]} {scale_name})")
-
         export_notes = merged
 
-    except Exception:
+    except Exception as _main_exc:
+        # SAY SO.  This handler swallowed the reason silently, and the fallback
+        # arm skips every song-path stage — beat snap, arpeggiated
+        # accompaniment, polyphony cap, scale enforcement.  So a single
+        # exception anywhere above turned all of them off while /transform
+        # still returned 200 and the log looked clean.  That is exactly how the
+        # scale drop appeared to be running when it never had.
+        import traceback
+        print(f"[transform] MAIN PATH FAILED ({type(_main_exc).__name__}: "
+              f"{_main_exc}) — falling back, song stages SKIPPED")
+        traceback.print_exc()
         # Hard fallback: return original notes post-processed only
         from app.services.nmf_voice_leading import (
             quantize_notes, apply_voice_leading,
@@ -364,6 +391,14 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             )
             root, scale_name, _ = detect_scale(export_notes)
             scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
+            # Song stages belong here as well.  Their absence is what made a
+            # single upstream exception silently undo beat snapping, the
+            # arpeggiated accompaniment, the polyphony cap and scale
+            # enforcement all at once.
+            if is_song:
+                export_notes = _apply_song_stages(
+                    export_notes, root, scale_name, beat_times_arr,
+                    downbeat_times_arr, beats_per_bar, label="fallback")
         except Exception:
             export_notes = notes
 
