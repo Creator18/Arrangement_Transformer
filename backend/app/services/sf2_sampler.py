@@ -41,7 +41,14 @@ def _iter_chunks(data: bytes, start: int, end: int):
         pos += 8 + size + (size & 1)
 
 
-def _parse_sf2(data: bytes):
+def _parse_sf2(data: bytes, program: int = 0, bank: int = 0):
+    """Parse an SF2 and build a key→sample map for one preset.
+
+    `program`/`bank` default to 0/0 (GM Acoustic Grand Piano), which is the
+    only thing the pipeline renders.  They are exposed so the cross-timbre
+    eval can pull a guitar or an organ out of the same General MIDI file
+    without a second parser to keep in sync with this one.
+    """
     assert data[:4] == b"RIFF" and data[8:12] == b"sfbk", "Not a valid SF2 file"
     total = len(data)
 
@@ -81,7 +88,7 @@ def _parse_sf2(data: bytes):
             "root": root, "correction": correction, "type": stype,
         })
 
-    # ── preset chain → find Bank 0 / Program 0 (Acoustic Grand Piano) ──────────
+    # ── preset chain → find the requested Bank / Program ──────────────────────
     phdr_raw = pdta["phdr"]
     pbag_raw = pdta["pbag"]
     pgen_raw = pdta["pgen"]
@@ -97,7 +104,7 @@ def _parse_sf2(data: bytes):
         w_bank   = struct.unpack_from("<H", phdr_raw, o+22)[0]
         bag_ndx  = struct.unpack_from("<H", phdr_raw, o+24)[0]
         next_bag = struct.unpack_from("<H", phdr_raw, o+38+24)[0]
-        if w_preset == 0 and w_bank == 0:
+        if w_preset == program and w_bank == bank:
             # Walk this preset's bags looking for generator 41 (instrument index)
             for pb in range(bag_ndx, next_bag):
                 g_start = pbags[pb][0]
@@ -132,6 +139,19 @@ def _parse_sf2(data: bytes):
     pi   = piano_inst_idx
     pi1  = piano_inst_idx + 1
 
+    # A zone may retune its sample, and most non-piano instruments do — one
+    # recorded note is stretched across a wide key range with an explicit root.
+    # Reading only the sample header's root (as this did originally) leaves the
+    # header's own pitch in charge, which is silently correct for a
+    # sample-per-key piano and catastrophic otherwise: measured before the fix,
+    # Church Organ came out ~1400 cents flat and Nylon Guitar swung between
+    # -1537 and +906 cents.  The pipeline never noticed because it only ever
+    # loads bank 0 / program 0, whose headers happen to agree.
+    #
+    # A leading bag with no sampleID is the instrument's GLOBAL zone: its
+    # generators are defaults for every zone that does not set its own.
+    g_root = g_coarse = g_fine = None
+
     for bag_i in range(insts[pi][1], insts[pi1][1] if pi1 < len(insts) else ibag_count - 1):
         zone_gen_start = ibags[bag_i][0]
         zone_gen_end = ibags[bag_i + 1][0]
@@ -139,24 +159,47 @@ def _parse_sf2(data: bytes):
         key_lo, key_hi = 0, 127
         vel_lo, vel_hi = 0, 127
         sample_id = None
+        root_override = coarse = fine = None
 
         for g in range(zone_gen_start, zone_gen_end):
             oper, amount = igens[g]
             lo = amount & 0xFF
             hi = (amount >> 8) & 0xFF
+            signed = amount - 0x10000 if amount >= 0x8000 else amount
             if oper == 43:   # keyRange
                 key_lo, key_hi = lo, hi
             elif oper == 44: # velRange
                 vel_lo, vel_hi = lo, hi
             elif oper == 53: # sampleID
                 sample_id = lo | (hi << 8)
+            elif oper == 58 and amount != 0xFFFF:   # overridingRootKey
+                root_override = amount & 0x7F
+            elif oper == 51: # coarseTune, semitones
+                coarse = signed
+            elif oper == 52: # fineTune, cents
+                fine = signed
 
-        if sample_id is not None and sample_id < len(sample_hdrs):
+        if sample_id is None:
+            # global zone — remember its tuning for the zones that follow
+            if root_override is not None: g_root = root_override
+            if coarse is not None:        g_coarse = coarse
+            if fine is not None:          g_fine = fine
+            continue
+
+        if sample_id < len(sample_hdrs):
             sh = sample_hdrs[sample_id]
             if sh["type"] in (1, 2, 4):  # mono/right/left sample
+                root = root_override if root_override is not None else (
+                    g_root if g_root is not None else sh["root"])
+                c = coarse if coarse is not None else (g_coarse or 0)
+                f = fine if fine is not None else (g_fine or 0)
+                # Fold every tuning term into the two fields the renderer
+                # already understands, so nothing downstream has to change.
+                zone = dict(sh, root=root,
+                            correction=sh["correction"] + f + 100 * c)
                 for k in range(key_lo, key_hi + 1):
                     if k not in key_map:
-                        key_map[k] = sh
+                        key_map[k] = zone
 
     return smpl_pcm, key_map
 
@@ -202,7 +245,11 @@ def _get_shifted_sample(pitch: int, out_sr: int) -> tuple:
         _pitch_cache[cache_key] = result
         return result
 
-    semitones = (pitch - sh["root"]) - sh["correction"] / 100.0
+    # SF2 tuning terms ADD to the played pitch: semitones = key - root +
+    # (coarse*100 + fine + sample correction)/100.  This subtracted them, which
+    # is invisible while correction is 0 — true for a sample-per-key piano —
+    # and doubles the error the moment a zone actually retunes its sample.
+    semitones = (pitch - sh["root"]) + sh["correction"] / 100.0
     ratio    = 2.0 ** (semitones / 12.0)
     combined = ratio * sh["sr"] / out_sr
 
