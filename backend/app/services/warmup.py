@@ -127,6 +127,18 @@ def _warm_note_samples() -> None:
     _state.setdefault("_notes_rendered", made)
 
 
+def _warm_piano_dictionary() -> None:
+    """Build the 88-key projection dictionary if it isn't cached yet.
+
+    Songs are transcribed by projecting onto this, and building it means 88
+    sampler renders.  Cached to disk after the first time, so on a normal
+    machine this is a file read — but on a fresh deploy the cache is absent and
+    the first uploaded song would otherwise stall while it built.
+    """
+    from app.services import piano_projection
+    piano_projection.get_dictionary()
+
+
 _STEPS = [
     ("transcriber", _warm_transcriber),
     ("separator",   _warm_separator),
@@ -134,6 +146,7 @@ _STEPS = [
     ("sampler",     _warm_sampler),
     ("first_pass",  _warm_first_pass),
     ("note_samples", _warm_note_samples),
+    ("piano_dictionary", _warm_piano_dictionary),
 ]
 
 

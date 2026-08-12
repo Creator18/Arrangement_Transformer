@@ -392,6 +392,18 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     sf.write(str(bass_path),  y_bass,  SR, subtype="PCM_16")
     sf.write(str(upper_path), y_upper, SR, subtype="PCM_16")
 
+    # The drumless mix, with its band balance intact.
+    #
+    # bass.wav and upper.wav are each peak-normalised INDEPENDENTLY, which is
+    # right for the transcribers that read one band at a time and wrong for
+    # anything that adds them back together: measured on a real upload, that
+    # sum carries 1.54x more bass energy than the mix it came from.
+    # piano_projection was doing exactly that, and the low register swamped
+    # everything — 7.29 notes/s below G#3 against 0.77 above it, where the eval
+    # (which used the properly balanced signal) had them roughly equal.
+    sf.write(str(comp_dir / "harmonic.wav"), _normalise(harmonic), SR,
+             subtype="PCM_16")
+
     groups: Dict[str, Any] = {
         "bass":  {"path": str(bass_path),  "indices": []},
         "upper": {"path": str(upper_path), "indices": []},

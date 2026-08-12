@@ -793,12 +793,33 @@ CORRECTOR_APPLY_HAND     = True
 USE_RESTRIKE_DETECTION = False
 
 
+SONG_MODE = 'projection'      # 'projection' | 'of' — override with
+                              # ARRANGEMENT_SONG_MODE for an A/B by ear
+
+
+def _should_project(session_dir: Path, meta: Dict) -> bool:
+    """True when the input is a song rather than solo piano.
+
+    separation.py stamps method 'raw+madmom' and separation_skipped when
+    content_detect routed the audio past Demucs as solo piano.  Anything else
+    ran Demucs, which means it was not solo piano.
+    """
+    import os
+    mode = os.environ.get('ARRANGEMENT_SONG_MODE', SONG_MODE).lower()
+    if mode == 'of':
+        return False
+    if meta.get('separation_skipped') or meta.get('method') == 'raw+madmom':
+        return False        # solo piano — O&F is measurably better here
+    return mode == 'projection'
+
+
 def _transcribe_fullmix_of(
     session_dir: Path,
     comp_dir:    Path,
     tempo:       float,
     beat_times:  np.ndarray,
     pyin_bass_notes: List[Dict],     # unused by design — see docstring
+    meta:        Dict | None = None,
 ) -> tuple:
     """
     'of_fullmix' architecture: ONE polyphonic transcriber (O&F) over the
@@ -820,8 +841,35 @@ def _transcribe_fullmix_of(
     if not audio_path.exists():
         raise FileNotFoundError('audio.wav missing for full-mix transcription.')
 
-    notes = _onsets_frames_notes(audio_path)
-    print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
+    # Songs and solo piano get different transcribers, because they are
+    # different questions.  O&F is trained on MAESTRO and scores note F1
+    # 0.9677 there — nothing beats it on piano.  Pointed at a band it is still
+    # asking "what piano notes are IN this audio", which for a guitar chord or
+    # a vocal line has no right answer.  piano_projection asks "what piano
+    # notes best APPROXIMATE this audio" instead, which does.
+    #
+    # The gate is separation's own verdict: content_detect routes solo piano
+    # past Demucs and stamps method 'raw+madmom', so anything that actually ran
+    # Demucs is a song.  Reusing that decision means there is one detector to
+    # be wrong rather than two that can disagree.
+    use_projection = _should_project(session_dir, meta or {})
+
+    if use_projection:
+        try:
+            from app.services import piano_projection
+            notes = piano_projection.project_from_stems(comp_dir)
+            print(f"[transcription] projection: {len(notes)} notes "
+                  f"from the drumless stems")
+        except Exception as e:                              # noqa: BLE001
+            # A song transcribed by O&F is mediocre; a song that 500s is
+            # useless.  Fall back rather than fail the request.
+            print(f"[transcription] projection failed ({type(e).__name__}: {e}); "
+                  f"falling back to O&F")
+            use_projection = False
+
+    if not use_projection:
+        notes = _onsets_frames_notes(audio_path)
+        print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
 
     # Repeated-note recovery.  Measured against ground truth: we produce only
     # 46% of the re-strikes real performances contain, because a key struck
@@ -830,7 +878,10 @@ def _transcribe_fullmix_of(
     # narrower question — is energy being re-injected into THIS pitch's own
     # harmonics, part-way through a note we already found — which is
     # answerable where general polyphonic onset detection is not.
-    if USE_RESTRIKE_DETECTION:
+    # Restrike detection asks whether energy is being re-injected into a note
+    # O&F already found.  The projection produces its own re-strikes by
+    # splitting activation runs, so running this on top would double-count.
+    if USE_RESTRIKE_DETECTION and not use_projection:
         try:
             from app.services.restrike import detect_restrikes
             y, sr_r = librosa.load(str(audio_path), sr=22050, mono=True)
@@ -989,7 +1040,7 @@ def transcribe_components(
 
     if TRANSCRIBER_MODE == 'of_fullmix':
         return _transcribe_fullmix_of(
-            session_dir, comp_dir, tempo, beat_times, bass_notes,
+            session_dir, comp_dir, tempo, beat_times, bass_notes, meta,
         )
 
     _upper_transcriber = (_onsets_frames_notes if TRANSCRIBER_MODE == 'of_stems'
