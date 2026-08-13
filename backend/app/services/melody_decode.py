@@ -75,7 +75,30 @@ MIN_NOTE_S = 0.06             # only to discard single-frame decode flickers
 # Above 0.65 no re-attack ever qualifies and unison collapses to zero; at 0.35
 # every ripple splits a note and density doubles.  0.50 puts repeated notes
 # within half a point of human.
+# Superseded by the sustained-dip test below; kept so the old behaviour can be
+# compared.  It measured vibrato as re-articulation — see the note in the run
+# splitter.
 REARTIC_RISE = 0.50
+
+# Swept against the POP909 melody targets on a stem-routed vocal
+# (unison 23.6% of intervals, median duration 291 ms):
+#
+#   frac  min_s   notes  unison%  zero-gap  dur p50
+#   0.30   0.03     873    17.5%     17.3%    210ms
+#   0.45   0.03     920    21.8%     21.5%    210ms
+#   0.60   0.05     986    27.0%     26.8%    190ms
+#   0.60   0.08     942    23.6%     23.4%    200ms   <- ships
+#   old rise test   1115    35.5%     35.2%    116ms
+REARTIC_DIP_FRAC = 0.60    # activation must fall below this share of the peak
+REARTIC_DIP_MIN_S = 0.08   # ...and stay there this long to count as a re-strike
+
+# A re-strike RELEASES the key.  Even at the right unison count the repeats sat
+# back-to-back with no gap — zero-gap 23.4% against unison 23.6%, so essentially
+# every repeat was two notes touching, which is what reads as a double press on
+# the roll and as a stutter by ear.  POP909's same-pitch gaps have p25 0.068 and
+# p50 0.121, so a human lifts the key for about an eighth of a second.  The
+# first note of a pair now ends early by this much.
+REARTIC_RELEASE_S = 0.07
 
 _PRIORS: Optional[Dict[str, Any]] = None
 _PRIOR_PATH = pathlib.Path(__file__).with_name("_melody_priors.npz")
@@ -252,28 +275,54 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
         cuts = [i]
         if seg.size > 2 * min_fr:
             peak = float(seg.max()) or 1.0
-            k = min_fr
-            while k < len(seg) - min_fr:
-                window = seg[max(0, k - min_fr):k + 1]
-                dip = float(window.min())
-                rise = float(seg[k]) - dip
-                strong = metre[slot[i + k]] >= metre.mean()
-                if rise > (REARTIC_RISE * (0.75 if strong else 1.0)) * peak \
-                        and i + k - cuts[-1] >= min_fr:
-                    cuts.append(i + k)
-                    k += min_fr
-                else:
+            # A SUSTAINED dip, not a momentary one.
+            #
+            # The previous test asked only whether activation rose sharply after
+            # a local minimum, and vibrato satisfies that on every cycle: vibrato
+            # IS amplitude modulation, so a ~5 Hz wobble offers a dip-and-rise
+            # every 200 ms while the minimum split spacing is 60 ms.  Measured on
+            # a stem-routed melody that produced 392 zero-gap same-pitch pairs —
+            # 35% of the line doubled — and halved median note length to 116 ms
+            # against a human 291 ms.  The bass, which does not vibrate, sat at
+            # 22.9% against a human 23.6%: the contrast was the tell.
+            #
+            # A real re-strike releases the key, so the activation stays down
+            # while the string decays.  A vibrato trough passes straight through.
+            # So the test is duration, not slope: the level must fall below
+            # DIP_FRAC of the run's peak and REMAIN there for DIP_MIN_S before
+            # the note counts as struck again.  The cut goes where it comes back.
+            low = seg < REARTIC_DIP_FRAC * peak
+            dip_fr = max(2, int(REARTIC_DIP_MIN_S * FPS))
+            k = 0
+            while k < len(low):
+                if not low[k]:
                     k += 1
+                    continue
+                run_end = k
+                while run_end < len(low) and low[run_end]:
+                    run_end += 1
+                # a strong metrical position is where a singer restates a note,
+                # so a slightly shorter dip is accepted there
+                need = dip_fr
+                if run_end < len(seg) and metre[slot[min(i + run_end, n_fr - 1)]] >= metre.mean():
+                    need = max(2, int(dip_fr * 0.6))
+                if (run_end - k) >= need and run_end < len(seg)                         and (i + run_end) - cuts[-1] >= min_fr:
+                    cuts.append(i + run_end)
+                k = run_end + 1
         cuts.append(j)
 
-        for a0, b0 in zip(cuts[:-1], cuts[1:]):
-            if (b0 - a0) / FPS < MIN_NOTE_S:
+        rel_fr = max(1, int(REARTIC_RELEASE_S * FPS))
+        for idx_c, (a0, b0) in enumerate(zip(cuts[:-1], cuts[1:])):
+            # Lift the key before the next strike, but only between two notes of
+            # this run — the last one keeps its full length.
+            end = b0 - rel_fr if idx_c < len(cuts) - 2 else b0
+            if (end - a0) / FPS < MIN_NOTE_S:
                 continue
-            s = A[p_idx, a0:b0]
+            s = A[p_idx, a0:end]
             out.append({
                 "pitch": lo + p_idx,
                 "onset": a0 / FPS,
-                "offset": b0 / FPS,
+                "offset": end / FPS,
                 "_act": float(s.max()) if s.size else 0.0,
             })
         i = j

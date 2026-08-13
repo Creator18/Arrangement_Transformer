@@ -39,11 +39,20 @@ const LAYER_VIEWS = [
 const CLUSTER_PALETTE = ['#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#5b21b6']
 
 // ── Static fallback parts (used when API returns no dynamic layers) ────────────
+// REGISTER bands, not roles — and now labelled as such.
+//
+// These were called Bass / Melody / Voice, which reads as musical parts and is
+// not what they are: each is a pitch range, so the "Voice" band held whatever
+// sat high, mostly accompaniment, with the actual sung line inside it.  That
+// mislabelling sent us looking for a melody bug that was really a register
+// band doing its job.  The genuine parts are the role layers in the Layers
+// tab — melody / bass / accompaniment — which come from the Demucs stems.
+// The `key` values are unchanged because they address audio export endpoints.
 const STATIC_PARTS = [
-  { key: 'all',    label: 'All',    sym: '◉', color: '#a1a1aa', desc: 'Full mix'      },
-  { key: 'bass',   label: 'Bass',   sym: '▪', color: '#3b82f6', desc: 'Low register'  },
-  { key: 'melody', label: 'Melody', sym: '▲', color: '#f87171', desc: 'Mid register'  },
-  { key: 'voice',  label: 'Voice',  sym: '◈', color: '#a78bfa', desc: 'High register' },
+  { key: 'all',    label: 'All',   sym: '◉', color: '#a1a1aa', desc: 'Everything'        },
+  { key: 'bass',   label: 'Low',   sym: '▪', color: '#3b82f6', desc: 'Below G#3'         },
+  { key: 'melody', label: 'Mid',   sym: '▲', color: '#f87171', desc: 'G#3 – C6'          },
+  { key: 'voice',  label: 'High',  sym: '◈', color: '#a78bfa', desc: 'Above C6'          },
 ]
 
 // Layer sym glyphs per name keyword

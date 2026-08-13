@@ -107,31 +107,44 @@ def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
     except Exception:                                       # noqa: BLE001
         scale_pcs = None
 
-    # Snap the ACCOMPANIMENT only.  The melody comes from melody_decode, whose
-    # metrical prior already placed its onsets by evidence — 73.9% on
-    # sixteenths against a human 76.4%.  Snapping would force 100%, which is
-    # further from how people sing, not closer.
-    if DECODE_MELODY:
-        low = [n for n in notes if int(n["pitch"]) < MEL_LO]
-        high = [n for n in notes if int(n["pitch"]) >= MEL_LO]
-        notes = sorted(snap_to_beat_grid(low, beat_times_arr) + high,
-                       key=lambda n: (float(n["onset"]), int(n["pitch"])))
-    else:
-        notes = snap_to_beat_grid(notes, beat_times_arr)
+    # Snap EVERY part to the same grid.
+    #
+    # This snapped by PITCH — below MIDI 56 — on the reasoning that the melody
+    # decode already places onsets by evidence (73.9% on sixteenths against a
+    # human 76.4%) and forcing 100% moves it away from how people sing.  Sound
+    # in isolation, wrong for an ensemble.  Two problems, measured:
+    #
+    #   The bass came out 100% on-grid and the melody 87%, drifting up to 48 ms
+    #   at p90 — nearly half a sixteenth at 110 ms — so the parts pulled against
+    #   each other.  Only 15 of 161 bars had melody and bass both landing on the
+    #   downbeat; snapping both takes that to 39.
+    #
+    #   And a pitch threshold cuts ACROSS a role: 108 melody notes sat below
+    #   MIDI 56 and were snapped while the rest were not, so one melodic line
+    #   got two different timing treatments.
+    #
+    # Expressive timing only reads as expressive when the pulse underneath it is
+    # steady.  With only melody and bass there is no such anchor, so the drift
+    # reads as the parts being out of sync rather than as rubato.  One grid for
+    # everything; if the melody later needs to breathe against a steady
+    # accompaniment, that should be a deliberate offset, not an unsnapped
+    # residue.
+    notes = snap_to_beat_grid(notes, beat_times_arr)
 
     # Reduce the voice register before the arpeggiator, so its
     # melody/accompaniment split reads a clean top voice.  (No-op while
     # melody_decode owns the melody; kept for the A/B switch.)
     notes = clean_melody(notes, beat_times_arr, scale_pcs=scale_pcs)
 
-    # Rebuild the accompaniment as a repeating figure BEFORE capping: the
-    # figure is sparse by construction, so the cap only has to police the
-    # melody against it rather than thin out a cloud.
-    notes = arpeggiate(
-        notes, beat_times_arr,
-        downbeat_times_arr if downbeat_times_arr is not None else None,
-        beats_per_bar, scale_pcs, key_root,
-    )
+    # The figure is generated at the PROJECTION now, so the full-range output is
+    # already an arrangement.  Running it twice would arpeggiate an arpeggio.
+    from app.services.piano_projection import REDUCE_HARMONY
+    if not REDUCE_HARMONY:
+        notes = arpeggiate(
+            notes, beat_times_arr,
+            downbeat_times_arr if downbeat_times_arr is not None else None,
+            beats_per_bar, scale_pcs, key_root,
+        )
     # Melody on top BEFORE capping, so the cap thins a texture that is already
     # correctly voiced rather than one where harmony is masking the tune.
     notes = enforce_melody_on_top(notes)
@@ -321,7 +334,15 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                 pass
 
         # Voice leading, quantise, chord snap, music theory
-        root, scale_name, _ = detect_scale(merged)
+        # Trust the key the projection already established from DETECTED notes.
+        # Re-deriving it here would poll the generated harmony, which is 52% of
+        # the note set — that is how a song in E major came to be reported as A
+        # major, with the accompaniment generated in G.
+        _stamped = next((n for n in merged if n.get("key_root") is not None), None)
+        if _stamped is not None:
+            root, scale_name = int(_stamped["key_root"]), str(_stamped["key_scale"])
+        else:
+            root, scale_name, _ = detect_scale(merged)
         scale_info = {
             "root":  _NOTE_NAMES[root],
             "scale": scale_name,

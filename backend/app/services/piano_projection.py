@@ -98,6 +98,45 @@ THRESH_Q = 0.94       # activation quantile
 
 PER_STEM = True           # route each Demucs stem to its own method
 
+# Reduce the harmony HERE rather than at /transform.
+#
+# The two monophonic decodes (vocals->melody, bass->bass) impose a model — one
+# note at a time, a dwell cost, onsets pulled to the beat — and by ear they are
+# the parts that work.  The harmony was peak-picked instead, which imposes
+# nothing and reports every activation over a threshold: ~2,458 notes, about
+# two thirds of everything, 88% of them at or above G#3, piling into the same
+# register as the tune and masking it.
+#
+# It was only ever thinned by the arpeggiator at transform time, so the
+# full-range output the UI calls "Original" was a dump rather than an
+# arrangement — 2,525 notes above C4 with 14 sounding at once.  Generating the
+# figure at the source makes both views arrangements at different keyboard
+# sizes, and then compression really is only compression.
+REDUCE_HARMONY = True
+
+# NO GENERATED ACCOMPANIMENT.
+#
+# The figure was interfering rather than accompanying, and by ear it was
+# actively damaging the piece.  Two measured reasons it could not have worked
+# yet:
+#
+#   Its harmony is wrong often enough to matter.  With the key finally detected
+#   correctly (E major), the generated notes taken alone still measure G major —
+#   chord inference is picking out-of-key roots, because it reads peak-picked
+#   notes at recall 0.42 rather than the clean voicings it scores 76% on.
+#
+#   It plays the same figure in every bar regardless of the vocal.  A human
+#   arranger thins under the singing and fills the rests, and POP909 says the
+#   vocal is silent 42% of the time.  Constant density reads as added material,
+#   which is exactly what it sounded like.
+#
+# So the harmony stems are not decomposed at all: melody from the vocals stem
+# and bass from the bass stem, which are the two parts that work.  A lead line
+# over a bass line is a legitimate reduction, not a placeholder.  It is also
+# most of the speed problem — the harmony run used the full 88-column
+# dictionary, the widest of the three.
+INCLUDE_HARMONY = False
+
 WHITEN_NU = 0.0       # spectral whitening; measured as a strictly worse lever
                       # than N_HARMONICS below, so it is left off
 
@@ -143,11 +182,35 @@ HARMONIC_ROLLOFF = 1.5           # chosen on held-out pieces, not by eye
 _DICT_PATH = pathlib.Path(__file__).with_name("_piano_dict88.npy")
 _W: np.ndarray | None = None
 _W_KIND: str | None = None
+_W_BY_FFT: dict = {}
 
 
-def stft_mag(y: np.ndarray) -> np.ndarray:
+def get_dictionary_for(n_fft: int) -> np.ndarray:
+    """Harmonic dictionary at a given FFT size, memoised."""
+    if n_fft == N_FFT:
+        return get_dictionary()
+    if n_fft not in _W_BY_FFT:
+        _W_BY_FFT[n_fft] = build_harmonic_dictionary(
+            HARMONIC_ROLLOFF, N_HARMONICS, n_fft)
+    return _W_BY_FFT[n_fft]
+
+
+# FFT size per stem.  N_FFT = 8192 gives 2.7 Hz bins, which the BOTTOM octave
+# genuinely needs — A0 is 27.5 Hz and a coarser window cannot resolve it.
+# Nothing above E2 (82 Hz) needs that, and the FFT size is what makes the NMF
+# matrices 4097 rows deep, which is where the cost actually lives: restricting
+# the dictionary to a stem's own pitch range saved only 7%, because W @ H and
+# V / (WH) are (bins x T) regardless of how many columns W has.
+#
+# So the lever is bins, not columns.  Halving the FFT for the vocals stem halves
+# its matrices outright.
+N_FFT_HIGH = 4096     # 5.4 Hz bins — ample from E2 upward
+HIGH_FFT_MIN_PITCH = 40   # E2; below this, 8192 is required
+
+
+def stft_mag(y: np.ndarray, n_fft: int = None) -> np.ndarray:
     import librosa
-    return np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
+    return np.abs(librosa.stft(y, n_fft=n_fft or N_FFT, hop_length=HOP))
 
 
 def build_dictionary(velocity: int = 80) -> np.ndarray:
@@ -177,7 +240,8 @@ def build_dictionary(velocity: int = 80) -> np.ndarray:
 
 
 def build_harmonic_dictionary(rolloff: float = 1.0,
-                              n_harmonics: int = None) -> np.ndarray:
+                              n_harmonics: int = None,
+                              n_fft: int = None) -> np.ndarray:
     """Timbre-neutral templates: a harmonic comb per pitch, no instrument.
 
     The piano dictionary matches on partial AMPLITUDES, which is the part of a
@@ -196,7 +260,7 @@ def build_harmonic_dictionary(rolloff: float = 1.0,
     """
     import librosa
     n_harmonics = N_HARMONICS if n_harmonics is None else n_harmonics
-    freqs = librosa.fft_frequencies(sr=SR, n_fft=N_FFT)
+    freqs = librosa.fft_frequencies(sr=SR, n_fft=n_fft or N_FFT)
     cols = []
     for p in range(LOW, HIGH + 1):
         f0 = 440.0 * 2.0 ** ((p - 69) / 12.0)
@@ -409,9 +473,22 @@ def project_notes(y: np.ndarray, sr: int,
 
 HARMONY_STEMS = ("guitar", "other", "piano")
 
+# Imported here rather than inside the function so the ranges the decoder
+# will use are the same ones the decomposition is restricted to.
+from app.services.melody_decode import (          # noqa: E402
+    VOCAL_LO as MD_VOCAL_LO, VOCAL_HI as MD_VOCAL_HI,
+    BASS_LO as MD_BASS_LO, BASS_HI as MD_BASS_HI)
 
-def _activations(path: pathlib.Path):
-    """Load a stem and decompose it. None if the file is missing or silent."""
+
+def _activations(path: pathlib.Path, lo: int = None, hi: int = None):
+    """Load a stem and decompose it. None if the file is missing or silent.
+
+    `lo`/`hi` restrict the decomposition to the pitches that stem can actually
+    contain, which is free speed: NMF cost scales with the number of dictionary
+    columns, and a bass stem needs 32 of the 88 rather than all of them.  The
+    result is padded back to full width so callers keep the (88, T) contract —
+    melody_decode slices by absolute MIDI number and must not have to care.
+    """
     import librosa
     if not path.exists():
         return None
@@ -419,7 +496,40 @@ def _activations(path: pathlib.Path):
     pk = float(np.abs(y).max())
     if pk < 1e-4:
         return None                      # an empty stem, e.g. piano on a rock track
-    return nmf_h(stft_mag((y / pk).astype(np.float32)), get_dictionary())
+    n_fft = (N_FFT_HIGH if lo is not None and int(lo) >= HIGH_FFT_MIN_PITCH
+             else N_FFT)
+    V = stft_mag((y / pk).astype(np.float32), n_fft)
+    W = get_dictionary_for(n_fft)
+    if lo is None or hi is None:
+        return nmf_h(V, W)
+    a = max(0, int(lo) - LOW)
+    b = min(W.shape[1], int(hi) - LOW + 1)
+    H = nmf_h(V, W[:, a:b])
+    out = np.zeros((W.shape[1], H.shape[1]), dtype=H.dtype)
+    out[a:b] = H
+    return out
+
+
+def _activations_mixed(paths):
+    """Mix several stems, then decompose ONCE."""
+    import librosa
+    sigs = []
+    for path in paths:
+        if not path.exists():
+            continue
+        y, _ = librosa.load(str(path), sr=SR, mono=True)
+        if float(np.abs(y).max()) >= 1e-4:
+            sigs.append(y)
+    if not sigs:
+        return None
+    n = max(len(y) for y in sigs)
+    mix = np.zeros(n, dtype=np.float32)
+    for y in sigs:
+        mix[: len(y)] += y
+    pk = float(np.abs(mix).max())
+    if pk < 1e-4:
+        return None
+    return nmf_h(stft_mag((mix / pk).astype(np.float32)), get_dictionary())
 
 
 def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
@@ -444,7 +554,8 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
     used = []
 
     # melody — the vocals stem, decoded over the full vocal register
-    Hv = _activations(comp_dir / "stem_vocals.wav")
+    Hv = _activations(comp_dir / "stem_vocals.wav",
+                      MD_VOCAL_LO, MD_VOCAL_HI)
     if Hv is not None and beat_times is not None:
         line = MD.decode(Hv, LOW, beat_times, downbeats, beats_per_bar,
                          lo=MD.VOCAL_LO, hi=MD.VOCAL_HI)
@@ -454,7 +565,8 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
         used.append(f"vocals->melody {len(line)}")
 
     # bass — monophonic by nature, and the cleanest stem Demucs produces
-    Hb = _activations(comp_dir / "stem_bass.wav")
+    Hb = _activations(comp_dir / "stem_bass.wav",
+                      MD_BASS_LO, MD_BASS_HI)
     if Hb is not None and beat_times is not None:
         line = MD.decode(Hb, LOW, beat_times, downbeats, beats_per_bar,
                          lo=MD.BASS_LO, hi=MD.BASS_HI)
@@ -466,11 +578,17 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
     # harmony — guitar + other + piano, peak-picked.  These feed chord
     # inference and are then REPLACED by the arpeggiated figure, so their
     # individual pitches matter less than the chroma they imply.
-    parts = [h for h in (_activations(comp_dir / f"stem_{n}.wav")
-                         for n in HARMONY_STEMS) if h is not None]
-    if parts:
-        width = min(h.shape[1] for h in parts)
-        Hh = sum(h[:, :width] for h in parts)
+    #
+    # Summed in the AUDIO domain, not the activation domain.  Decomposing each
+    # stem separately and adding the results cost three NMF runs to produce
+    # something one run gives: per-stem routing had quietly turned one
+    # decomposition into four, and at ~0.33 s of compute per second of audio
+    # that took a 4:44 track from ~94 s to ~380 s. Mixing first is also more
+    # correct — a chord voiced across guitar and keys is one harmonic event, and
+    # decomposing it as two competing explanations is not what we want.
+    Hh = (_activations_mixed([comp_dir / f"stem_{n}.wav" for n in HARMONY_STEMS])
+          if INCLUDE_HARMONY else None)
+    if Hh is not None:
         est = sorted(extract_notes(Hh), key=lambda n: (n[0], n[2]))
         vels = velocities(Hh, est)
         harm = [{"pitch": int(p), "onset": float(a), "offset": float(b),
@@ -481,8 +599,55 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
 
     if not out:
         return None
-    print(f"[projection] per-stem: {', '.join(used)}")
     out.sort(key=lambda n: (n["onset"], n["pitch"]))
+
+    if REDUCE_HARMONY and INCLUDE_HARMONY and beat_times is not None:
+        try:
+            from app.services.arpeggiator import arpeggiate
+            from app.services.transformation import enforce_melody_on_top
+            from app.services.nmf_voice_leading import detect_scale
+            from app.services.music_theory import _scale_pitch_classes
+            # Detect the key from DETECTED notes only — never from generated
+            # ones.  The harmony written below is invented material, and once it
+            # lands in transcription.json it is 52% of all notes, so letting it
+            # vote turns key detection into a poll of our own output.  Measured
+            # on a real upload: melody+bass alone gave E major (correct), the
+            # generated harmony gave G major, and all notes together gave A
+            # major — the average of a right and a wrong answer, which then had
+            # drop_non_scale enforcing a key the song was never in and deleting
+            # the tune's own leading tone.
+            detected = [n for n in out if n.get("role") in ("melody", "bass")]
+            root, scale_name, _ = detect_scale(detected or out)
+            try:
+                scale_pcs = _scale_pitch_classes(root, scale_name)
+            except Exception:                                   # noqa: BLE001
+                scale_pcs = None
+            before = len(out)
+            out = arpeggiate(out, np.asarray(beat_times, float),
+                             np.asarray(downbeats, float) if downbeats is not None else None,
+                             beats_per_bar, scale_pcs, root)
+            out = enforce_melody_on_top(out)
+            out.sort(key=lambda n: (n["onset"], n["pitch"]))
+            for n in out:
+                n["key_root"], n["key_scale"] = int(root), str(scale_name)
+            used.append(f"harmony reduced {before}->{len(out)}, "
+                        f"key {root} {scale_name} from {len(detected)} detected notes")
+        except Exception as e:                                  # noqa: BLE001
+            print(f"[projection] upstream harmony reduction skipped "
+                  f"({type(e).__name__}: {e})")
+
+    if not INCLUDE_HARMONY:
+        # Still establish and stamp the key, or /transform re-derives it.
+        try:
+            from app.services.nmf_voice_leading import detect_scale
+            root, scale_name, _ = detect_scale(out)
+            for n in out:
+                n["key_root"], n["key_scale"] = int(root), str(scale_name)
+            used.append(f"key {root} {scale_name}, no generated accompaniment")
+        except Exception as e:                                  # noqa: BLE001
+            print(f"[projection] key detection skipped ({type(e).__name__}: {e})")
+
+    print(f"[projection] per-stem: {', '.join(used)}")
     return out
 
 
