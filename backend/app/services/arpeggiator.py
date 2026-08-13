@@ -448,9 +448,23 @@ def arpeggiate(notes: List[Dict[str, Any]],
     if not ARPEGGIATE or not notes or beat_times is None or len(beat_times) < 2:
         return notes
 
-    keep = melody_mask(notes)
-    melody = [n for n, k in zip(notes, keep) if k]
-    accomp = [n for n, k in zip(notes, keep) if not k]
+    # Prefer explicit ROLES over guessing from pitch.  melody_mask asks "is this
+    # the top voice above G#3", which cannot separate a low vocal note from a
+    # bass note — measured, ~30% of a real vocal sits below that line.  When the
+    # projection routed per stem, each note already knows what it is.
+    if any("role" in n for n in notes):
+        melody = [n for n in notes if n.get("role") == "melody"]
+        bass = [n for n in notes if n.get("role") == "bass"]
+        accomp = [n for n in notes if n.get("role") == "harmony"]
+        # The bass is DECODED from its own stem — a real line, not a guess — so
+        # it survives untouched alongside the melody.  Only the harmony gets
+        # rebuilt as a figure.
+        preserved = melody + bass
+    else:
+        keep = melody_mask(notes)
+        melody = [n for n, k in zip(notes, keep) if k]
+        accomp = [n for n, k in zip(notes, keep) if not k]
+        preserved = melody
     if not accomp:
         return notes
 
@@ -506,6 +520,8 @@ def arpeggiate(notes: List[Dict[str, Any]],
         rebuilt.extend(build_figure(chord[2], slots, start, end, centre,
                                     n_slots, ACC_LOW, ceiling, scale_pcs))
 
-    out = melody + rebuilt
+    for n in rebuilt:
+        n.setdefault("role", "harmony")
+    out = preserved + rebuilt
     out.sort(key=lambda n: (float(n["onset"]), int(n["pitch"])))
     return out

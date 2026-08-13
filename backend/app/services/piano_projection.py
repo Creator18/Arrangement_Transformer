@@ -96,6 +96,8 @@ N_PITCH = HIGH - LOW + 1
 # precision, which is the trade that made the output sound noisy.
 THRESH_Q = 0.94       # activation quantile
 
+PER_STEM = True           # route each Demucs stem to its own method
+
 WHITEN_NU = 0.0       # spectral whitening; measured as a strictly worse lever
                       # than N_HARMONICS below, so it is left off
 
@@ -405,6 +407,85 @@ def project_notes(y: np.ndarray, sr: int,
     return notes
 
 
+HARMONY_STEMS = ("guitar", "other", "piano")
+
+
+def _activations(path: pathlib.Path):
+    """Load a stem and decompose it. None if the file is missing or silent."""
+    import librosa
+    if not path.exists():
+        return None
+    y, _ = librosa.load(str(path), sr=SR, mono=True)
+    pk = float(np.abs(y).max())
+    if pk < 1e-4:
+        return None                      # an empty stem, e.g. piano on a rock track
+    return nmf_h(stft_mag((y / pk).astype(np.float32)), get_dictionary())
+
+
+def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
+                    beats_per_bar: int = 4):
+    """Route each Demucs stem to the method built for it.
+
+    Everything used to be summed into harmonic.wav and then split by frequency
+    (240 Hz) or pitch (MIDI 56).  Neither is a source separation, so the melody
+    competed with a guitar for the same activations and any vocal note below G#3
+    was handed to the accompaniment rebuild and overwritten — measured at ~30% of
+    the vocal on a real upload.
+
+    Notes come back tagged with a ROLE, not a hand.  Role is musical and comes
+    from the stem; hand is physical and is assigned last by
+    enforce_hand_constraints, which can see the whole texture's geometry.  That
+    also gives the reduction stage a priority order it never had:
+    melody > bass > harmony, instead of pruning by whichever note was loudest.
+    """
+    from app.services import melody_decode as MD
+
+    out: List[Dict[str, Any]] = []
+    used = []
+
+    # melody — the vocals stem, decoded over the full vocal register
+    Hv = _activations(comp_dir / "stem_vocals.wav")
+    if Hv is not None and beat_times is not None:
+        line = MD.decode(Hv, LOW, beat_times, downbeats, beats_per_bar,
+                         lo=MD.VOCAL_LO, hi=MD.VOCAL_HI)
+        for n in line:
+            n["role"] = "melody"
+        out += line
+        used.append(f"vocals->melody {len(line)}")
+
+    # bass — monophonic by nature, and the cleanest stem Demucs produces
+    Hb = _activations(comp_dir / "stem_bass.wav")
+    if Hb is not None and beat_times is not None:
+        line = MD.decode(Hb, LOW, beat_times, downbeats, beats_per_bar,
+                         lo=MD.BASS_LO, hi=MD.BASS_HI)
+        for n in line:
+            n["role"] = "bass"
+        out += line
+        used.append(f"bass->bass {len(line)}")
+
+    # harmony — guitar + other + piano, peak-picked.  These feed chord
+    # inference and are then REPLACED by the arpeggiated figure, so their
+    # individual pitches matter less than the chroma they imply.
+    parts = [h for h in (_activations(comp_dir / f"stem_{n}.wav")
+                         for n in HARMONY_STEMS) if h is not None]
+    if parts:
+        width = min(h.shape[1] for h in parts)
+        Hh = sum(h[:, :width] for h in parts)
+        est = sorted(extract_notes(Hh), key=lambda n: (n[0], n[2]))
+        vels = velocities(Hh, est)
+        harm = [{"pitch": int(p), "onset": float(a), "offset": float(b),
+                 "velocity": int(v), "role": "harmony"}
+                for (a, b, p), v in zip(est, vels)]
+        out += harm
+        used.append(f"harmony->{len(harm)}")
+
+    if not out:
+        return None
+    print(f"[projection] per-stem: {', '.join(used)}")
+    out.sort(key=lambda n: (n["onset"], n["pitch"]))
+    return out
+
+
 def project_from_stems(comp_dir: pathlib.Path) -> List[Dict[str, Any]]:
     """Project the DRUMLESS mix separation already wrote.
 
@@ -438,6 +519,14 @@ def project_from_stems(comp_dir: pathlib.Path) -> List[Dict[str, Any]]:
                 downs = np.asarray(m["downbeat_frames"], dtype=float) * hop / msr
         except Exception:                                   # noqa: BLE001
             pass
+
+    # Per-stem routing when separation wrote the stems; otherwise the old
+    # single-signal path, which is also the fallback for sessions separated
+    # before stems existed.
+    if PER_STEM and (comp_dir / "stem_vocals.wav").exists():
+        by_stem = project_by_stem(comp_dir, beats, downs, bpb)
+        if by_stem:
+            return by_stem
 
     h = comp_dir / "harmonic.wav"
     if h.exists():

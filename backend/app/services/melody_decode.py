@@ -47,6 +47,17 @@ import numpy as np
 DECODE_MELODY = True
 
 MEL_LO, MEL_HI = 56, 96       # G#3-C7: the register the pipeline calls melody
+
+# Ranges used when decoding an ISOLATED stem, where there is no other
+# instrument to be confused with and the pitch floor is no longer doing any
+# separating work.
+#
+# VOCAL_LO is 40, not 56.  On a real upload the vocals stem put roughly 30% of
+# its notes below G#3 — a male rock vocal sits far lower than POP909's corpus
+# average of 0.7% below that line — and every one of those was being handed to
+# the accompaniment rebuild and overwritten.
+VOCAL_LO, VOCAL_HI = 40, 96    # E2-C7
+BASS_LO, BASS_HI = 24, 55      # C1-G3
 FPS = 100.0                   # must match the priors' fps
 OBS_GAMMA = 0.75              # how sharply activation is trusted, see below
 SIL_FLOOR = 0.55              # activation level silence has to beat
@@ -107,18 +118,30 @@ def _slot_of_frame(n_fr: int, beat_times: Optional[np.ndarray],
 
 def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
            downbeats: Optional[np.ndarray] = None,
-           beats_per_bar: int = 4) -> List[Dict[str, Any]]:
+           beats_per_bar: int = 4,
+           lo: Optional[int] = None, hi: Optional[int] = None) -> List[Dict[str, Any]]:
     """Viterbi a monophonic line through the activation matrix.
 
     `H` is (88, T) activations from the projection, `low` its lowest MIDI pitch.
-    Returns note dicts covering only the melody register.
+    `lo`/`hi` bound the decoded register — pass VOCAL_* when decoding an
+    isolated vocals stem and BASS_* for a bass stem.  The default is the old
+    melody window, so existing callers are unaffected.
+
+    The priors are melody priors either way, which is right for a vocal and
+    only approximately right for a bass: the structure (one note at a time, a
+    dwell cost, onsets pulled to strong beats) transfers, but the interval and
+    duration distributions of a bass line are not a singer's.  POP909 has no
+    bass track; its PIANO track's lowest voice IS a human left-hand bass and is
+    where proper bass priors should come from.
     """
     P = priors()
     if not DECODE_MELODY or P is None or H.size == 0:
         return []
 
-    n_pitch = MEL_HI - MEL_LO + 1
-    a, b = MEL_LO - low, MEL_HI - low + 1
+    lo = MEL_LO if lo is None else int(lo)
+    hi = MEL_HI if hi is None else int(hi)
+    n_pitch = hi - lo + 1
+    a, b = lo - low, hi - low + 1
     if a < 0 or b > H.shape[0]:
         return []
 
@@ -248,7 +271,7 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
                 continue
             s = A[p_idx, a0:b0]
             out.append({
-                "pitch": MEL_LO + p_idx,
+                "pitch": lo + p_idx,
                 "onset": a0 / FPS,
                 "offset": b0 / FPS,
                 "_act": float(s.max()) if s.size else 0.0,

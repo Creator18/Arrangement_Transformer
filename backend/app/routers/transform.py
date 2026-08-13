@@ -94,7 +94,8 @@ def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
     cannot drift apart again.
     """
     from app.services.transformation import (
-        snap_to_beat_grid, cap_polyphony, drop_non_scale, MAX_SOUNDING)
+        snap_to_beat_grid, cap_polyphony, drop_non_scale, enforce_melody_on_top,
+        MAX_SOUNDING)
     from app.services.arpeggiator import arpeggiate
     from app.services.melody_cleanup import clean_melody
     from app.services.melody_decode import MEL_LO, DECODE_MELODY
@@ -131,6 +132,9 @@ def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
         downbeat_times_arr if downbeat_times_arr is not None else None,
         beats_per_bar, scale_pcs, key_root,
     )
+    # Melody on top BEFORE capping, so the cap thins a texture that is already
+    # correctly voiced rather than one where harmony is masking the tune.
+    notes = enforce_melody_on_top(notes)
     notes = cap_polyphony(notes, MAX_SOUNDING)
 
     n_pre = len(notes)
@@ -243,6 +247,29 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             # range, so we skip extract_layers entirely.  We still run
             # compress_notes_to_range below as a clamp, which is a no-op
             # when notes are already in-range.
+        elif is_song:
+            # ── Song path: skip extract_layers entirely ───────────────────
+            # That stage finds repeating figures in a PIANO TRANSCRIPTION and
+            # splits it into layers.  On the song path we already do that job
+            # explicitly and better: the melody is decoded from the vocals
+            # stem, the bass from the bass stem, and the accompaniment is
+            # generated from inferred harmony onto a retrieved rhythm.
+            #
+            # Running it anyway was not merely redundant, it was destructive.
+            # It SYNTHESISES representative notes for its layers rather than
+            # passing the originals through, so the role tags the projection
+            # attached did not survive: measured, 2,851 notes reached the
+            # reduction with roles on about 200 of them, while
+            # transcription.json had them on all 3,534.  Every note copy in
+            # that module uses {**n} and preserves keys — the notes simply were
+            # not the same notes.
+            #
+            # Same shape of mistake as handing songs to the ML generator: the
+            # wrong tool for the task, quietly doing damage while returning 200.
+            method = "stem_roles"
+            merged = [dict(n) for n in notes]
+            print(f"[transform] song path: extract_layers bypassed, "
+                  f"{len(merged)} notes with roles carried through")
         else:
             # ── Rule-based path (current default) ─────────────────────────
             layers = extract_layers(
@@ -465,6 +492,20 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     # already held, so the "one key, one press" invariant is enforced last.
     # Applies at every octave setting: the 7-octave source carries ~0.2
     # collisions per piece of its own, and those cost sustain too.
+    # Songs skipped extract_layers, so give the UI role-based layers instead of
+    # nothing.  These are more useful than the pattern-cluster layers anyway —
+    # melody / bass / accompaniment is what a player actually wants to isolate.
+    if is_song and not layers:
+        _ROLE_META = [("melody", "Melody", "#f87171"),
+                      ("bass", "Bass", "#3b82f6"),
+                      ("harmony", "Accompaniment", "#a78bfa")]
+        layers = []
+        for key, label, colour in _ROLE_META:
+            got = [n for n in export_notes if n.get("role") == key]
+            if got:
+                layers.append({"id": key, "name": label, "color": colour,
+                               "notes": got})
+
     export_notes = resolve_doubled_keys(export_notes)
 
     for stale in ["arrangement_preview.wav", "transcription_preview.wav"]:

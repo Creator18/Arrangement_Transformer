@@ -344,6 +344,11 @@ def notes_to_pretty_midi(
 SNAP_SUBDIVISIONS = 4      # sixteenths at 4/4
 MAX_SOUNDING = 4           # the human arrangement never exceeded about this
 
+# Priority when the texture has to be thinned: melody > bass > harmony.
+# Straight from the craft — you reduce the accompaniment, never the tune,
+# and the bass note is what tells a listener which chord they heard.
+ROLE_RANK = {"melody": 0, "bass": 1, "harmony": 2}
+
 
 def snap_to_beat_grid(notes: List[Dict[str, Any]],
                       beat_times: Optional[np.ndarray],
@@ -397,7 +402,16 @@ def cap_polyphony(notes: List[Dict[str, Any]],
     """
     if not notes:
         return notes
-    ordered = sorted(notes, key=lambda n: (float(n["onset"]), -int(n.get("velocity", 80))))
+    # Rank by ROLE first, velocity only as a tiebreak inside a role.
+    #
+    # Ranking by velocity alone is source-blind: an arpeggio note could evict a
+    # melody note purely for being louder, which is the one substitution a
+    # listener never forgives.  With roles attached the priority is the
+    # arranger's: the tune survives, then the bass that defines the harmony,
+    # then the figure that decorates it.
+    ordered = sorted(notes, key=lambda n: (float(n["onset"]),
+                                           ROLE_RANK.get(n.get("role"), 2),
+                                           -int(n.get("velocity", 80))))
     kept: List[Dict[str, Any]] = []
     for n in ordered:
         on = float(n["onset"])
@@ -405,8 +419,11 @@ def cap_polyphony(notes: List[Dict[str, Any]],
         if len(active) < max_sounding:
             kept.append(n)
             continue
-        weakest = min(active, key=lambda k: int(k.get("velocity", 80)))
-        if int(n.get("velocity", 80)) > int(weakest.get("velocity", 80)):
+        weakest = min(active, key=lambda k: (-ROLE_RANK.get(k.get("role"), 2),
+                                             int(k.get("velocity", 80))))
+        if (ROLE_RANK.get(n.get("role"), 2),
+                -int(n.get("velocity", 80))) < (ROLE_RANK.get(weakest.get("role"), 2),
+                                                -int(weakest.get("velocity", 80))):
             # Release the weaker note here rather than deleting it outright —
             # it has already been sounding, and truncating preserves the
             # attack the listener has heard.
@@ -440,3 +457,71 @@ def drop_non_scale(notes: List[Dict[str, Any]], scale_pcs) -> List[Dict[str, Any
         return notes
     pcs = set(int(p) % 12 for p in scale_pcs)
     return [n for n in notes if (int(n["pitch"]) % 12) in pcs]
+
+
+MELODY_CLEARANCE = 2      # semitones the melody must lead the texture by
+
+
+def enforce_melody_on_top(notes: List[Dict[str, Any]],
+                          clearance: int = MELODY_CLEARANCE,
+                          floor: int = 28) -> List[Dict[str, Any]]:
+    """Fold accompaniment below the melody wherever they collide.
+
+    Rule one of piano arranging: the melody must be the highest sounding voice.
+    A piano has no EQ, no compression and no stereo placement, so REGISTER is
+    the only prominence tool available — height is how a listener knows which
+    line is the tune.
+
+    This also removes the need to carry a role tag past this point.  Once the
+    invariant holds, the top voice IS the melody and the lowest IS the bass, so
+    the role becomes a query over the notes rather than an annotation travelling
+    beside them.  Annotations get dropped by any stage that rebuilds a dict —
+    measured, roles survived on about 200 of 2,851 notes through one such stage.
+    Structural invariants survive that journey; labels do not.
+
+    Folding by octaves rather than dropping, because an octave displacement
+    keeps the pitch class, so the harmony is unchanged and only the voicing
+    moves.  A note that cannot fit above `floor` is dropped, which is the
+    correct outcome: if there is no room under the melody, the arranger thins
+    the texture.
+    """
+    mel = sorted((n for n in notes if n.get("role") == "melody"),
+                 key=lambda n: float(n["onset"]))
+    if not mel:
+        return notes
+    starts = np.array([float(n["onset"]) for n in mel])
+    ends = np.array([float(n["offset"]) for n in mel])
+    pitches = np.array([int(n["pitch"]) for n in mel])
+
+    out, moved, dropped = [], 0, 0
+    for n in notes:
+        if n.get("role") == "melody":
+            out.append(n)
+            continue
+        on, off = float(n["onset"]), float(n["offset"])
+        # the lowest melody pitch sounding at any point this note is sounding —
+        # the ceiling has to clear the melody's dips, not just its average
+        hit = (starts < off) & (ends > on)
+        if not hit.any():
+            out.append(n)
+            continue
+        ceiling = int(pitches[hit].min()) - clearance
+        p = int(n["pitch"])
+        if p <= ceiling:
+            out.append(n)
+            continue
+        while p > ceiling:
+            p -= 12
+        if p < floor:
+            dropped += 1
+            continue
+        m = dict(n)
+        m["pitch"] = p
+        moved += 1
+        out.append(m)
+
+    if moved or dropped:
+        print(f"[arrange] melody-on-top: folded {moved} notes below the tune, "
+              f"dropped {dropped} with no room")
+    out.sort(key=lambda n: (float(n["onset"]), int(n["pitch"])))
+    return out
