@@ -125,7 +125,8 @@ def _get_madmom():
 
 def _madmom_beats(audio: np.ndarray, sr: int) -> Tuple[List[int], List[int], float, int]:
     """
-    Beat + downbeat tracking on the drum-less harmonic mix.
+    Beat + downbeat tracking. Give this the FULL MIX on songs: madmom is
+    trained on music with drums, and a drumless mix is out of domain for it.
 
     Returns:
         beat_frames      list[int]  frame indices at hop_length=HOP
@@ -334,13 +335,39 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     y_bass  = _normalise(y_bass)
     y_upper = _normalise(y_upper)
 
-    # ── 5. Beat + downbeat tracking via madmom on the harmonic mix ────────
-    # madmom's RNN beat tracker is roughly 2× more accurate than
-    # librosa.beat.beat_track on real music, AND its DBN downbeat tracker
-    # gives us measure starts (not just beat boundaries) and a time-signature
-    # estimate in one pass.  Drumless input keeps drum transients from
-    # confusing onset detection.
-    beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(harmonic, SR)
+    # ── 5. Beat + downbeat tracking via madmom on the FULL MIX ────────────
+    # madmom's RNN beat tracker is roughly 2x more accurate than
+    # librosa.beat.beat_track on real music, AND its DBN downbeat tracker gives
+    # us measure starts (not just beat boundaries) and a time-signature estimate
+    # in one pass.
+    #
+    # It used to be fed `harmonic` — the mix with drums REMOVED — on the
+    # reasoning that drum transients confuse onset detection.  That is true of
+    # PITCH onset detection and false of beat tracking, where the drums are the
+    # beat.  madmom's RNN is trained on real music with drums, so a drumless mix
+    # is out of domain and it locks onto whatever periodicity the guitars and
+    # vocals happen to offer.
+    #
+    # Measured (eval/beat_source_songs.py), against drum-stem attacks:
+    #
+    #     source              tempo   drum fit   median dev
+    #     drumless (old)      136.4        36%      162.5 ms
+    #     drums only          139.5        57%       46.4 ms
+    #     full mix            139.5        56%       46.4 ms
+    #
+    # And the old grid scores beat F-measure 0.000 against all three others,
+    # which agree with each other at 1.000 — same beat count and tempo, so it
+    # was not mistracking the pulse, it was PHASE-SHIFTED about a third of a
+    # beat off it.  Four stages hang on this grid (beat snapping, the
+    # arpeggiator's bar edges, the melody decode's metrical prior, and the
+    # 16-slot rhythm retrieval), so all four were quantising precisely to the
+    # wrong phase.
+    #
+    # Full mix over drums-only because they are indistinguishable here
+    # (F = 1.000) and the full mix needs no separation, so beat tracking no
+    # longer depends on Demucs having succeeded.
+    _mix_mono, _ = librosa.load(str(wav_path), sr=SR, mono=True)
+    beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(_mix_mono, SR)
 
     # ── 6. REPET-SIM split on BOTH bands ──────────────────────────────────
     # Upper band: pattern.wav + melody.wav (transcribed independently by
