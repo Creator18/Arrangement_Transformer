@@ -92,7 +92,18 @@ _CHORD_PRIOR_PATH = pathlib.Path(__file__).with_name("_chord_priors.npz")
 # is the same cheap-template effect: dom7 and min7 have four tones and fit
 # noise more easily than triads.  Above 0.04 it starts flattening everything
 # into major.
-CHORD_PRIOR_W = 0.04
+#   weight   root   quality   both   minor recall     (maj/min prior TIED)
+#     0.00  73.8%     68.5%  62.0%          86.8%
+#     0.08  74.6%     81.8%  69.7%          84.2%   <- ships, start of plateau
+#     0.15  74.6%     82.0%  69.9%          84.2%
+#
+# Scored against POP909's own chord labels rather than against a distribution,
+# which is what made the earlier 0.04 look reasonable: matching how often
+# humans play each quality is not the same as naming the right chord.
+#
+# 0.08 is the smallest weight that reaches the plateau.  Taking the least prior
+# that achieves the result leaves the most work to the evidence.
+CHORD_PRIOR_W = 0.08
 
 
 def chord_priors() -> Optional[tuple]:
@@ -128,7 +139,26 @@ def chord_priors() -> Optional[tuple]:
         return None
     z = np.load(_CHORD_PRIOR_PATH, allow_pickle=False)
     names = [str(s) for s in z["qualities"]]
-    qlog = {n: float(np.log(p + 1e-9)) for n, p in zip(names, z["quality_p"])}
+    qp = dict(zip(names, [float(v) for v in z["quality_p"]]))
+
+    # Tie maj and min to the same prior, deliberately.
+    #
+    # Measured against POP909's own chord labels, the prior does two jobs that
+    # pull opposite ways.  Suppressing dim (46x rarer) and the four-note
+    # sevenths (cheap templates that fit noise) raised quality accuracy from
+    # 68.5% to 81.3%.  But maj is only 1.8x more common than min, and letting
+    # that break the tie cost minor recall 86.8% -> 77.4%.
+    #
+    # maj vs min is decided by ONE semitone — the third — and it is the most
+    # perceptually loaded distinction in the whole vocabulary: calling a minor
+    # chord major changes the emotional character of the bar, while calling a
+    # maj7 a maj barely registers.  So that comparison is left to the evidence
+    # and the prior keeps only the job it is good at.
+    if "maj" in qp and "min" in qp:
+        share = (qp["maj"] + qp["min"]) / 2.0
+        qp["maj"] = qp["min"] = share
+
+    qlog = {n: float(np.log(p + 1e-9)) for n, p in qp.items()}
     dlog = np.log(z["degree_p"] + 1e-9)
     _CHORD_PRIORS = (qlog, dlog)
     return _CHORD_PRIORS
