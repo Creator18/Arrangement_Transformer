@@ -425,6 +425,84 @@ REFINE_Q = 60              # a rise must beat this percentile of its own pitch's
 REFINE_MAX_MOVE_SUB = 1.0  # ...and may not move further than this many sixteenths
 
 
+REFINE_ENV = True          # place onsets from the broadband envelope
+
+# How far a note may be moved.  Chosen musically, not by the metric: a
+# sixteenth is ~81 ms at this tempo, so 90 ms lets a note cross into the
+# NEIGHBOURING slot, which changes the rhythm rather than tightening it.  60 ms
+# keeps every correction inside the note's own slot.
+#
+# The metric does prefer 90 ms — median distance to a full-mix onset 17.4 ms
+# against 23.2 ms at 60 ms, and 919 notes placed against 759.  That is partly
+# mechanical, since moving more notes onto onsets improves distance-to-onset by
+# construction.  Worth an A/B by ear; it is this one constant.
+REFINE_ENV_MAX_MOVE_S = 0.06
+REFINE_ENV_PITCH_Q = 25    # H must show at least this much presence at the target
+
+
+def refine_onsets_env(notes: List[Dict[str, Any]], onsets, H: np.ndarray,
+                      low: int, max_move: float = REFINE_ENV_MAX_MOVE_S,
+                      proj_fps: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Take the TIME from the audio's onset envelope and the PITCH from H.
+
+    This is the split that makes the correction possible.  H decided which
+    pitches sound and when, at 23 ms resolution, and refining against it again
+    recovers nothing — the decoder already used it.  The broadband envelope is
+    a different signal at 5.8 ms, so it knows things about attack timing that
+    never entered the decode, but it says nothing about pitch.  So each is
+    asked only what it can answer: the envelope supplies the instant, H vetoes
+    instants where that pitch is not actually present.
+
+    The veto matters.  Without it a vocal note would happily snap to a guitar
+    strum 40 ms away, because a broadband onset does not know whose it is.
+
+    Bounded to +-60 ms — under one sixteenth at most tempos — so this stays a
+    correction rather than a search for the best nearby onset.  Notes with no
+    qualifying onset in range keep their decoded time.
+    """
+    if not REFINE_ENV or not notes or onsets is None or len(onsets) == 0:
+        return notes
+    if H is None or H.size == 0:
+        return notes
+    if proj_fps is None:
+        from app.services.piano_projection import FPS as proj_fps  # noqa: N806
+
+    ons = np.sort(np.asarray(onsets, dtype=float))
+    n_fr = H.shape[1]
+    pres = np.zeros(H.shape[0])
+    for r in range(H.shape[0]):
+        row = H[r][H[r] > 0]
+        pres[r] = np.percentile(row, REFINE_ENV_PITCH_Q) if row.size else np.inf
+
+    out, moved, vetoed = [], 0, 0
+    for n in notes:
+        m = dict(n)
+        t = float(m["onset"])
+        r = int(m["pitch"]) - low
+        i = int(np.searchsorted(ons, t))
+        best, bd = None, max_move
+        for j in (i - 1, i):
+            if 0 <= j < len(ons) and abs(ons[j] - t) <= bd:
+                best, bd = float(ons[j]), abs(ons[j] - t)
+        if best is not None and 0 <= r < H.shape[0]:
+            f = int(best * proj_fps)
+            a, b = max(0, f - 1), min(n_fr, f + 2)
+            if b > a and float(H[r, a:b].max()) >= pres[r]:
+                dur = float(m["offset"]) - t
+                m["onset"] = best
+                m["offset"] = best + max(dur, MIN_NOTE_S)
+                m["_timed"] = True
+                moved += 1
+            else:
+                vetoed += 1
+        out.append(m)
+
+    out.sort(key=lambda x: (float(x["onset"]), int(x["pitch"])))
+    print(f"[decode] envelope timing: {moved}/{len(notes)} placed from onsets, "
+          f"{vetoed} vetoed by pitch presence")
+    return out
+
+
 def refine_onsets(notes: List[Dict[str, Any]], H: np.ndarray, low: int,
                   beat_times, subdivisions: int = JOINT_SUBDIVISIONS,
                   proj_fps: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -605,7 +683,8 @@ def reconcile_slots(notes: List[Dict[str, Any]], H: np.ndarray, low: int,
 def decode_two_voices(H: np.ndarray, low: int,
                       beat_times: Optional[np.ndarray] = None,
                       downbeats: Optional[np.ndarray] = None,
-                      beats_per_bar: int = 4) -> List[Dict[str, Any]]:
+                      beats_per_bar: int = 4,
+                      onsets: Optional[np.ndarray] = None) -> List[Dict[str, Any]]:
     """Decode a bass and a melody from ONE activation matrix, in that order.
 
     Replaces per-stem routing.  That routing ran two different decoders over two
@@ -665,4 +744,6 @@ def decode_two_voices(H: np.ndarray, low: int,
     # after it re-grids them.
     if REFINE_ONSETS and beat_times is not None:
         out = refine_onsets(out, H, low, beat_times)
+    if REFINE_ENV and onsets is not None:
+        out = refine_onsets_env(out, onsets, H, low)
     return out

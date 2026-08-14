@@ -614,6 +614,53 @@ def _activations_mixed(paths):
     return nmf_h(stft_mag((mix / pk).astype(np.float32)), get_dictionary())
 
 
+# Onset detection hop.  HOP is 512 (23 ms) because the DECOMPOSITION needs a
+# window long enough to resolve the bottom octave; that is the right trade for
+# pitch and the wrong one for time, and it puts a +-12 ms floor under every
+# onset the decoder can produce.  Onsets need no frequency resolution at all,
+# so they get their own much shorter hop: 128 samples is 5.8 ms, four times
+# finer, and it is information the decode never saw.
+ONSET_HOP = 128
+
+
+# Peak-picking threshold, swept against full-mix onsets.  The optimum is
+# interior, not monotone — below 0.08 the detector starts finding noise and
+# notes snap to spurious peaks, which is worse than not moving them:
+#
+#   delta   onsets   placed   within 40 ms   median dist
+#   (none)       -        -         66.3%       29.3 ms
+#   0.15       567      495         68.9%       21.5 ms
+#   0.08      1442      919         68.7%       17.4 ms   <- ships
+#   0.04      2184     1044         66.2%       23.2 ms
+#   0.02      2495     1051         64.8%       23.2 ms
+ONSET_DELTA = 0.08
+
+
+def onset_times(path: pathlib.Path, hop: int = ONSET_HOP,
+                delta: float = ONSET_DELTA) -> Optional[np.ndarray]:
+    """Broadband onset times from the audio, independent of the dictionary.
+
+    Deliberately NOT derived from H.  Refining against H was measured as a
+    no-op because the Viterbi had already spent H's onset information placing
+    the notes in the first place — see melody_decode.refine_onsets.  Spectral
+    flux is a different signal at a finer hop, so it can move a note somewhere
+    the decode could not have put it.
+    """
+    import librosa
+    if not path.exists():
+        return None
+    y, _ = librosa.load(str(path), sr=SR, mono=True)
+    if float(np.abs(y).max()) < 1e-4:
+        return None
+    env = librosa.onset.onset_strength(y=y, sr=SR, hop_length=hop)
+    # peak_pick's windows are in FRAMES, so they have to be scaled to the hop
+    # or a 4x finer grid silently quadruples how picky they are.
+    w = max(1, int(0.03 * SR / hop))
+    pk = librosa.util.peak_pick(env, pre_max=w, post_max=w, pre_avg=2 * w,
+                                post_avg=2 * w, delta=delta, wait=w)
+    return np.asarray(pk, dtype=float) * hop / SR
+
+
 def key_from_activations(*Hs) -> Optional[tuple]:
     """Estimate (root, mode) by folding activation energy into pitch classes.
 
@@ -798,7 +845,9 @@ def project_two_voices(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
     H = _activations(comp_dir / "harmonic.wav", MD_BASS_LO, MD_VOCAL_HI)
     if H is None or beat_times is None:
         return None
-    out = MD.decode_two_voices(H, LOW, beat_times, downbeats, beats_per_bar)
+    ons = onset_times(comp_dir / "harmonic.wav")
+    out = MD.decode_two_voices(H, LOW, beat_times, downbeats, beats_per_bar,
+                               onsets=ons)
     if not out:
         return None
 
