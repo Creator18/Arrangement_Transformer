@@ -377,6 +377,12 @@ def snap_to_beat_grid(notes: List[Dict[str, Any]],
     out = []
     for n in notes:
         m = dict(n)
+        # Placed from the song's own activation upstream — see
+        # melody_decode.refine_onsets.  Snapping it to the grid here would
+        # discard the measurement in favour of the proxy for it.
+        if m.get("_timed"):
+            out.append(m)
+            continue
         on = float(m["onset"])
         off = float(m.get("offset", on + 0.25))
         on_s = float(grid[int(np.argmin(np.abs(grid - on)))])

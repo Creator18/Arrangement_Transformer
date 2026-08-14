@@ -393,6 +393,107 @@ VOICE_MIN_SEP = 3
 JOINT_SLOTS = False
 JOINT_SUBDIVISIONS = 4     # sixteenths at 4/4, matching the downstream snap
 
+# Place onsets by the OVERLAY instead of by the grid.
+#
+# Every note is already 99.3% on-grid and they are still heard in the wrong
+# place, so sitting on the grid is plainly not what makes a note right.  The
+# song's own activation is the reference the grid was only ever a proxy for, so
+# use it directly: find where this pitch actually starts sounding, and put the
+# note there.
+# OFF: measured as a no-op, and for a structural reason worth keeping.
+#
+#                        H-based overlay      audio onsets (independent)
+#     before                     90.9%      66.3% within 40 ms, median 29.3
+#     after                      96.6%      65.2% within 40 ms, median 34.8
+#     chance                     19.8%      46.6% within 40 ms, median 43.4
+#
+# Against H it looks decisive; against spectral flux taken straight off the
+# waveform it is slightly WORSE.  The gain was circular — this moves notes to
+# where d(H) peaks and the overlay metric rewards notes sitting where d(H)
+# peaks.  Move magnitudes give it away: median 6 ms, p90 16 ms.
+#
+# The reason is structural.  The Viterbi already placed these onsets FROM this
+# same H, so H's information about when notes start is spent; re-reading it
+# cannot recover what was never there.  What little motion appears is mostly
+# re-quantising from the decoder's 100 Hz grid onto H's 43 Hz one.
+#
+# Fixing timing needs a signal the decoder did not already consume: a
+# broadband onset envelope at a finer hop.  H has 23 ms frames, so ±12 ms is
+# the floor on everything downstream regardless of algorithm.
+REFINE_ONSETS = False
+REFINE_Q = 60              # a rise must beat this percentile of its own pitch's
+REFINE_MAX_MOVE_SUB = 1.0  # ...and may not move further than this many sixteenths
+
+
+def refine_onsets(notes: List[Dict[str, Any]], H: np.ndarray, low: int,
+                  beat_times, subdivisions: int = JOINT_SUBDIVISIONS,
+                  proj_fps: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Move each onset to where its own energy actually starts.
+
+    NEAREST qualifying rise, not the largest.  Taking the largest is what broke
+    the first attempt at measuring this: over a +-250 ms window the biggest
+    activation rise at a given pitch is frequently the NEXT note's attack, so
+    the note gets dragged onto its neighbour and the error is reported as the
+    distance between them.  Bounding the search to one subdivision and
+    preferring proximity keeps a correction a correction.
+
+    A rise has to clear the REFINE_Q percentile of that pitch's own positive
+    differences, so the bar adapts per pitch — a quiet register is not held to a
+    loud one's standard.  Where nothing qualifies the note is left exactly where
+    it was, because inventing motion from weak evidence is how a timing fix
+    becomes a timing problem.
+
+    Notes it moves are stamped `_timed`, which the downstream quantisers honour.
+    Without that they are simply re-snapped to the grid and this does nothing.
+    """
+    if not REFINE_ONSETS or not notes or H is None or H.size == 0:
+        return notes
+    grid = _subdiv_grid(beat_times, subdivisions)
+    if grid is None:
+        return notes
+    if proj_fps is None:
+        from app.services.piano_projection import FPS as proj_fps  # noqa: N806
+
+    sub_s = float(np.median(np.diff(grid)))
+    max_move = REFINE_MAX_MOVE_SUB * sub_s
+    win = max(1, int(max_move * proj_fps))
+    n_fr = H.shape[1]
+    d = np.diff(H, axis=1, prepend=H[:, :1])
+
+    # per-pitch bar for what counts as an attack
+    thr = np.zeros(H.shape[0])
+    for r in range(H.shape[0]):
+        pos = d[r][d[r] > 0]
+        thr[r] = np.percentile(pos, REFINE_Q) if pos.size else np.inf
+
+    out, moved = [], 0
+    for n in notes:
+        m = dict(n)
+        r = int(m["pitch"]) - low
+        t = float(m["onset"])
+        f = int(t * proj_fps)
+        if 0 <= r < H.shape[0]:
+            a, b = max(0, f - win), min(n_fr, f + win + 1)
+            if b > a:
+                seg = d[r, a:b]
+                ok = np.where(seg >= thr[r])[0]
+                if ok.size:
+                    # nearest qualifying rise to where we already are
+                    best = ok[int(np.argmin(np.abs((a + ok) - f)))]
+                    nt = (a + int(best)) / proj_fps
+                    if abs(nt - t) > 1e-9:
+                        dur = float(m["offset"]) - t
+                        m["onset"] = nt
+                        m["offset"] = nt + max(dur, MIN_NOTE_S)
+                        m["_timed"] = True
+                        moved += 1
+        out.append(m)
+
+    out.sort(key=lambda x: (float(x["onset"]), int(x["pitch"])))
+    print(f"[decode] onset refinement: {moved}/{len(notes)} moved "
+          f"(window +-{max_move*1000:.0f} ms)")
+    return out
+
 
 def _subdiv_grid(beat_times, subdivisions: int = JOINT_SUBDIVISIONS):
     bt = np.asarray(beat_times, dtype=float)
@@ -560,4 +661,8 @@ def decode_two_voices(H: np.ndarray, low: int,
     # grid, and they disagreed about where the beat was in most bars.
     if JOINT_SLOTS and beat_times is not None:
         out = reconcile_slots(out, H, low, beat_times)
+    # Last, so it places notes by evidence rather than by the grid, and nothing
+    # after it re-grids them.
+    if REFINE_ONSETS and beat_times is not None:
+        out = refine_onsets(out, H, low, beat_times)
     return out

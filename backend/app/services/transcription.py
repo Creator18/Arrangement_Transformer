@@ -641,6 +641,13 @@ def _beat_adaptive_quantize(
 
     result = []
     for n in notes:
+        # A note whose time was set from the SONG'S OWN activation is already
+        # where the evidence says it belongs; the grid is only ever a proxy for
+        # that, so re-snapping here would overwrite the better answer with the
+        # worse one.  melody_decode.refine_onsets stamps these.
+        if n.get('_timed'):
+            result.append(dict(n))
+            continue
         # Clamp to zero — extrapolation before the first beat can snap an
         # early onset negative, which downstream (mir_eval, MIDI export)
         # rejects as a malformed interval.
