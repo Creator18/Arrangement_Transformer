@@ -342,11 +342,27 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         if _stamped is not None:
             root, scale_name = int(_stamped["key_root"]), str(_stamped["key_scale"])
         else:
-            root, scale_name, _ = detect_scale(merged)
+            # Nothing stamped means the projection did not run (it fell back to
+            # Onsets & Frames, or failed).  Re-deriving here is the very poll
+            # the comment above warns about, so at least exclude the generated
+            # material: prefer notes that carry a DETECTED role.
+            _det = [n for n in merged if n.get("role") in ("melody", "bass")]
+            root, scale_name, _ = detect_scale(_det or merged)
+        # The interval set must come from scale_name, not be hardcoded major.
+        # It was [0,2,4,5,7,9,11] regardless, so any minor/dorian/mixolydian
+        # detection reported the MAJOR scale on that root — a set the notes were
+        # never filtered against, since drop_non_scale reads the real one.  That
+        # shows up as exactly the complaint "the key says X but I see a note
+        # that isn't in X", with nothing wrong but the label.
+        from app.services.music_theory import _scale_pitch_classes
+        try:
+            _pcs = _scale_pitch_classes(root, scale_name)
+        except Exception:                                   # noqa: BLE001
+            _pcs = {(root + iv) % 12 for iv in (0, 2, 4, 5, 7, 9, 11)}
         scale_info = {
             "root":  _NOTE_NAMES[root],
             "scale": scale_name,
-            "notes": sorted(_NOTE_NAMES[(root + iv) % 12] for iv in [0,2,4,5,7,9,11]),
+            "notes": sorted(_NOTE_NAMES[p] for p in _pcs),
         }
         if SOURCE_FIDELITY:
             # Only the stages that drop or re-voice within the original
