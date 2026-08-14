@@ -388,6 +388,118 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
 # between the two voices rather than two parts genuinely that close.
 VOICE_MIN_SEP = 3
 
+# OFF: built to close a gap that turned out not to be measured.  See the note
+# in reconcile_slots — the per-bar metric it was aimed at was estimator noise.
+JOINT_SLOTS = False
+JOINT_SUBDIVISIONS = 4     # sixteenths at 4/4, matching the downstream snap
+
+
+def _subdiv_grid(beat_times, subdivisions: int = JOINT_SUBDIVISIONS):
+    bt = np.asarray(beat_times, dtype=float)
+    if bt.size < 2:
+        return None
+    g = [a + (b - a) * k / subdivisions
+         for a, b in zip(bt[:-1], bt[1:]) for k in range(subdivisions)]
+    g.append(float(bt[-1]))
+    return np.asarray(g)
+
+
+def reconcile_slots(notes: List[Dict[str, Any]], H: np.ndarray, low: int,
+                    beat_times, subdivisions: int = JOINT_SUBDIVISIONS,
+                    proj_fps: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Make notes at the same musical moment share a slot, across voices.
+
+    The two-voice decode couples the voices in PITCH — the floor makes the
+    melody depend on the bass, which is why crossings measure at zero — and not
+    at all in TIME.  They are two independent Viterbi passes, each with its own
+    metrical prior, never asked to agree with each other.  Measured on a real
+    arrangement, the two voices' best per-bar alignment differed by more than
+    40 ms in 60.2% of bars, against an 81 ms subdivision, while every POOLED
+    number said the timing was perfect: melody peak +0 ms, bass peak +0 ms,
+    difference +0 ms.  Aggregates hid it completely because the errors are
+    inconsistent rather than offset, so they cancel.
+
+    Reconciling per note would not fix this — that is a per-note decision and
+    two notes of one musical moment can still choose different slots.  The
+    decision has to be JOINT: group onsets that are close enough to be the same
+    moment, then pick one slot for the whole group by summed evidence.
+
+    Conservative on purpose, in two ways.  Only notes already within one
+    subdivision are grouped, so genuine syncopation — bass on the 'and' against
+    melody on the beat — is a full subdivision away and never collapsed.  And a
+    group only moves if the move IMPROVES its total evidence, so where the
+    activation is ambiguous nothing happens.
+
+    DEFAULTED OFF, because the 60.2% did not survive a control.  Splitting ONE
+    voice in half at random and comparing it against itself — zero desync by
+    construction — scores 66.9% (melody) and 60.1% (bass) on the same metric.
+    Melody vs bass at 57.3% is BELOW that floor, so the number was estimator
+    noise: about five onsets per voice per bar, argmax over 33 candidate
+    shifts.  A/B'd anyway: 57.3% before, 57.3% after, 182 of 1059 onsets moved,
+    onset containment 90.9% -> 91.4%.  No effect on the target, and the small
+    containment gain is not what it was built for.
+
+    Kept rather than deleted because the reasoning still holds — the voices
+    genuinely are coupled in pitch and not in time — and because a metric that
+    can actually resolve voice-to-voice timing would make this testable.  Do
+    not turn it on without one.
+    """
+    grid = _subdiv_grid(beat_times, subdivisions)
+    if grid is None or not notes or H is None or H.size == 0:
+        return notes
+    if proj_fps is None:
+        from app.services.piano_projection import FPS as proj_fps  # noqa: N806
+
+    d = np.diff(H, axis=1, prepend=H[:, :1])       # positive = attack
+    n_fr = H.shape[1]
+
+    def support(pitch: int, t: float) -> float:
+        """Evidence that `pitch` is struck at time `t`, +-1 frame."""
+        r = int(pitch) - low
+        if not (0 <= r < H.shape[0]):
+            return 0.0
+        f = int(t * proj_fps)
+        a, b = max(0, f - 1), min(n_fr, f + 2)
+        return float(max(0.0, d[r, a:b].max())) if b > a else 0.0
+
+    tol = float(np.median(np.diff(grid)))          # one subdivision
+    order = sorted(range(len(notes)), key=lambda i: float(notes[i]["onset"]))
+    out = [dict(n) for n in notes]
+
+    i = 0
+    while i < len(order):
+        grp = [order[i]]
+        t0 = float(out[order[i]]["onset"])
+        j = i + 1
+        while j < len(order) and float(out[order[j]]["onset"]) - t0 <= tol:
+            grp.append(order[j])
+            j += 1
+        # only worth deciding jointly if more than one VOICE is involved
+        roles = {out[k].get("role") for k in grp}
+        if len(grp) > 1 and len(roles) > 1:
+            cand = set()
+            for k in grp:
+                gi = int(np.argmin(np.abs(grid - float(out[k]["onset"]))))
+                for dd in (-1, 0, 1):
+                    if 0 <= gi + dd < len(grid):
+                        cand.add(gi + dd)
+            cur = sum(support(out[k]["pitch"], float(out[k]["onset"])) for k in grp)
+            best_t, best_s = None, cur
+            for gi in cand:
+                t = float(grid[gi])
+                s = sum(support(out[k]["pitch"], t) for k in grp)
+                if s > best_s:
+                    best_t, best_s = t, s
+            if best_t is not None:
+                for k in grp:
+                    dur = float(out[k]["offset"]) - float(out[k]["onset"])
+                    out[k]["onset"] = best_t
+                    out[k]["offset"] = best_t + max(dur, MIN_NOTE_S)
+        i = j
+
+    out.sort(key=lambda n: (float(n["onset"]), int(n["pitch"])))
+    return out
+
 
 def decode_two_voices(H: np.ndarray, low: int,
                       beat_times: Optional[np.ndarray] = None,
@@ -442,4 +554,10 @@ def decode_two_voices(H: np.ndarray, low: int,
 
     out = bass + mel
     out.sort(key=lambda n: (n["onset"], n["pitch"]))
+
+    # The voices are coupled in pitch by the floor above; this couples them in
+    # time.  Without it they are two independent decodes that happen to share a
+    # grid, and they disagreed about where the beat was in most bars.
+    if JOINT_SLOTS and beat_times is not None:
+        out = reconcile_slots(out, H, low, beat_times)
     return out

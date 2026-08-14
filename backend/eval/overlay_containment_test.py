@@ -174,6 +174,63 @@ def main():
         print(f"   ONSET  peak {np.nanmax(co)*100:5.1f}% at {po:+.0f} ms   "
               f"at 0: {co[len(co)//2]*100:5.1f}%   chance {bo*100:5.1f}%\n")
 
+    # ── per ROLE ────────────────────────────────────────────────────────────
+    #
+    # Pooling the two voices can hide the failure that matters most here.  If
+    # melody peaks at +20 ms and bass at -20 ms, the pooled curve still peaks
+    # at 0 while the parts sit 40 ms APART FROM EACH OTHER — which is what
+    # "treble and bass not in sync" actually is.  Their difference, not their
+    # individual offsets, is the number to read.
+    lev, ons = song_masks(H, 60, 60)
+    peaks = {}
+    print("PER ROLE (onset containment)")
+    for role in ("melody", "bass"):
+        sub = [n for n in notes if n.get("role") == role]
+        if not sub:
+            continue
+        Pr = piano_onset_map(sub, LOW, n_pitch, n_fr, FPS)
+        sc = np.array([contain(Pr, ons, int(s)) for s in shifts])
+        pk = shifts[int(np.nanargmax(sc))] / FPS * 1000
+        peaks[role] = pk
+        # width: how far you can slide before losing a tenth of the peak
+        thr = np.nanmax(sc) * 0.9
+        wide = shifts[np.where(sc >= thr)[0]] / FPS * 1000
+        print(f"   {role:<7} n={len(sub):<5} peak {np.nanmax(sc)*100:5.1f}% at "
+              f"{pk:+.0f} ms   >=90% of peak over {wide.min():+.0f}..{wide.max():+.0f} ms")
+    if len(peaks) == 2:
+        print(f"   melody - bass = {peaks['melody'] - peaks['bass']:+.0f} ms "
+              f"(0 means the two voices agree)\n")
+
+    # Per BAR, per role: does the disagreement wander within the piece?
+    downs_meta = json.loads((sess / "components.json").read_text())
+    _hop = float(downs_meta.get("hop_length", 512))
+    _msr = float(downs_meta.get("sr", 22050))
+    _downs = np.asarray(downs_meta.get("downbeat_frames", []), float) * _hop / _msr
+    if len(_downs) >= 8:
+        per = {}
+        for role in ("melody", "bass"):
+            sub = [n for n in notes if n.get("role") == role]
+            Pr = piano_onset_map(sub, LOW, n_pitch, n_fr, FPS)
+            vals = []
+            for a, b in zip(_downs[:-1], _downs[1:]):
+                fa, fb = int(a * FPS), int(b * FPS)
+                if fb - fa < 8 or not Pr[:, fa:fb].any():
+                    vals.append(np.nan)
+                    continue
+                sc = [contain(Pr[:, fa:fb], ons[:, fa:fb], int(s)) for s in shifts]
+                vals.append(np.nan if np.all(np.isnan(sc))
+                            else shifts[int(np.nanargmax(sc))] / FPS * 1000)
+            per[role] = np.array(vals, dtype=float)
+        d = per["melody"] - per["bass"]
+        d = d[~np.isnan(d)]
+        if len(d):
+            print(f"PER BAR, melody minus bass ({len(d)} bars)")
+            print(f"   median {np.median(d):+.0f} ms   IQR {np.percentile(d,25):+.0f}"
+                  f"..{np.percentile(d,75):+.0f}   |diff|>40ms in "
+                  f"{100*np.mean(np.abs(d) > 40):.1f}% of bars")
+            print("   a median near 0 with a WIDE spread is the two parts drifting")
+            print("   against each other bar to bar — inconsistent, not offset.\n")
+
     # ── per bar ─────────────────────────────────────────────────────────────
     meta = json.loads((sess / "components.json").read_text())
     hop, msr = float(meta.get("hop_length", 512)), float(meta.get("sr", 22050))
