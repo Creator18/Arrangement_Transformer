@@ -83,6 +83,33 @@ class TransformRequest(BaseModel):
     nmf_components: int = 16
 
 
+def _scale_info(root: int, scale_name: str) -> dict:
+    """The key as reported to the client — one builder, called by every branch.
+
+    There were two, and they disagreed.  The main path hardcoded the MAJOR
+    interval set regardless of scale_name, so a minor or dorian detection
+    reported the major scale on that root.  The FALLBACK path — which is what
+    solo piano actually takes — hardcoded an empty note list, so it reported no
+    scale notes at all.  Neither matched what drop_non_scale was enforcing,
+    which reads the real set, so in both cases the notes were right and only
+    the label was wrong.  That presents as "the key says X but I can see a note
+    that is not in X", which is a real bug report about an unreal bug.
+
+    Fixing one copy and not the other is what happened the first time, so now
+    there is one copy.
+    """
+    from app.services.music_theory import _scale_pitch_classes
+    try:
+        pcs = _scale_pitch_classes(root, scale_name)
+    except Exception:                                       # noqa: BLE001
+        pcs = {(root + iv) % 12 for iv in (0, 2, 4, 5, 7, 9, 11)}
+    return {
+        "root":  _NOTE_NAMES[root],
+        "scale": scale_name,
+        "notes": sorted(_NOTE_NAMES[p] for p in pcs),
+    }
+
+
 def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
                        downbeat_times_arr, beats_per_bar, label="main"):
     """Every song-only arrangement stage, in one place.
@@ -348,22 +375,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
             # material: prefer notes that carry a DETECTED role.
             _det = [n for n in merged if n.get("role") in ("melody", "bass")]
             root, scale_name, _ = detect_scale(_det or merged)
-        # The interval set must come from scale_name, not be hardcoded major.
-        # It was [0,2,4,5,7,9,11] regardless, so any minor/dorian/mixolydian
-        # detection reported the MAJOR scale on that root — a set the notes were
-        # never filtered against, since drop_non_scale reads the real one.  That
-        # shows up as exactly the complaint "the key says X but I see a note
-        # that isn't in X", with nothing wrong but the label.
-        from app.services.music_theory import _scale_pitch_classes
-        try:
-            _pcs = _scale_pitch_classes(root, scale_name)
-        except Exception:                                   # noqa: BLE001
-            _pcs = {(root + iv) % 12 for iv in (0, 2, 4, 5, 7, 9, 11)}
-        scale_info = {
-            "root":  _NOTE_NAMES[root],
-            "scale": scale_name,
-            "notes": sorted(_NOTE_NAMES[p] for p in _pcs),
-        }
+        scale_info = _scale_info(root, scale_name)
         if SOURCE_FIDELITY:
             # Only the stages that drop or re-voice within the original
             # pitch-class set at the original timestamps.
@@ -454,7 +466,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
                 beats_per_bar  = beats_per_bar,
             )
             root, scale_name, _ = detect_scale(export_notes)
-            scale_info = {"root": _NOTE_NAMES[root], "scale": scale_name, "notes": []}
+            scale_info = _scale_info(root, scale_name)
             # Song stages belong here as well.  Their absence is what made a
             # single upstream exception silently undo beat snapping, the
             # arpeggiated accompaniment, the polyphony cap and scale
