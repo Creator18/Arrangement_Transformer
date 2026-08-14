@@ -104,8 +104,12 @@ def render_notes_to_audio(notes: list, sr: int = 22050) -> np.ndarray:
         attack_ramp[:attack_len] = np.linspace(0.0, 1.0, attack_len)
 
         # Release: fade last 30 ms
+        # Guarded: for a note under 4 samples length//4 is 0, and `ramp[-0:]`
+        # is the WHOLE array rather than an empty slice, so this raised against
+        # a zero-length linspace instead of quietly doing nothing.
         release_len = min(int(0.03 * sr), length // 4)
-        attack_ramp[-release_len:] *= np.linspace(1.0, 0.0, release_len)
+        if release_len > 0:
+            attack_ramp[-release_len:] *= np.linspace(1.0, 0.0, release_len)
 
         wave = np.zeros(length, dtype=np.float64)
         for k, (rel_amp, decay_mult) in enumerate(PARTIALS, start=1):

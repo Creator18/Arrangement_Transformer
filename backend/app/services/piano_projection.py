@@ -556,6 +556,7 @@ HARMONY_STEMS = ("guitar", "other", "piano")
 
 # Imported here rather than inside the function so the ranges the decoder
 # will use are the same ones the decomposition is restricted to.
+from app.services import melody_decode as MD      # noqa: E402
 from app.services.melody_decode import (          # noqa: E402
     VOCAL_LO as MD_VOCAL_LO, VOCAL_HI as MD_VOCAL_HI,
     BASS_LO as MD_BASS_LO, BASS_HI as MD_BASS_HI)
