@@ -193,8 +193,46 @@ def transform_with_model(
     load_checkpoint(ckpt_path, model, map_location=device)
     model.eval()
 
+    # 3b. Run in windows the positional encoding can actually address.
+    #
+    # pos_enc.pe is (1, max_len, d) and the model indexes it as [:, :T, :], so a
+    # piece longer than max_len raised RuntimeError — measured, 28,146 steps
+    # against 4,096.  At ~100 steps/s that cap is about 41 SECONDS, so this was
+    # never a note-count limit: essentially every real piece hit it, the caller
+    # caught the exception, and /transform silently returned the rule-based
+    # fallback instead.  A solo-piano upload has been getting method="fallback"
+    # rather than the ML arrangement it reports.
+    #
+    # Windows overlap and only their CENTRES are kept.  Attention has no
+    # context beyond the window edge, so the first and last moments of a chunk
+    # are the model's worst output; butt-joining chunks would stitch precisely
+    # those together, once per chunk, forever.  Discarding a margin on each
+    # side means every kept step had full context on both sides.
+    max_len = int(getattr(getattr(model, "pos_enc", None), "pe",
+                          torch.zeros(1, 1 << 30, 1)).shape[1])
+    T = roll.shape[1]
+
+    def _run(a: int, b: int):
+        return model(roll[:, a:b], cond[:, a:b], noise[:, a:b])
+
     with torch.no_grad():
-        out_soft = model(roll, cond, noise)                            # (1, T, 61)
+        if T <= max_len:
+            out_soft = _run(0, T)                                      # unchanged
+        else:
+            margin = min(max_len // 8, 256)                            # ~2.5 s
+            stride = max_len - 2 * margin
+            parts, pos = [], 0
+            while pos < T:
+                a = min(pos, max(0, T - max_len))
+                b = min(a + max_len, T)
+                chunk = _run(a, b)
+                lo = pos - a                       # skip the leading margin
+                hi = min(lo + stride, b - a)       # ...and the trailing one
+                parts.append(chunk[:, lo:hi])
+                pos = a + hi
+            out_soft = torch.cat(parts, dim=1)
+            print(f"[ml] windowed inference: {T} steps in "
+                  f"{len(parts)} windows of {max_len} (margin {margin})")
         out_hard = (out_soft >= SPARSITY_BINARIZATION_THRESHOLD).float()
 
     # 4. Roll → notes
