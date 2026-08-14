@@ -141,9 +141,21 @@ def ground_truth(roll_path, n_frames):
 
 
 def load_dictionary():
-    """The service's cache is authoritative; this local one is a leftover."""
+    """The service's cache is authoritative; this local one is a leftover.
+
+    Shape-checked against the live front end: the cached piano dictionary was
+    built on 4097 LINEAR bins, and under the mel front end the spectrogram has
+    1024 rows.  Loading it blindly would multiply mismatched matrices, or worse,
+    silently measure the wrong thing.
+    """
+    import numpy as _np
+    probe = stft_mag(_np.zeros(SR // 2, dtype=_np.float32))
     if CACHE.exists():
-        return np.load(CACHE)
+        W = np.load(CACHE)
+        if W.shape[0] == probe.shape[0]:
+            return W
+        print(f"[eval] cached dictionary is {W.shape[0]} bins but the front end "
+              f"gives {probe.shape[0]}; rebuilding")
     return get_dictionary()
 
 

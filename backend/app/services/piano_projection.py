@@ -64,7 +64,7 @@ flux, and the harmonic relationship between simultaneously active rows.
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -96,6 +96,10 @@ N_PITCH = HIGH - LOW + 1
 # precision, which is the trade that made the output sound noisy.
 THRESH_Q = 0.94       # activation quantile
 
+# One decomposition of the drumless mix, two voices decoded from it with a
+# non-crossing constraint.  Supersedes PER_STEM, which is kept as a fallback so
+# the two can be compared rather than only replaced.
+TWO_VOICE = True
 PER_STEM = True           # route each Demucs stem to its own method
 
 # Reduce the harmony HERE rather than at /transform.
@@ -185,13 +189,30 @@ _W_KIND: str | None = None
 _W_BY_FFT: dict = {}
 
 
+def _to_mel(W: np.ndarray, n_fft: int) -> np.ndarray:
+    """Project a linear-frequency dictionary through the mel filterbank.
+
+    Applied to the DICTIONARY as well as the signal, deliberately.  NMF solves
+    V ~ W H, and the filterbank M is linear, so M V ~ (M W) H has the same
+    solution H — projecting both sides keeps the two consistent.  Rebuilding
+    the combs directly on mel centre frequencies would work too but risks the
+    two sides drifting apart, which is the failure Test 1 was built to catch.
+    """
+    if not USE_MEL:
+        return W
+    Wm = mel_filterbank(n_fft) @ W
+    n = np.linalg.norm(Wm, axis=0, keepdims=True)
+    n[n == 0] = 1.0
+    return (Wm / n).astype(np.float32)
+
+
 def get_dictionary_for(n_fft: int) -> np.ndarray:
     """Harmonic dictionary at a given FFT size, memoised."""
     if n_fft == N_FFT:
         return get_dictionary()
     if n_fft not in _W_BY_FFT:
-        _W_BY_FFT[n_fft] = build_harmonic_dictionary(
-            HARMONIC_ROLLOFF, N_HARMONICS, n_fft)
+        _W_BY_FFT[n_fft] = _to_mel(build_harmonic_dictionary(
+            HARMONIC_ROLLOFF, N_HARMONICS, n_fft), n_fft)
     return _W_BY_FFT[n_fft]
 
 
@@ -204,13 +225,72 @@ def get_dictionary_for(n_fft: int) -> np.ndarray:
 #
 # So the lever is bins, not columns.  Halving the FFT for the vocals stem halves
 # its matrices outright.
+# ── mel front end ────────────────────────────────────────────────────────────
+#
+# A linear FFT spends its resolution uniformly: 2.7 Hz everywhere.  To separate
+# adjacent semitones you need better than half a semitone, which is ~0.8 Hz at
+# A0 and ~145 Hz at 5 kHz.  So linear is THREE TIMES TOO COARSE at the bottom
+# and FIFTY TIMES FINER THAN NEEDED at the top — thousands of bins resolving
+# detail no note has.
+#
+# Mel spacing puts the resolution where pitch discrimination needs it, which
+# also removes the reason the two registers used different FFT sizes.
+#
+# 1024 bins, not 512: mel is only logarithmic ABOVE ~1 kHz and roughly linear
+# below, so 512 would give ~5.5 Hz in the bass — the same marginal resolution
+# as the 4096 FFT that cannot separate E2 from F2 (4.9 Hz apart).  1024 keeps
+# ~2.7 Hz down low while still being 4x smaller than 4097.
+#
+# The STFT stays at n_fft=8192: a filterbank cannot manufacture resolution the
+# transform never had.  Only the REPRESENTATION shrinks, and the NMF cost is
+# dominated by (bins x T), so that is where the saving comes from.
+# MEASURED AND REJECTED — kept so the comparison can be re-run.
+#
+#                     correct   decay   octave-ghost   fifth   other   accounted
+#   LINEAR 4097 bins    41.3%   47.4%           2.0%    1.1%    8.2%       88.7%
+#   MEL    1024 bins    25.8%   37.7%           5.1%    3.5%   27.9%       63.5%
+#
+# The argument for mel was that resolution above 1 kHz is fifty times finer
+# than needed, since semitones up there are ~145 Hz apart.  True of
+# FUNDAMENTALS, and irrelevant: the upper HARMONICS of low notes live up there
+# too, spaced by their fundamental rather than by the local semitone.  A 40 Hz
+# bass note has harmonics 40 Hz apart at 4 kHz.  Mel's wide bins smear exactly
+# the comb structure that distinguishes a note from its octave.
+#
+# Note the trap in the summary statistic: the mel dictionary is LESS
+# self-similar by the obvious measure — max cos(p, p+12) falls from 0.932 to
+# 0.619 — and discriminates worse anyway.  What is lost is precise harmonic
+# POSITION, which that metric does not see.
+#
+# The general lesson: a front end suited to a LEARNED model is not suited to a
+# TEMPLATE DECOMPOSITION.  Mirelo can use mel because their network learns
+# whatever structure survives it; matching cannot, because it depends on the
+# positions mel destroys.
+import os as _os
+USE_MEL = _os.environ.get('FORCE_MEL', '0') == '1'
+MEL_BINS = 1024
+
 N_FFT_HIGH = 4096     # 5.4 Hz bins — ample from E2 upward
 HIGH_FFT_MIN_PITCH = 40   # E2; below this, 8192 is required
 
 
+_MEL_FB: dict = {}
+
+
+def mel_filterbank(n_fft: int) -> np.ndarray:
+    """(MEL_BINS, 1+n_fft/2) filterbank, memoised."""
+    import librosa
+    if n_fft not in _MEL_FB:
+        _MEL_FB[n_fft] = librosa.filters.mel(sr=SR, n_fft=n_fft, n_mels=MEL_BINS,
+                                             norm=None).astype(np.float32)
+    return _MEL_FB[n_fft]
+
+
 def stft_mag(y: np.ndarray, n_fft: int = None) -> np.ndarray:
     import librosa
-    return np.abs(librosa.stft(y, n_fft=n_fft or N_FFT, hop_length=HOP))
+    n_fft = n_fft or N_FFT
+    V = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=HOP))
+    return (mel_filterbank(n_fft) @ V) if USE_MEL else V
 
 
 def build_dictionary(velocity: int = 80) -> np.ndarray:
@@ -293,7 +373,8 @@ def get_dictionary() -> np.ndarray:
         return _W
 
     if kind == 'harmonic':
-        _W, _W_KIND = build_harmonic_dictionary(HARMONIC_ROLLOFF), kind
+        W = build_harmonic_dictionary(HARMONIC_ROLLOFF)
+        _W, _W_KIND = _to_mel(W, N_FFT), kind
         return _W
 
     if _DICT_PATH.exists():
@@ -532,6 +613,40 @@ def _activations_mixed(paths):
     return nmf_h(stft_mag((mix / pk).astype(np.float32)), get_dictionary())
 
 
+def key_from_activations(*Hs) -> Optional[tuple]:
+    """Estimate (root, mode) by folding activation energy into pitch classes.
+
+    Reads the key off the DECOMPOSITION rather than off decoded notes.  The
+    decoder is lossy on purpose — it commits to one pitch per frame, drops notes
+    under MIN_NOTE_S, and is bounded to a register — so by the time we have
+    notes most of the harmonic evidence has been thrown away.  The activation
+    matrix still has all of it.  Measured against POP909's human key labels on
+    30 s excerpts: decoded notes 27.5% exact / 72.5% allowing relative-key
+    confusion, this 75.0% / 85.0%.
+
+    Each stem is normalised before pooling.  `_activations` peak-normalises
+    every stem independently, so the raw magnitudes carry no common unit and
+    summing them would just let the loudest stem cast the whole vote.
+
+    This is deliberately NOT used to constrain the dictionary.  Penalising or
+    removing out-of-scale templates was measured (eval/scale_penalty_test.py)
+    and made the decomposition monotonically worse even given a perfect key.
+    The key is for choosing among notes we already have, downstream.
+    """
+    from app.services.nmf_voice_leading import key_from_pitch_classes
+    pcv = np.zeros(12, dtype=np.float64)
+    for H in Hs:
+        if H is None:
+            continue
+        tot = float(H.sum())
+        if tot <= 0:
+            continue
+        rows = H.sum(axis=1) / tot
+        for i in range(rows.shape[0]):
+            pcv[(LOW + i) % 12] += float(rows[i])
+    return key_from_pitch_classes(pcv)
+
+
 def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
                     beats_per_bar: int = 4):
     """Route each Demucs stem to the method built for it.
@@ -617,7 +732,11 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
             # drop_non_scale enforcing a key the song was never in and deleting
             # the tune's own leading tone.
             detected = [n for n in out if n.get("role") in ("melody", "bass")]
-            root, scale_name, _ = detect_scale(detected or out)
+            key = key_from_activations(Hv, Hb)
+            if key is None:
+                root, scale_name, _ = detect_scale(detected or out)
+            else:
+                root, scale_name = key
             try:
                 scale_pcs = _scale_pitch_classes(root, scale_name)
             except Exception:                                   # noqa: BLE001
@@ -640,14 +759,56 @@ def project_by_stem(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
         # Still establish and stamp the key, or /transform re-derives it.
         try:
             from app.services.nmf_voice_leading import detect_scale
-            root, scale_name, _ = detect_scale(out)
+            key, src = key_from_activations(Hv, Hb), "activations"
+            if key is None:                       # both stems missing or silent
+                root, scale_name, _ = detect_scale(out)
+                src = "decoded notes (fallback)"
+            else:
+                root, scale_name = key
             for n in out:
                 n["key_root"], n["key_scale"] = int(root), str(scale_name)
-            used.append(f"key {root} {scale_name}, no generated accompaniment")
+            used.append(f"key {root} {scale_name} from {src}, "
+                        f"no generated accompaniment")
         except Exception as e:                                  # noqa: BLE001
             print(f"[projection] key detection skipped ({type(e).__name__}: {e})")
 
     print(f"[projection] per-stem: {', '.join(used)}")
+    return out
+
+
+def project_two_voices(comp_dir: pathlib.Path, beat_times=None, downbeats=None,
+                       beats_per_bar: int = 4):
+    """One decomposition of the drumless mix, two voices decoded from it.
+
+    The unified path.  Per-stem routing solved melody and bass against DIFFERENT
+    evidence — separate Demucs stems, separately peak-normalised, separately
+    decomposed, at two FFT sizes — and then merged two answers that had never
+    been reconciled.  Everything downstream assumes one grid, and the parts kept
+    disagreeing about the register they share.
+
+    Here the whole thing rests on a single (88, T) matrix, so the two voices are
+    competing for the same energy and the non-crossing constraint has something
+    to bite on.  It is also cheaper: one NMF instead of two.
+
+    Note the range starts at BASS_LO (24), below HIGH_FFT_MIN_PITCH, so this
+    always takes the 8192-bin front end.  The 4096 path only ever existed to
+    keep the isolated vocals stem affordable, and no longer runs for songs.
+    """
+    H = _activations(comp_dir / "harmonic.wav", MD_BASS_LO, MD_VOCAL_HI)
+    if H is None or beat_times is None:
+        return None
+    out = MD.decode_two_voices(H, LOW, beat_times, downbeats, beats_per_bar)
+    if not out:
+        return None
+
+    key = key_from_activations(H)
+    if key is not None:
+        root, scale_name = key
+        for n in out:
+            n["key_root"], n["key_scale"] = int(root), str(scale_name)
+    n_bass = sum(1 for n in out if n.get("role") == "bass")
+    print(f"[projection] two-voice: bass {n_bass}, melody {len(out) - n_bass}"
+          + (f", key {key[0]} {key[1]}" if key else ""))
     return out
 
 
@@ -688,6 +849,12 @@ def project_from_stems(comp_dir: pathlib.Path) -> List[Dict[str, Any]]:
     # Per-stem routing when separation wrote the stems; otherwise the old
     # single-signal path, which is also the fallback for sessions separated
     # before stems existed.
+    if TWO_VOICE and (comp_dir / "harmonic.wav").exists():
+        two = project_two_voices(comp_dir, beats, downs, bpb)
+        if two:
+            return two
+        print("[projection] two-voice path produced nothing; falling back")
+
     if PER_STEM and (comp_dir / "stem_vocals.wav").exists():
         by_stem = project_by_stem(comp_dir, beats, downs, bpb)
         if by_stem:

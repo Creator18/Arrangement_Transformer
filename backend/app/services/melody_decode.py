@@ -139,51 +139,40 @@ def _slot_of_frame(n_fr: int, beat_times: Optional[np.ndarray],
     return out
 
 
-def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
-           downbeats: Optional[np.ndarray] = None,
-           beats_per_bar: int = 4,
-           lo: Optional[int] = None, hi: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Viterbi a monophonic line through the activation matrix.
-
-    `H` is (88, T) activations from the projection, `low` its lowest MIDI pitch.
-    `lo`/`hi` bound the decoded register — pass VOCAL_* when decoding an
-    isolated vocals stem and BASS_* for a bass stem.  The default is the old
-    melody window, so existing callers are unaffected.
-
-    The priors are melody priors either way, which is right for a vocal and
-    only approximately right for a bass: the structure (one note at a time, a
-    dwell cost, onsets pulled to strong beats) transfers, but the interval and
-    duration distributions of a bass line are not a singer's.  POP909 has no
-    bass track; its PIANO track's lowest voice IS a human left-hand bass and is
-    where proper bass priors should come from.
-    """
-    P = priors()
-    if not DECODE_MELODY or P is None or H.size == 0:
-        return []
-
-    lo = MEL_LO if lo is None else int(lo)
-    hi = MEL_HI if hi is None else int(hi)
-    n_pitch = hi - lo + 1
+def _resample(H: np.ndarray, low: int, lo: int, hi: int):
+    """Slice H to [lo, hi] and put it on the priors' frame rate. None if OOB."""
+    from app.services.piano_projection import FPS as PROJ_FPS
     a, b = lo - low, hi - low + 1
     if a < 0 or b > H.shape[0]:
-        return []
-
-    # ── resample activations onto the priors' frame rate ─────────────────────
-    from app.services.piano_projection import FPS as PROJ_FPS
+        return None
     T = H.shape[1]
     n_fr = max(2, int(T / PROJ_FPS * FPS))
     src = np.clip((np.arange(n_fr) / FPS * PROJ_FPS).astype(int), 0, T - 1)
-    A = H[a:b][:, src]                                  # (n_pitch, n_fr)
+    return H[a:b][:, src]                               # (n_pitch, n_fr)
 
-    # ── observation log-likelihoods ─────────────────────────────────────────
-    # gamma < 1 deliberately.  Raw activations span orders of magnitude, and at
-    # gamma 1 the loudest frame overwhelms every prior, which turns the decode
-    # back into per-frame argmax — exactly the thing being replaced.
+
+def _observations(A: np.ndarray):
+    """Per-frame log-likelihood of each pitch, and the level silence must beat.
+
+    gamma < 1 deliberately.  Raw activations span orders of magnitude, and at
+    gamma 1 the loudest frame overwhelms every prior, which turns the decode
+    back into per-frame argmax — exactly the thing being replaced.
+    """
     ref = float(np.percentile(A[A > 0], 60)) if np.any(A > 0) else 1.0
     obs = OBS_GAMMA * np.log(A + 1e-9)
     sil = OBS_GAMMA * float(np.log(ref * SIL_FLOOR + 1e-9))
+    return obs, sil
 
-    # ── transitions ─────────────────────────────────────────────────────────
+
+def _viterbi(obs: np.ndarray, sil: float, P: Dict[str, Any],
+             slot: np.ndarray) -> np.ndarray:
+    """Most likely monophonic pitch path through `obs`.  Silence is state n_pitch.
+
+    Extracted from decode() so that every voice goes through the SAME decoder.
+    Two voices decoded by two different code paths is how the melody and the
+    bass ended up disagreeing about the register they share.
+    """
+    n_pitch, n_fr = obs.shape
     iv = P["interval"]
     max_iv = P["max_iv"]
     log_iv = np.log(iv[1:-1] + 1e-9)                    # -max_iv..+max_iv
@@ -192,7 +181,6 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
 
     metre = P["metre"]
     metre_w = np.log(metre / metre.mean() + 1e-9)       # 0-mean-ish multiplier
-    slot = _slot_of_frame(n_fr, beat_times, downbeats, P["slots"], beats_per_bar)
 
     # Silence dwell from the voiced fraction: rests last as long as the voiced
     # proportion implies, so the decoder does not chatter in and out of song.
@@ -246,8 +234,18 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
     for t in range(n_fr - 1, -1, -1):
         path[t] = state
         state = int(bp[t, state])
+    return path
 
-    # ── runs become notes, re-articulated where the singer struck again ─────
+
+def _path_to_notes(path: np.ndarray, A: np.ndarray, lo: int,
+                   P: Dict[str, Any], slot: np.ndarray) -> List[Dict[str, Any]]:
+    """Turn a pitch path into notes, re-articulating where the key was struck
+    again.
+
+    Shared by every voice for the same reason the decoder is.
+    """
+    metre = P["metre"]
+    n_pitch, n_fr = A.shape
     #
     # A run of frames at one pitch is ONE note to the state machine, so the
     # decoder cannot express a repeated note — measured, that produced 0.0%
@@ -327,11 +325,121 @@ def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
             })
         i = j
 
-    # velocity from activation, same 40..110 range the projection uses
+    # velocity from activation, same 40..110 range the projection uses.
+    # `q_lo`/`q_hi`, not lo/hi — those name the register and are still live.
     if out:
         acts = np.array([n.pop("_act") for n in out])
-        lo, hi = np.percentile(acts, 5), np.percentile(acts, 95)
+        q_lo, q_hi = np.percentile(acts, 5), np.percentile(acts, 95)
         for n, v in zip(out, acts):
-            f = 0.0 if hi <= lo else float(np.clip((v - lo) / (hi - lo), 0, 1))
+            f = (0.0 if q_hi <= q_lo
+                 else float(np.clip((v - q_lo) / (q_hi - q_lo), 0, 1)))
             n["velocity"] = int(round(40 + 70 * f))
+    return out
+
+
+def decode(H: np.ndarray, low: int, beat_times: Optional[np.ndarray] = None,
+           downbeats: Optional[np.ndarray] = None,
+           beats_per_bar: int = 4,
+           lo: Optional[int] = None, hi: Optional[int] = None,
+           floor: Optional[np.ndarray] = None) -> List[Dict[str, Any]]:
+    """Viterbi one monophonic line through the activation matrix.
+
+    `H` is (88, T) activations from the projection, `low` its lowest MIDI pitch.
+    `lo`/`hi` bound the decoded register.  The default is the melody window, so
+    existing callers are unaffected.
+
+    `floor` is an optional per-frame minimum ABSOLUTE MIDI pitch, on the priors'
+    frame grid.  It is how the second voice is kept above the first: pitches
+    below it are made unreachable rather than merely unlikely, so the two lines
+    cannot cross.  A hard register split used to do this job and could not,
+    because melody and bass genuinely share E2-G3 and a fixed boundary has to
+    give that band to one of them.
+
+    The priors are melody priors for both voices, which is right for a vocal and
+    only approximately right for a bass: the structure (one note at a time, a
+    dwell cost, onsets pulled to strong beats) transfers, but the interval and
+    duration distributions of a bass line are not a singer's.  POP909 has no
+    bass track; its PIANO track's lowest voice IS a human left-hand bass and is
+    where proper bass priors should come from.
+    """
+    P = priors()
+    if not DECODE_MELODY or P is None or H.size == 0:
+        return []
+    lo = MEL_LO if lo is None else int(lo)
+    hi = MEL_HI if hi is None else int(hi)
+    A = _resample(H, low, lo, hi)
+    if A is None:
+        return []
+    obs, sil = _observations(A)
+    if floor is not None:
+        # unreachable, not just expensive
+        n_pitch, n_fr = obs.shape
+        f = np.clip(np.asarray(floor, float)[:n_fr] - lo, 0, n_pitch)
+        rows = np.arange(n_pitch)[:, None]
+        obs = np.where(rows < f[None, :], -1e18, obs)
+    slot = _slot_of_frame(A.shape[1], beat_times, downbeats,
+                          P["slots"], beats_per_bar)
+    path = _viterbi(obs, sil, P, slot)
+    return _path_to_notes(path, A, lo, P, slot)
+
+
+# Semitones the melody must clear the bass by.  Not 1: a melody sitting a
+# semitone above the bass is almost always the decoder splitting one note
+# between the two voices rather than two parts genuinely that close.
+VOICE_MIN_SEP = 3
+
+
+def decode_two_voices(H: np.ndarray, low: int,
+                      beat_times: Optional[np.ndarray] = None,
+                      downbeats: Optional[np.ndarray] = None,
+                      beats_per_bar: int = 4) -> List[Dict[str, Any]]:
+    """Decode a bass and a melody from ONE activation matrix, in that order.
+
+    Replaces per-stem routing.  That routing ran two different decoders over two
+    different stems at two different FFT sizes and then merged the results, so
+    the two parts were never solved against the same evidence and had no way to
+    agree about the register they share.  Here there is one decomposition, one
+    frame grid, one decoder, called twice.
+
+    Bass first, because it is the more reliable of the two — on every listening
+    pass so far the bass has come back close to right while the melody was
+    cluttered — and because a floor derived from a good line is worth more than
+    a ceiling derived from a poor one.  The melody is then decoded above it with
+    a per-frame floor of bass + VOICE_MIN_SEP, which is the non-crossing
+    constraint.  Where the bass is silent there is no floor and the melody may
+    go as low as its own register allows.
+
+    KNOWN GAP, not yet measured: the floor stops the melody landing ON the bass,
+    but the bass's own upper partials sit above the floor, so the melody can
+    still latch onto a bass harmonic — most likely the octave, which the
+    dictionary already confuses (mean cos(p, p+12) = 0.446).  Subtracting the
+    bass's explained spectrum before the second decode is the obvious fix and is
+    deliberately NOT done here, because it is a guess until it is measured.
+    """
+    P = priors()
+    if not DECODE_MELODY or P is None or H.size == 0:
+        return []
+
+    bass = decode(H, low, beat_times, downbeats, beats_per_bar,
+                  lo=BASS_LO, hi=BASS_HI)
+    for n in bass:
+        n["role"] = "bass"
+
+    from app.services.piano_projection import FPS as PROJ_FPS
+    n_fr = max(2, int(H.shape[1] / PROJ_FPS * FPS))
+    floor = np.full(n_fr, float(VOCAL_LO))
+    for n in bass:
+        a = int(n["onset"] * FPS)
+        b = min(n_fr, int(n["offset"] * FPS))
+        if b > a:
+            floor[a:b] = np.maximum(floor[a:b], n["pitch"] + VOICE_MIN_SEP)
+    floor = np.minimum(floor, float(VOCAL_HI))
+
+    mel = decode(H, low, beat_times, downbeats, beats_per_bar,
+                 lo=VOCAL_LO, hi=VOCAL_HI, floor=floor)
+    for n in mel:
+        n["role"] = "melody"
+
+    out = bass + mel
+    out.sort(key=lambda n: (n["onset"], n["pitch"]))
     return out
