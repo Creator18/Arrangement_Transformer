@@ -58,7 +58,12 @@ EPOCHS = 40
 # "predict nothing" — 99% accurate and completely useless.  This is the same
 # failure mode as a metric without a chance baseline, and it needs the same
 # correction: state the prior explicitly.
-ONSET_POS_WEIGHT = 8.0
+# Swept on the overfit check (2 tracks, val IS train), note F1 at 25 epochs:
+#     weight    8 -> 0.062      onset head barely moves
+#     weight   30 -> 0.219      <- ships
+#     weight  100 -> 0.124      over-fires; precision collapses to 0.071
+# Interior optimum, so this is a real setting rather than "more is better".
+ONSET_POS_WEIGHT = 30.0
 FRAME_POS_WEIGHT = 2.0
 
 # ── paths ────────────────────────────────────────────────────────────────────

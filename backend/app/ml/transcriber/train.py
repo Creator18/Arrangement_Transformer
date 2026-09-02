@@ -41,7 +41,12 @@ def main():
     ap.add_argument("--lr", type=float, default=C.LR)
     ap.add_argument("--seg-per-track", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--onset-weight", type=float, default=C.ONSET_POS_WEIGHT)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--overfit", type=int, default=0,
+                    help="train AND validate on this many tracks -- a capacity "
+                         "check, not a result; if it cannot fit a handful of "
+                         "tracks, more data will not help")
     args = ap.parse_args()
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -50,6 +55,10 @@ def main():
         raise SystemExit("no Slakh tracks found; check config.SLAKH_DIRS")
     if args.limit:
         tr, va = tr[: args.limit], va[: max(1, args.limit // 5)]
+    if args.overfit:
+        tr = (tr + va)[: args.overfit]
+        va = tr
+        how = f"OVERFIT CHECK -- val IS train ({len(tr)} tracks)"
     print(f"splits: {how}  |  {len(tr)} train / {len(va)} val")
 
     dl_tr = DataLoader(SlakhSegments(tr, args.seg_per_track, seed=1),
@@ -75,7 +84,7 @@ def main():
         print(f"resumed from epoch {start_ep - 1} (note F1 {best:.3f})")
     print(f"model: {net.n_params() / 1e6:.2f}M params on {dev}")
 
-    lo_on = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(C.ONSET_POS_WEIGHT, device=dev))
+    lo_on = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(args.onset_weight, device=dev))
     lo_fr = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(C.FRAME_POS_WEIGHT, device=dev))
     scaler = torch.amp.GradScaler("cuda", enabled=dev.type == "cuda")
 
