@@ -25,6 +25,23 @@ from torch.utils.data import Dataset
 from . import config as C
 
 
+# Slakh ships two encodings and they are not interchangeable by name:
+# BabySlakh is .wav, slakh2100_redux_16k is .flac.  Checking only for mix.wav
+# silently rejected all 1,559 real tracks and fell back to the 20-track
+# harness — training ran to completion on the wrong data and said so in one
+# line nobody was watching.
+AUDIO_EXT = (".flac", ".wav")
+
+
+def audio_path(base: pathlib.Path, stem: str) -> Optional[pathlib.Path]:
+    """base/stem.{flac,wav}, whichever exists."""
+    for ext in AUDIO_EXT:
+        p = base / f"{stem}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
 def find_tracks(dirs: Optional[List[pathlib.Path]] = None) -> List[pathlib.Path]:
     """Every Track***** directory that has both a mix and its MIDI."""
     out: List[pathlib.Path] = []
@@ -49,7 +66,7 @@ def find_split(split: str, dirs: Optional[List[pathlib.Path]] = None
         if not base.exists():
             continue
         for t in sorted(base.glob("Track*")):
-            if (t / "mix.wav").exists() and (t / "MIDI").is_dir():
+            if audio_path(t, "mix") is not None and (t / "MIDI").is_dir():
                 out.append(t)
     return out
 
@@ -168,8 +185,9 @@ class SlakhSegments(Dataset):
             self._cache.move_to_end(t)
             return self._cache[t]
         import soundfile as sf
-        info = sf.info(str(t / "mix.wav"))
-        n_frames = int(info.frames / C.HOP) + 1
+        mix = audio_path(t, "mix")
+        info = sf.info(str(mix))
+        n_frames = int(info.frames * C.SR / info.samplerate / C.HOP) + 1
         npz = t / "_rolls.npz"
         if npz.exists():
             try:
@@ -197,7 +215,7 @@ class SlakhSegments(Dataset):
             start = 0
         else:
             start = self.rng.randrange(0, n_samples - seg)
-        wav, _ = sf.read(str(t / "mix.wav"), start=start, frames=seg,
+        wav, _ = sf.read(str(audio_path(t, "mix")), start=start, frames=seg,
                          dtype="float32", always_2d=True)
         wav = wav.mean(axis=1)
         if len(wav) < seg:

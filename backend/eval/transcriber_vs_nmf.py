@@ -98,12 +98,14 @@ def drumless_mix(track: pathlib.Path, out: pathlib.Path):
     """Sum the non-drum stems — the NMF's best case, and its production input."""
     import soundfile as sf, librosa, yaml
     from app.services.piano_projection import SR
+    from app.ml.transcriber.data import audio_path
     meta = yaml.safe_load((track / "metadata.yaml").read_text())
     keep = [sid for sid, i in (meta.get("stems") or {}).items()
-            if not i.get("is_drum") and (track / "stems" / f"{sid}.wav").exists()]
+            if not i.get("is_drum")
+            and audio_path(track / "stems", sid) is not None]
     sigs = []
     for sid in keep:
-        y, _ = librosa.load(str(track / "stems" / f"{sid}.wav"), sr=SR, mono=True)
+        y, _ = librosa.load(str(audio_path(track / "stems", sid)), sr=SR, mono=True)
         sigs.append(y)
     if not sigs:
         return None
@@ -156,7 +158,7 @@ def main():
     args = ap.parse_args()
 
     from app.ml.transcriber import config as C
-    from app.ml.transcriber.data import find_split, official_splits
+    from app.ml.transcriber.data import audio_path, find_split, official_splits
     from app.ml.transcriber.decode import note_scores
 
     tracks = find_split(args.split)
@@ -172,11 +174,11 @@ def main():
     for t in tracks:
         ref = ground_truth(t)
         est = {"random": random_like(ref)}
-        est["NMF (mix)"] = nmf_notes(t / "mix.wav")
+        est["NMF (mix)"] = nmf_notes(audio_path(t, "mix"))
         d = drumless_mix(t, tmp)
         est["NMF (drumless)"] = nmf_notes(d) if d else []
         if ckpt.exists():
-            est["transcriber"], ck = model_notes(t / "mix.wav", ckpt)
+            est["transcriber"], ck = model_notes(audio_path(t, "mix"), ckpt)
         else:
             est["transcriber"] = []
         print(f"  {t.name}: {len(ref)} reference notes")

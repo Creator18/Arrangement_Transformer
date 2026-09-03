@@ -53,16 +53,28 @@ say "md5 ok"
 
 say "extracting"
 tar -xzf "$TAR" -C "$DIR" || { say "extraction FAILED"; exit 1; }
-TRAIN_N=$(ls -d "$DIR"/slakh2100_redux_16k/train/Track* 2>/dev/null | wc -l)
-VAL_N=$(ls -d "$DIR"/slakh2100_redux_16k/validation/Track* 2>/dev/null | wc -l)
-say "extracted: $TRAIN_N train, $VAL_N validation tracks"
-if [ "$TRAIN_N" -lt 100 ]; then
+# Ask the LOADER how many tracks it can see, not the shell.  Counting
+# directories checks the wrong thing: 1,559 tracks extracted correctly and the
+# loader still saw none, because the redux set is .flac and the code looked for
+# mix.wav.  Training then ran to completion on the 20-track harness and said so
+# in a single line nobody was watching.
+cd "$PROJ" || exit 1
+COUNTS=$(./venv/Scripts/python.exe -c "
+from app.ml.transcriber.data import official_splits
+tr, va, how = official_splits()
+print(f'{len(tr)} {len(va)} {how}')" 2>/dev/null)
+say "loader sees: $COUNTS"
+TRAIN_N=$(echo "$COUNTS" | cut -d' ' -f1)
+case "$COUNTS" in
+  *official*) ;;
+  *) say "loader did NOT find the official splits — STOPPING"; exit 1 ;;
+esac
+if [ "${TRAIN_N:-0}" -lt 100 ]; then
   say "too few tracks — STOPPING before training on a partial dataset"
   exit 1
 fi
 
 say "starting training (official splits, 40 epochs)"
-cd "$PROJ" || exit 1
 ./venv/Scripts/python.exe -u -m app.ml.transcriber.train --epochs 40 2>&1 \
   | tee -a "$LOG"
 say "training finished"
