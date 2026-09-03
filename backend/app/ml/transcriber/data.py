@@ -85,19 +85,43 @@ def official_splits(dirs: Optional[List[pathlib.Path]] = None):
     return a, b, "fallback (no official splits found)"
 
 
+def _stems_by_regex(text: str) -> Dict[str, bool]:
+    """{stem_id: is_drum} without a YAML parser.
+
+    Needed because Slakh's metadata is not always valid YAML.  One track in
+    1289 has the UUID 73e22d81fdaf62caa0b74cb73995c5cd8, and a YAML parser
+    reads the leading `73e22` as scientific notation and then fails on the
+    rest — taking a multi-hour training run down with it.  The two fields this
+    function actually needs sit in a fixed, simple shape, so they can be read
+    without asking a parser to understand the whole document.
+    """
+    out: Dict[str, bool] = {}
+    cur = None
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("S") and st.endswith(":") and st[1:-1].isdigit():
+            cur = st[:-1]
+            out[cur] = False
+        elif cur and st.startswith("is_drum:"):
+            out[cur] = "true" in st.split(":", 1)[1].strip().lower()
+    return out
+
+
 def pitched_stems(track: pathlib.Path) -> List[str]:
     """Stem ids that are not drums, per the track's own metadata."""
     import yaml
     meta_p = track / "metadata.yaml"
     if not meta_p.exists():
         return [p.stem for p in sorted((track / "MIDI").glob("S*.mid"))]
-    meta = yaml.safe_load(meta_p.read_text())
-    out = []
-    for sid, info in (meta.get("stems") or {}).items():
-        if C.EXCLUDE_DRUMS and info.get("is_drum"):
-            continue
-        if (track / "MIDI" / f"{sid}.mid").exists():
-            out.append(sid)
+    text = meta_p.read_text()
+    try:
+        stems = {sid: bool(i.get("is_drum"))
+                 for sid, i in ((yaml.safe_load(text) or {}).get("stems") or {}).items()}
+    except Exception:                                       # noqa: BLE001
+        stems = _stems_by_regex(text)
+    out = [sid for sid, is_drum in stems.items()
+           if not (C.EXCLUDE_DRUMS and is_drum)
+           and (track / "MIDI" / f"{sid}.mid").exists()]
     return sorted(out)
 
 
@@ -209,6 +233,21 @@ class SlakhSegments(Dataset):
     def __getitem__(self, i: int):
         import soundfile as sf
         t = self.tracks[i // self.per]
+        # One unreadable track out of 1289 should cost one example, not the
+        # whole run.  Returning empty rolls instead would be worse than
+        # skipping: it teaches the model that real audio contains no notes.
+        for attempt in range(4):
+            try:
+                return self._load(self.tracks[(i // self.per + attempt)
+                                              % len(self.tracks)], i)
+            except Exception as e:                          # noqa: BLE001
+                if attempt == 0:
+                    print(f"[data] skipping {t.name}: {type(e).__name__}: {e}",
+                          flush=True)
+        raise RuntimeError("four consecutive tracks failed to load")
+
+    def _load(self, t: pathlib.Path, i: int):
+        import soundfile as sf
         on, fr, vl, n_samples = self._rolls(t)
         seg = int(C.SEGMENT_S * C.SR)
         if n_samples <= seg:
