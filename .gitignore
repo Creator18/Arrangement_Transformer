@@ -75,3 +75,6 @@ backend/eval/data/
 
 # Dictionary caches — rebuilt on demand by piano_projection.get_dictionary()
 *_dict88.npy
+
+# Slakh roll caches (regenerated on demand)
+_rolls.npz

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pathlib
 import random
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -92,9 +93,12 @@ def track_rolls(track: pathlib.Path, n_frames: int):
     well the template happened to match.  Here it is ground truth.
     """
     import pretty_midi
-    onset = np.zeros((C.N_PITCH, n_frames), dtype=np.float32)
-    frame = np.zeros((C.N_PITCH, n_frames), dtype=np.float32)
-    vel = np.zeros((C.N_PITCH, n_frames), dtype=np.float32)
+    # uint8, not float32.  These are masks and a 0-127 velocity, so four bytes
+    # per cell buys nothing and costs 4x the memory — at 1500 tracks that is
+    # the difference between 24 GB and 6 GB on a 16 GB machine.
+    onset = np.zeros((C.N_PITCH, n_frames), dtype=np.uint8)
+    frame = np.zeros((C.N_PITCH, n_frames), dtype=np.uint8)
+    vel = np.zeros((C.N_PITCH, n_frames), dtype=np.uint8)
     for sid in pitched_stems(track):
         try:
             pm = pretty_midi.PrettyMIDI(str(track / "MIDI" / f"{sid}.mid"))
@@ -111,11 +115,11 @@ def track_rolls(track: pathlib.Path, n_frames: int):
                 b = int(round(n.end * C.FPS))
                 if a >= n_frames:
                     continue
-                frame[p, max(0, a):min(n_frames, max(b, a + 1))] = 1.0
+                frame[p, max(0, a):min(n_frames, max(b, a + 1))] = 1
                 lo = max(0, a - C.ONSET_SPREAD)
                 hi = min(n_frames, a + C.ONSET_SPREAD + 1)
-                onset[p, lo:hi] = 1.0
-                vel[p, lo:hi] = float(n.velocity) / 127.0
+                onset[p, lo:hi] = 1
+                vel[p, lo:hi] = int(n.velocity)
     return onset, frame, vel
 
 
@@ -138,30 +142,50 @@ class MelFront(torch.nn.Module):
 
 
 class SlakhSegments(Dataset):
-    """Random fixed-length segments, with the rolls cached per track.
+    """Random fixed-length segments over Slakh, with rolls cached twice over.
 
-    Rolls are built once per track and kept in memory (88 x frames of float32,
-    about 4 MB for a 4-minute track) because parsing several MIDI files per
-    example would make the loader the bottleneck rather than the GPU.
+    Rolls are expensive to build (several MIDI files parsed per track) and
+    cheap to store, so they are computed once and written to a compressed npz
+    beside the dataset.  In memory they are held in a BOUNDED cache: an
+    unbounded one needed 24 GB for 1500 tracks on a machine with 5.6 GB free,
+    which would have killed the first real run about an hour in.
     """
+
+    MEM_CACHE = 120          # tracks; ~4 MB each as uint8, so ~0.5 GB
 
     def __init__(self, tracks: List[pathlib.Path], segments_per_track: int = 8,
                  seed: int = 0):
         self.tracks = tracks
         self.per = segments_per_track
         self.rng = random.Random(seed)
-        self._cache: Dict[pathlib.Path, Any] = {}
+        self._cache: "OrderedDict[pathlib.Path, Any]" = OrderedDict()
 
     def __len__(self) -> int:
         return len(self.tracks) * self.per
 
     def _rolls(self, t: pathlib.Path):
-        if t not in self._cache:
-            import soundfile as sf
-            info = sf.info(str(t / "mix.wav"))
-            n_frames = int(info.frames / C.HOP) + 1
+        if t in self._cache:
+            self._cache.move_to_end(t)
+            return self._cache[t]
+        import soundfile as sf
+        info = sf.info(str(t / "mix.wav"))
+        n_frames = int(info.frames / C.HOP) + 1
+        npz = t / "_rolls.npz"
+        if npz.exists():
+            try:
+                z = np.load(npz)
+                on, fr, vl = z["on"], z["fr"], z["vl"]
+            except Exception:                               # noqa: BLE001
+                on, fr, vl = track_rolls(t, n_frames)
+        else:
             on, fr, vl = track_rolls(t, n_frames)
-            self._cache[t] = (on, fr, vl, info.frames)
+            try:
+                np.savez_compressed(npz, on=on, fr=fr, vl=vl)
+            except Exception:                               # noqa: BLE001
+                pass                                        # read-only dataset
+        self._cache[t] = (on, fr, vl, info.frames)
+        while len(self._cache) > self.MEM_CACHE:
+            self._cache.popitem(last=False)
         return self._cache[t]
 
     def __getitem__(self, i: int):
@@ -186,9 +210,9 @@ class SlakhSegments(Dataset):
                 s = np.pad(s, ((0, 0), (0, C.SEGMENT_FRAMES - s.shape[1])))
             return s
         return (torch.from_numpy(wav),
-                torch.from_numpy(cut(on)),
-                torch.from_numpy(cut(fr)),
-                torch.from_numpy(cut(vl)))
+                torch.from_numpy(cut(on).astype(np.float32)),
+                torch.from_numpy(cut(fr).astype(np.float32)),
+                torch.from_numpy(cut(vl).astype(np.float32) / 127.0))
 
 
 def split_tracks(tracks: List[pathlib.Path], val_frac: float = 0.15,
