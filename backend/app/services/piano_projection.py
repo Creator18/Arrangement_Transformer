@@ -442,9 +442,30 @@ def nmf_h(V: np.ndarray, W: np.ndarray, iters: int = NMF_ITERS) -> np.ndarray:
     return H
 
 
+# Seconds of context the local threshold adapts over.  Long enough that it
+# tracks arrangement density rather than individual notes — at 2 s it would
+# follow the notes themselves and threshold everything into existence.
+LOCAL_THRESH_S = 8.0
+
+
 def extract_notes(H: np.ndarray, thresh_q: float = THRESH_Q,
-                  off_frac: float = 0.35) -> List[tuple]:
-    """Activation matrix -> [(onset_s, offset_s, midi_pitch), ...]."""
+                  off_frac: float = 0.35, local: bool = True,
+                  per_band: int = 0) -> List[tuple]:
+    """Activation matrix -> [(onset_s, offset_s, midi_pitch), ...].
+
+    The threshold FOLLOWS THE MUSIC'S OWN LOUDNESS.  One global quantile over
+    the whole song is calibrated by whichever section is loudest, and quiet
+    sections then fall entirely beneath it: measured on Complication.mp3, the
+    intro carries about a quarter of the body's activation energy, so the
+    global bar sat 3x above the intro's OWN 94th percentile and only 0.14% of
+    its cells cleared it against 3.97% in the body.  The first fifteen seconds
+    produced 8 notes against a whole-song average of 8.3 per second.  The notes
+    were in the pitchmap; the threshold was hiding them.
+
+    So the bar is scaled per frame by local energy against the song median.
+    Nothing is normalised away — a genuinely quiet passage still yields quiet
+    notes — but "quiet for this song" stops meaning "absent".
+    """
     if SMOOTH > 1:
         k = np.ones(SMOOTH) / SMOOTH
         H = np.apply_along_axis(lambda r: np.convolve(r, k, mode="same"), 1, H)
@@ -454,10 +475,41 @@ def extract_notes(H: np.ndarray, thresh_q: float = THRESH_Q,
         return []
     thresh = float(np.quantile(pos, thresh_q))
 
+    # A threshold per REGISTER as well as per moment.  One bar for all 88
+    # pitches is set by whichever register carries the most energy, and that is
+    # always the bass — a low note's partials are spread over five octaves
+    # while a high note's fundamental stands alone.  So the treble competes
+    # against a bar the bass calibrated.  Same fix as the quiet-intro one, but
+    # along pitch instead of along time.
+    #
+    # Per OCTAVE, not per pitch: a single row's own quantile would guarantee
+    # that every pitch emits notes, including the 40 that are silent all song.
+    band_scale = np.ones(H.shape[0])
+    if per_band and H.shape[0] > per_band:
+        for a in range(0, H.shape[0], per_band):
+            b = min(a + per_band, H.shape[0])
+            seg = H[a:b]
+            sp = seg[seg > H.max() * 1e-4]
+            if sp.size > 32:
+                band_scale[a:b] = float(np.quantile(sp, thresh_q)) / (thresh or 1.0)
+
+    if local and H.shape[1] > 4:
+        frame_e = H.sum(axis=0)          # not `e`; the note loop below binds it
+        w = max(3, int(LOCAL_THRESH_S * FPS) | 1)
+        pad = np.pad(frame_e, w // 2, mode="edge")
+        loc = np.convolve(pad, np.ones(w) / w, mode="valid")[: H.shape[1]]
+        ref = float(np.median(loc[loc > 0])) if np.any(loc > 0) else 1.0
+        # clipped: a near-silent gap must not have its bar driven to zero and
+        # start emitting notes out of the noise floor
+        scale = np.clip(loc / (ref or 1.0), 0.25, 4.0)
+        thresh_t = thresh * scale
+    else:
+        thresh_t = np.full(H.shape[1], thresh)
+
     notes = []
     for i in range(H.shape[0]):
         row = H[i]
-        active = row > thresh
+        active = row > thresh_t * band_scale[i]
         if not active.any():
             continue
         edges = np.diff(active.astype(np.int8))
