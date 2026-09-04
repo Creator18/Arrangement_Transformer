@@ -81,7 +81,13 @@ def main():
             opt.load_state_dict(ck["opt"])
         start_ep = int(ck.get("epoch", 0)) + 1
         best = float(ck.get("conp_f1", -1.0))
-        print(f"resumed from epoch {start_ep - 1} (note F1 {best:.3f})")
+        # The LR schedule is not in the checkpoint, so fast-forward it.  Without
+        # this a resume restarts cosine annealing at full rate, which undoes the
+        # decay already earned and can knock a converging model backwards.
+        for _ in range(start_ep - 1):
+            sched.step()
+        print(f"resumed from epoch {start_ep - 1} (note F1 {best:.3f}), "
+              f"lr {opt.param_groups[0]['lr']:.2e}")
     print(f"model: {net.n_params() / 1e6:.2f}M params on {dev}")
 
     lo_on = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(args.onset_weight, device=dev))
