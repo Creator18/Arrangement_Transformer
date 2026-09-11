@@ -800,24 +800,48 @@ CORRECTOR_APPLY_HAND     = True
 USE_RESTRIKE_DETECTION = False
 
 
-SONG_MODE = 'projection'      # 'projection' | 'of' — override with
-                              # ARRANGEMENT_SONG_MODE for an A/B by ear
+# 'ml' | 'projection' | 'of'.  Override with ARRANGEMENT_SONG_MODE for an A/B.
+#
+# 'ml' is the trained transcriber and is the default because it is measured
+# better on ground truth: on 8 held-out Slakh tracks, note F1 0.630 against the
+# projection's 0.247, with a chance floor of 0.078.  The projection must explain
+# EVERY scrap of energy it is handed — 88 piano templates are its whole
+# vocabulary — so a voice or a cymbal comes back as piano notes and no
+# downstream filter undoes that.  A trained model is shown examples where the
+# right answer is mostly nothing, so it can decline.
+#
+# It also needs no source separation: Slakh's mixes contain drums while its
+# targets exclude them, so ignoring percussion is what it was trained to do.
+# Demucs still runs, because the beat grid comes from that step.
+SONG_MODE = 'ml'
 
 
-def _should_project(session_dir: Path, meta: Dict) -> bool:
-    """True when the input is a song rather than solo piano.
+def _song_method(session_dir: Path, meta: Dict) -> str:
+    """Which note source to use: 'ml', 'projection' or 'of'.
 
-    separation.py stamps method 'raw+madmom' and separation_skipped when
-    content_detect routed the audio past Demucs as solo piano.  Anything else
-    ran Demucs, which means it was not solo piano.
+    Solo piano always goes to O&F regardless of mode.  It is trained on
+    MAESTRO, scores note_F1 0.9677 on exactly that material, and neither the
+    projection nor the Slakh-trained transcriber comes close on solo piano —
+    the transcriber has never seen an isolated piano recording in training.
+
+    The piano/song decision is separation's, not a second opinion:
+    content_detect routes solo piano past Demucs and stamps 'raw+madmom', so
+    anything that ran Demucs is a song.  One detector that can be wrong beats
+    two that can disagree.  Measured on real uploads, flatness 0.000184 for
+    solo piano against 0.026551 for a full mix, a 144x separation either side
+    of the 0.005 threshold.
     """
     import os
     mode = os.environ.get('ARRANGEMENT_SONG_MODE', SONG_MODE).lower()
-    if mode == 'of':
-        return False
     if meta.get('separation_skipped') or meta.get('method') == 'raw+madmom':
-        return False        # solo piano — O&F is measurably better here
-    return mode == 'projection'
+        return 'of'         # solo piano
+    if mode == 'ml':
+        from app.services import ml_transcription
+        if ml_transcription.available():
+            return 'ml'
+        print("[transcription] no transcriber checkpoint; using the projection")
+        return 'projection'
+    return mode if mode in ('projection', 'of') else 'projection'
 
 
 def _transcribe_fullmix_of(
@@ -859,9 +883,25 @@ def _transcribe_fullmix_of(
     # past Demucs and stamps method 'raw+madmom', so anything that actually ran
     # Demucs is a song.  Reusing that decision means there is one detector to
     # be wrong rather than two that can disagree.
-    use_projection = _should_project(session_dir, meta or {})
+    method = _song_method(session_dir, meta or {})
+    print(f"[transcription] note source: {method}")
+    use_projection = method != 'of'
 
-    if use_projection:
+    if method == 'ml':
+        try:
+            from app.services import ml_transcription
+            # The RAW mix, not the drumless one: the model was trained on
+            # mixes containing drums with drums excluded from the target, so
+            # separation would move it off the distribution it learned.
+            notes = ml_transcription.transcribe(session_dir / "audio.wav")
+            print(f"[transcription] transcriber: {len(notes)} notes "
+                  f"from the raw mix")
+        except Exception as e:                              # noqa: BLE001
+            print(f"[transcription] transcriber failed ({type(e).__name__}: "
+                  f"{e}); falling back to the projection")
+            method = 'projection'
+
+    if method == 'projection':
         try:
             from app.services import piano_projection
             notes = piano_projection.project_from_stems(comp_dir)
