@@ -425,7 +425,28 @@ REFINE_Q = 60              # a rise must beat this percentile of its own pitch's
 REFINE_MAX_MOVE_SUB = 1.0  # ...and may not move further than this many sixteenths
 
 
-REFINE_ENV = True          # place onsets from the broadband envelope
+# OFF, because it silently disabled the grid snap that was validated by ear.
+#
+# This stamps every note it moves with `_timed`, and snap_to_beat_grid honours
+# that stamp — a guard added in the same commit on the reasoning that snapping
+# was "a no-op, since the notes were already 99.3% on grid".  That was true
+# BEFORE this existed.  This is the thing that moves notes off the grid, so the
+# guard disabled the correction for exactly the notes that now needed it.
+#
+# Measured on Complication.mp3, 161 downbeats, bars with melody AND bass both
+# on the downbeat — the metric the user fixed and listened to:
+#
+#     before the grid fix            15 / 161
+#     grid fix (REFINE_ENV off)      49 / 161
+#     with REFINE_ENV on             24 / 161
+#
+# 80% of notes carry `_timed`, so only 23.5% survive on the grid, median 23 ms
+# off.  Envelope timing and grid snapping are in direct conflict: one places a
+# note by audio evidence, the other by metre, and both cannot win.  Envelope
+# timing was justified by a 21% improvement in distance-to-onset — the metric
+# it optimises — against a grid fix that had been judged by ear.  So the ear
+# wins until an A/B says otherwise.
+REFINE_ENV = False
 
 # How far a note may be moved.  Chosen musically, not by the metric: a
 # sixteenth is ~81 ms at this tempo, so 90 ms lets a note cross into the
