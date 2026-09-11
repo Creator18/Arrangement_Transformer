@@ -51,15 +51,27 @@ def _load(ckpt: Optional[pathlib.Path] = None):
 
 def transcribe(audio_path: pathlib.Path,
                ckpt: Optional[pathlib.Path] = None,
-               onset_thr: float = 0.5,
+               onset_thr: float = 0.90,
                frame_thr: float = 0.5) -> List[Dict[str, Any]]:
     """Notes in the pipeline's dict shape: pitch / onset / offset / velocity.
 
-    `onset_thr` is exposed because it is the precision/recall dial and the
-    model was trained with a heavy positive weight on onsets: at 0.5 it favours
-    recall strongly (measured P 0.30 R 0.83 on Slakh), which suits an
-    arrangement that will be filtered downstream better than one that will not.
-    Raising it trades notes found for notes trusted.
+    `onset_thr` is the precision/recall dial, and it matters far more than it
+    looks.  The model is deliberately biased toward firing — onsets are 0.28%
+    of the target, so without a heavy positive weight it would learn to predict
+    silence — and the threshold is what undoes that bias at inference, with no
+    retraining.  Swept on 8 held-out Slakh tracks (mean 3875 reference notes):
+
+        thr    notes      F1       P       R
+        0.3     9027   0.377   0.272   0.644
+        0.5     6961   0.468   0.366   0.671
+        0.7     5279   0.545   0.473   0.659
+        0.90    3181   0.617   0.682   0.570   <- ships
+        0.94    2532   0.608   0.769   0.509
+        0.98    1473   0.493   0.901   0.346
+
+    An interior optimum, so it is a measured setting rather than "higher is
+    better".  0.90 is also where the note count stops being wrong: 3181 emitted
+    against 3875 real, where 0.5 emitted nearly twice too many.
     """
     import torch, librosa
     from app.ml.transcriber import config as C
