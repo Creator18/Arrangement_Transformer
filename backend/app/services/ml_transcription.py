@@ -82,6 +82,11 @@ def transcribe(audio_path: pathlib.Path,
                 chunk = np.pad(chunk, (0, seg - len(chunk)))
             mel = front(torch.from_numpy(chunk).float().unsqueeze(0).to(dev))
             po, pf, pv = net(mel)
+            # MelSpectrogram(center=True) returns n//hop + 1 frames, so each
+            # chunk carries one frame more than its duration.  Concatenating
+            # accumulates it — half a second of drift across a 4-minute track.
+            keep = int(C.SEGMENT_S * C.FPS)
+            po, pf, pv = po[:, :keep], pf[:, :keep], pv[:, :keep]
             lo = 0 if a == 0 else ef
             hi = po.shape[1] if a + seg >= len(y) else po.shape[1] - ef
             for k, t in (("on", po), ("fr", pf), ("vl", pv)):

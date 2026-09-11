@@ -142,8 +142,15 @@ def model_notes(wav_path: pathlib.Path, ckpt: pathlib.Path):
                 chunk = np.pad(chunk, (0, seg - len(chunk)))
             mel = front(torch.from_numpy(chunk).float().unsqueeze(0).to(dev))
             po, pf, pv = net(mel)
+            # Trim the phantom frame.  MelSpectrogram(center=True) returns
+            # n//hop + 1 frames, so an 8 s chunk yields 501 frames for 500
+            # frames of time.  Concatenating chunks accumulates that extra
+            # frame once per chunk — 496 ms of drift over a 241 s track,
+            # against a 50 ms matching tolerance.  It cost the model 0.617 ->
+            # 0.241 note F1 and looked exactly like a bad model.
+            keep = int(C.SEGMENT_S * C.FPS)
             for k, t in (("on", po), ("fr", pf), ("vl", pv)):
-                rolls[k].append(torch.sigmoid(t)[0].cpu().numpy().T)
+                rolls[k].append(torch.sigmoid(t)[0, :keep].cpu().numpy().T)
     on = np.concatenate(rolls["on"], axis=1)
     fr = np.concatenate(rolls["fr"], axis=1)
     vl = np.concatenate(rolls["vl"], axis=1)
