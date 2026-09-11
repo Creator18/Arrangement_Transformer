@@ -24,9 +24,23 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# Seconds of overlap discarded at each segment edge.  1 s at 62.5 fps is ~62
-# frames, comfortably longer than the LSTM needs to settle.
-EDGE_S = 1.0
+# Seconds discarded at each segment edge.
+#
+# Was 1.0, justified by reasoning rather than measurement: a recurrent model
+# has no context past a segment edge, so its first and last moments are its
+# weakest output.  That is true, and it is not the whole story — the margin
+# also throws away notes that only one chunk ever saw.  Measured on
+# Complication.mp3, hunting a 3.4 s sustained B2 the user could hear in the
+# original and not in the render:
+#
+#     EDGE_S   notes   sustained note 38.8-42.4s
+#       1.0     2615   MISSING
+#       0.5     2752   found (38.85 -> 42.37)
+#       0.0     2640   found (38.85 -> 42.24)
+#
+# 0.5 keeps half the edge protection and recovers the note; it also yields the
+# most notes of the three, so the trimming was not merely removing junk.
+EDGE_S = 0.5
 
 
 def available(ckpt: Optional[pathlib.Path] = None) -> bool:
@@ -79,31 +93,38 @@ def transcribe(audio_path: pathlib.Path,
 
     net, front, dev, _ = _load(ckpt)
     y, _ = librosa.load(str(audio_path), sr=C.SR, mono=True)
-    seg = int(C.SEGMENT_S * C.SR)
-    edge = int(EDGE_S * C.SR)
-    step = seg - 2 * edge
-    ef = int(EDGE_S * C.FPS)
+
+    # All window arithmetic is done in FRAMES, not samples.
+    #
+    # Doing it in samples is how this broke twice.  MelSpectrogram(center=True)
+    # returns n//hop + 1 frames, so a chunk carries one frame more than its
+    # duration; and keeping `hi - lo` frames while advancing `seg - 2*edge`
+    # SAMPLES kept 376 frames per step while the step was 375 frames long.
+    # Either way the roll grows faster than the audio and every note drifts
+    # later — about 640 ms across a four-minute track, which silently deleted a
+    # 3.4 s sustained note from the output because it no longer lined up.
+    #
+    # Frames are the unit the decoder reads, so they are the unit to count in.
+    keep = int(C.SEGMENT_S * C.FPS)          # frames kept from one chunk
+    ef = int(EDGE_S * C.FPS)                 # frames discarded at each edge
+    step = keep - 2 * ef                     # frames advanced per chunk
+    seg = keep * C.HOP                       # samples the model needs as input
 
     parts = {"on": [], "fr": [], "vl": []}
     with torch.no_grad():
-        pos = 0
-        while pos < len(y):
-            a = max(0, min(pos - edge, max(0, len(y) - seg)))
+        f0 = 0                                # first frame this chunk contributes
+        while f0 * C.HOP < len(y):
+            a = max(0, f0 - ef) * C.HOP       # chunk start, in samples
             chunk = y[a:a + seg]
             if len(chunk) < seg:
                 chunk = np.pad(chunk, (0, seg - len(chunk)))
             mel = front(torch.from_numpy(chunk).float().unsqueeze(0).to(dev))
             po, pf, pv = net(mel)
-            # MelSpectrogram(center=True) returns n//hop + 1 frames, so each
-            # chunk carries one frame more than its duration.  Concatenating
-            # accumulates it — half a second of drift across a 4-minute track.
-            keep = int(C.SEGMENT_S * C.FPS)
-            po, pf, pv = po[:, :keep], pf[:, :keep], pv[:, :keep]
-            lo = 0 if a == 0 else ef
-            hi = po.shape[1] if a + seg >= len(y) else po.shape[1] - ef
+            lo = f0 - a // C.HOP              # skip the leading margin
+            hi = min(lo + step, keep)         # ...and the trailing one
             for k, t in (("on", po), ("fr", pf), ("vl", pv)):
                 parts[k].append(torch.sigmoid(t)[0, lo:hi].cpu().numpy().T)
-            pos = a + seg - (0 if a + seg >= len(y) else edge)
+            f0 += hi - lo
 
     on = np.concatenate(parts["on"], axis=1)
     fr = np.concatenate(parts["fr"], axis=1)
