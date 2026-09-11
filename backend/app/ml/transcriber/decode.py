@@ -20,6 +20,11 @@ import numpy as np
 
 from . import config as C
 
+# A struck key must be released before it can be struck again.  POP909's
+# same-pitch gaps have p25 0.068 s, so a human lifts for roughly a sixteenth.
+RELEASE_S = 0.05
+MIN_NOTE_S = 0.08
+
 
 def decode_notes(onset: np.ndarray, frame: np.ndarray,
                  velocity: np.ndarray = None,
@@ -59,8 +64,28 @@ def decode_notes(onset: np.ndarray, frame: np.ndarray,
                           "onset": start / C.FPS,
                           "offset": max(end, start + min_frames) / C.FPS,
                           "velocity": v})
-    notes.sort(key=lambda n: (n["onset"], n["pitch"]))
-    return notes
+    # A piano key is ONE string.  Striking it again while it rings cuts the
+    # note that was sounding — so two notes of the same pitch must never
+    # overlap, and a real player lifts the key first.  Without this the decoder
+    # emitted 392 overlapping same-pitch pairs on a 2368-note arrangement
+    # (16.6%), heard as notes being chopped off mid-tone.  melody_decode has
+    # always done this; decode_notes never did.
+    by_pitch: Dict[int, List[Dict]] = {}
+    for n in notes:
+        by_pitch.setdefault(n["pitch"], []).append(n)
+    out: List[Dict] = []
+    for group in by_pitch.values():
+        group.sort(key=lambda n: n["onset"])
+        for a, b in zip(group[:-1], group[1:]):
+            if b["onset"] < a["offset"]:
+                a["offset"] = b["onset"] - RELEASE_S
+        # Notes shorter than a grace note are clicks, not tone: 10.3% of the
+        # output was under 80 ms, which a sampler renders as a transient with
+        # no body.
+        out.extend(n for n in group
+                   if n["offset"] - n["onset"] >= MIN_NOTE_S)
+    out.sort(key=lambda n: (n["onset"], n["pitch"]))
+    return out
 
 
 def _arrays(notes: List[Dict]) -> Tuple[np.ndarray, np.ndarray]:
