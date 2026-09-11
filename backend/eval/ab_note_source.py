@@ -92,9 +92,19 @@ def main():
 
     # B — the transcriber, on the ORIGINAL mix, no separation
     if ML.available():
-        for thr, tag in ((args.best_thr, "ml"), (args.strict_thr, "ml_loose")):
-            ns = ML.transcribe(sess / "audio.wav", onset_thr=thr)
-            todo.append((tag, f"transcriber (raw mix, thr {thr})", ns, key_of(ns)))
+        ns = ML.transcribe(sess / "audio.wav", onset_thr=args.best_thr)
+        todo.append(("ml", f"transcriber (RAW mix, thr {args.best_thr})",
+                     ns, key_of(ns)))
+        # Same model, Demucs' drumless mix instead.  On Slakh the two are
+        # indistinguishable (F1 0.625 vs 0.629) — but Slakh's drumless is the
+        # ground-truth stems summed, a perfect separation.  Demucs is not
+        # perfect, so on real audio this also carries its artefacts.
+        dl = sess / "components/harmonic.wav"
+        if dl.exists():
+            ns = ML.transcribe(dl, onset_thr=args.best_thr)
+            todo.append(("ml_drumless",
+                         f"transcriber (DRUMLESS, thr {args.best_thr})",
+                         ns, key_of(ns)))
     else:
         print("no transcriber checkpoint — NMF only")
 

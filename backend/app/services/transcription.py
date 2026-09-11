@@ -890,12 +890,36 @@ def _transcribe_fullmix_of(
     if method == 'ml':
         try:
             from app.services import ml_transcription
-            # The RAW mix, not the drumless one: the model was trained on
-            # mixes containing drums with drums excluded from the target, so
-            # separation would move it off the distribution it learned.
-            notes = ml_transcription.transcribe(session_dir / "audio.wav")
+            # The DRUMLESS mix when separation produced one, else the raw mix.
+            #
+            # The model was trained on mixes CONTAINING drums with drums
+            # excluded from the target, so in principle it should not need
+            # this, and on ground truth it does not: 6 held-out Slakh tracks
+            # give note F1 0.625 on the raw mix against 0.629 drumless, a
+            # difference indistinguishable from noise.
+            #
+            # But that measurement cannot settle the question, because Slakh's
+            # drums are SYNTHESISED from MIDI — clean, consistent sample-based
+            # kits.  A real recorded kit has cymbal wash, room bleed and
+            # compression, and whether "ignore drums" transfers from one to the
+            # other is exactly what Slakh does not contain the material to test.
+            #
+            # By ear on a real track the drumless version was mildly preferred.
+            # The two outputs share only 62% of their notes while differing
+            # with no drum signature — raw median pitch 57, drumless 59, the
+            # bulk of the disagreement mid-register either way — so this is
+            # below the resolution of anything measured so far, and the ear is
+            # the better evidence available.
+            #
+            # It costs nothing today: Demucs already runs for the flag that
+            # marks a song.  It does mean Demucs stays load-bearing on this
+            # path, which blocks skipping it for the speed win.
+            src = comp_dir / "harmonic.wav"
+            if not src.exists():
+                src = session_dir / "audio.wav"
+            notes = ml_transcription.transcribe(src)
             print(f"[transcription] transcriber: {len(notes)} notes "
-                  f"from the raw mix")
+                  f"from {src.name}")
         except Exception as e:                              # noqa: BLE001
             print(f"[transcription] transcriber failed ({type(e).__name__}: "
                   f"{e}); falling back to the projection")
