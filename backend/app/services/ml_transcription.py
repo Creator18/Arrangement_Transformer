@@ -65,33 +65,16 @@ def _load(ckpt: Optional[pathlib.Path] = None):
     return net, MelFront().to(dev), dev, ck
 
 
-def transcribe(audio_path: pathlib.Path,
-               ckpt: Optional[pathlib.Path] = None,
-               onset_thr: float = 0.90,
-               frame_thr: float = 0.5) -> List[Dict[str, Any]]:
-    """Notes in the pipeline's dict shape: pitch / onset / offset / velocity.
+def rolls(audio_path: pathlib.Path, ckpt: Optional[pathlib.Path] = None):
+    """(onset, frame, velocity) probability rolls for a whole file.
 
-    `onset_thr` is the precision/recall dial, and it matters far more than it
-    looks.  The model is deliberately biased toward firing — onsets are 0.28%
-    of the target, so without a heavy positive weight it would learn to predict
-    silence — and the threshold is what undoes that bias at inference, with no
-    retraining.  Swept on 8 held-out Slakh tracks (mean 3875 reference notes):
-
-        thr    notes      F1       P       R
-        0.3     9027   0.377   0.272   0.644
-        0.5     6961   0.468   0.366   0.671
-        0.7     5279   0.545   0.473   0.659
-        0.90    3181   0.617   0.682   0.570   <- ships
-        0.94    2532   0.608   0.769   0.509
-        0.98    1473   0.493   0.901   0.346
-
-    An interior optimum, so it is a measured setting rather than "higher is
-    better".  0.90 is also where the note count stops being wrong: 3181 emitted
-    against 3875 real, where 0.5 emitted nearly twice too many.
+    Split out from transcribe() so a threshold sweep can run the model ONCE
+    and decode many times.  Re-running inference per threshold made sweeping
+    expensive enough to skip, which is how onset_thr came to be 0.90 on a model
+    it was never swept for.
     """
     import torch, librosa
     from app.ml.transcriber import config as C
-    from app.ml.transcriber.decode import decode_notes
 
     net, front, dev, _ = _load(ckpt)
     y, _ = librosa.load(str(audio_path), sr=C.SR, mono=True)
@@ -128,9 +111,53 @@ def transcribe(audio_path: pathlib.Path,
                 parts[k].append(torch.sigmoid(t)[0, lo:hi].cpu().numpy().T)
             f0 += hi - lo
 
-    on = np.concatenate(parts["on"], axis=1)
-    fr = np.concatenate(parts["fr"], axis=1)
-    vl = np.concatenate(parts["vl"], axis=1)
+    return (np.concatenate(parts["on"], axis=1),
+            np.concatenate(parts["fr"], axis=1),
+            np.concatenate(parts["vl"], axis=1))
+
+
+def transcribe(audio_path: pathlib.Path,
+               ckpt: Optional[pathlib.Path] = None,
+               onset_thr: float = 0.94,
+               frame_thr: float = 0.5) -> List[Dict[str, Any]]:
+    """Notes in the pipeline's dict shape: pitch / onset / offset / velocity.
+
+    `onset_thr` is the precision/recall dial, and it matters far more than it
+    looks.  The model is deliberately biased toward firing — onsets are 0.28%
+    of the target, so without a heavy positive weight it would learn to predict
+    silence — and the threshold is what undoes that bias at inference, with no
+    retraining.  A threshold belongs to the model it was swept against, so it
+    was re-swept when the model grew.  Both, on the SAME 8 held-out Slakh
+    tracks (mean 2790 reference notes), eval/onset_thr_sweep.py:
+
+        thr    2.87M                     19.38M
+               notes    F1      P        notes    F1      P
+        0.50    4660  0.622  0.504        4780  0.622  0.498
+        0.70    3934  0.661  0.569        4075  0.666  0.565
+        0.80    3458  0.687  0.622        3666  0.694  0.614
+        0.90    2761  0.710  0.716        3061  0.723  0.694
+        0.94    2310  0.705  0.785        2638  0.731  0.756   <- ships
+        0.98    1432  0.592  0.892        1774  0.663  0.867
+
+    Interior optima on both, so these are measured settings and not "higher is
+    better" — 0.98 falls off sharply on each.
+
+    Read this comparison carefully, because the obvious reading is wrong.  The
+    training log shows 0.502 -> 0.591 for the two models, which looks like a
+    large win, but that is at thr 0.5 where the smaller model's calibration is
+    worst.  Run each at ITS OWN optimum and the gap is 0.710 -> 0.731: about
+    3%.  The threshold was already doing much of the work the extra capacity
+    now does.  (The 0.617 quoted here previously was a different track set
+    entirely; against 0.731 it would have overstated the gain six-fold.)
+
+    What the larger model genuinely buys is the precision end — 0.663 against
+    0.592 at thr 0.98, and an optimum that moved UP from 0.90 to 0.94.  That is
+    the half of the curve arrangement cares about, because a reduction wants
+    fewer, righter notes.
+    """
+    from app.ml.transcriber.decode import decode_notes
+
+    on, fr, vl = rolls(audio_path, ckpt)
     notes = decode_notes(on, fr, vl, onset_thr, frame_thr)
     for n in notes:
         # Downstream stages read `role`; the transcriber does not predict
