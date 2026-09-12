@@ -36,7 +36,7 @@ from . import config as C
 from .arranger_data import AUDIO, DATA, Music2MidiSegments, available, split_ids
 from .data import MelFront
 from .decode import decode_notes, note_scores
-from .model import Transcriber
+from .model import Transcriber, from_checkpoint
 from .train import frame_f1
 
 
@@ -84,24 +84,29 @@ def main():
                        batch_size=args.batch, shuffle=False, num_workers=0)
 
     front = MelFront().to(dev)
-    net = Transcriber().to(dev)
 
     C.CKPT_DIR.mkdir(parents=True, exist_ok=True)
     src = C.CKPT_DIR / "transcriber.pt"
     dst = C.CKPT_DIR / "arranger.pt"
     start_ep, best = 1, -1.0
+    # The arranger INHERITS the transcriber's architecture rather than reading
+    # current config.  It is a fine-tune: the weights only mean anything in the
+    # shape they were trained in, so the checkpoint decides the size and a
+    # config edit cannot silently mismatch them.
     if args.resume and dst.exists():
         ck = torch.load(dst, map_location=dev, weights_only=False)
-        net.load_state_dict(ck["model"])
+        net = from_checkpoint(ck).to(dev)
         start_ep = int(ck.get("epoch", 0)) + 1
         best = float(ck.get("conp_f1", -1.0))
         print(f"resumed arranger from epoch {start_ep - 1} (F1 {best:.3f})")
     elif src.exists():
         ck = torch.load(src, map_location=dev, weights_only=False)
-        net.load_state_dict(ck["model"])
+        net = from_checkpoint(ck).to(dev)
         print(f"initialised from transcriber.pt "
-              f"(epoch {ck.get('epoch')}, note F1 {ck.get('conp_f1', 0):.3f})")
+              f"(epoch {ck.get('epoch')}, note F1 {ck.get('conp_f1', 0):.3f}, "
+              f"{net.n_params() / 1e6:.2f}M params)")
     else:
+        net = Transcriber().to(dev)
         print("WARNING: no transcriber.pt -- training the arranger from "
               "scratch, which this dataset is too small to do well.")
 
@@ -188,6 +193,7 @@ def main():
         if a["conp_f1"] > best:
             best = a["conp_f1"]
             torch.save({"model": net.state_dict(), "opt": opt.state_dict(),
+                        "arch": net.arch,
                         "epoch": ep, "conp_f1": best,
                         "conpoff_f1": a["conpoff_f1"]}, dst)
             print(f"        saved (cover F1 {best:.3f})")

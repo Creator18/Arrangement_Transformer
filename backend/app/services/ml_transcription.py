@@ -54,12 +54,14 @@ def _load(ckpt: Optional[pathlib.Path] = None):
     import torch
     from app.ml.transcriber import config as C
     from app.ml.transcriber.data import MelFront
-    from app.ml.transcriber.model import Transcriber
+    from app.ml.transcriber.model import from_checkpoint
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     p = ckpt or (C.CKPT_DIR / "transcriber.pt")
     ck = torch.load(p, map_location=dev, weights_only=False)
-    net = Transcriber().to(dev).eval()
-    net.load_state_dict(ck["model"])
+    # Built from the checkpoint's own recorded architecture, not from config.
+    # More than one model size exists now, so rebuilding from current constants
+    # would mean a config edit silently breaks whatever is deployed.
+    net = from_checkpoint(ck).to(dev).eval()
     return net, MelFront().to(dev), dev, ck
 
 

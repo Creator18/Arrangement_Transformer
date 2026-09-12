@@ -64,6 +64,41 @@ EPOCHS = 40
 #     weight  100 -> 0.124      over-fires; precision collapses to 0.071
 # Interior optimum, so this is a real setting rather than "more is better".
 ONSET_POS_WEIGHT = 30.0
+
+# ── Model size ────────────────────────────────────────────────────────────────
+# These were 32/32/64, feat 256, hidden 128, 1 LSTM layer — 2.87M parameters,
+# chosen to be safe on an 8 GB card rather than because anything said that was
+# the right size.  Measured on 2026-09-12 with eval/transcriber_fit_check.py,
+# 20 tracks a side of the official split:
+#
+#     TRAIN (seen) note F1 0.692     VAL (held out) 0.695     gap -0.003
+#
+# A zero gap means nothing is being memorised, so the plateau at note F1 ~0.50
+# from epoch 19 to 40 was the model running out of capacity, not out of data.
+#
+# eval/model_size_sweep.py then measured what a bigger one costs, and corrected
+# the premise this file opened with.  VRAM is NOT the binding constraint:
+#
+#     config                params   peak VRAM   s/step
+#     current  (shipped)     2.87M       1.53G    0.080
+#     wider conv             3.88M       2.21G    0.115
+#     wider + feat 512       9.20M       2.36G    0.220
+#     O&F-ish, 2 layers     12.35M       2.49G    0.371
+#     O&F-ish, 3 layers     19.38M       2.71G    0.454   <- chosen
+#     full O&F width        30.28M       3.01G    0.458
+#
+# Even 30M peaks at 3.0 of 8.6 GB.  TIME is the constraint, and it is driven by
+# recurrent LAYERS rather than width — 19M and 30M cost the same per step,
+# because the LSTM serialises and the extra width rides along free.
+#
+# 19.38M is chosen because it matches the Onsets-and-Frames architecture the
+# published numbers this project quotes are measured on, rather than because it
+# is the largest thing that fits.  If a retrained model at this size ALSO shows
+# a zero train/val gap, the next step up is nearly free.
+CONV_CH = (48, 48, 96)
+FEAT = 768
+LSTM_HIDDEN = 256
+LSTM_LAYERS = 3
 FRAME_POS_WEIGHT = 2.0
 
 # ── paths ────────────────────────────────────────────────────────────────────

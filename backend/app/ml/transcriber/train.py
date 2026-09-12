@@ -158,6 +158,7 @@ def main():
         if a["conp_f1"] > best:
             best = a["conp_f1"]
             torch.save({"model": net.state_dict(), "opt": opt.state_dict(),
+                        "arch": net.arch,
                         "epoch": ep, "conp_f1": best,
                         "conpoff_f1": a["conpoff_f1"]}, ckpt_p)
             print(f"        saved (note F1 {best:.3f})")

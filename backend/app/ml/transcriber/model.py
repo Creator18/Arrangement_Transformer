@@ -25,19 +25,21 @@ from . import config as C
 class ConvStack(nn.Module):
     """Mel -> per-frame features.  Frequency is pooled, time never is."""
 
-    def __init__(self, out_dim: int = 256):
+    def __init__(self, out_dim: int = None, ch=None):
         super().__init__()
+        out_dim = out_dim or C.FEAT
+        a, b, c = ch or C.CONV_CH
         self.net = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
-            nn.Conv2d(32, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+            nn.Conv2d(1, a, 3, padding=1), nn.BatchNorm2d(a), nn.ReLU(),
+            nn.Conv2d(a, b, 3, padding=1), nn.BatchNorm2d(b), nn.ReLU(),
             # (1, 2): pool frequency only.  Pooling time would throw away the
             # onset resolution this model exists to provide.
             nn.MaxPool2d((1, 2)), nn.Dropout(0.25),
-            nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(b, c, 3, padding=1), nn.BatchNorm2d(c), nn.ReLU(),
             nn.MaxPool2d((1, 2)), nn.Dropout(0.25),
         )
         self.fc = nn.Sequential(
-            nn.Linear(64 * (C.N_MELS // 4), out_dim), nn.Dropout(0.5), nn.ReLU())
+            nn.Linear(c * (C.N_MELS // 4), out_dim), nn.Dropout(0.5), nn.ReLU())
 
     def forward(self, mel: torch.Tensor) -> torch.Tensor:
         # mel (B, n_mels, T) -> (B, T, out_dim)
@@ -56,9 +58,13 @@ class Head(nn.Module):
     would forfeit that.
     """
 
-    def __init__(self, in_dim: int, hidden: int = 128):
+    def __init__(self, in_dim: int, hidden: int = None, layers: int = None):
         super().__init__()
-        self.rnn = nn.LSTM(in_dim, hidden, batch_first=True, bidirectional=True)
+        hidden = hidden or C.LSTM_HIDDEN
+        layers = layers or C.LSTM_LAYERS
+        self.rnn = nn.LSTM(in_dim, hidden, num_layers=layers, batch_first=True,
+                           bidirectional=True,
+                           dropout=0.25 if layers > 1 else 0.0)
         self.out = nn.Linear(hidden * 2, C.N_PITCH)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -67,13 +73,18 @@ class Head(nn.Module):
 
 
 class Transcriber(nn.Module):
-    def __init__(self, feat: int = 256, hidden: int = 128):
+    def __init__(self, feat: int = None, hidden: int = None,
+                 ch=None, layers: int = None):
         super().__init__()
-        self.conv_on = ConvStack(feat)
-        self.conv_fr = ConvStack(feat)
-        self.onset = Head(feat, hidden)
+        feat = feat or C.FEAT
+        self.arch = {"feat": feat, "hidden": hidden or C.LSTM_HIDDEN,
+                     "ch": tuple(ch or C.CONV_CH),
+                     "layers": layers or C.LSTM_LAYERS}
+        self.conv_on = ConvStack(feat, ch)
+        self.conv_fr = ConvStack(feat, ch)
+        self.onset = Head(feat, hidden, layers)
         # frame head sees the mel features AND the onset head's belief
-        self.frame = Head(feat + C.N_PITCH, hidden)
+        self.frame = Head(feat + C.N_PITCH, hidden, layers)
         # Velocity is a per-pitch regression off the onset features: how hard a
         # key was struck is a property of its attack, so it shares the branch
         # that models attacks rather than the one that models sustain.
@@ -92,3 +103,27 @@ class Transcriber(nn.Module):
 
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+
+# The shape the first trained checkpoint used, before the size was measured.
+# Checkpoints written then carry no "arch" key, so it has to be named here
+# rather than inferred — and it cannot simply be "whatever config says today",
+# because config is exactly what changed.
+LEGACY_ARCH = {"feat": 256, "hidden": 128, "ch": (32, 32, 64), "layers": 1}
+
+
+def from_checkpoint(ck: dict) -> "Transcriber":
+    """Build a model matching the checkpoint, not matching current config.
+
+    Two model sizes now exist and more may follow, so the architecture travels
+    WITH the weights.  Rebuilding from config instead would mean that changing
+    a constant silently breaks every checkpoint trained before it — and the
+    failure surfaces as a shape mismatch at load time in production, which is
+    the shipped transcriber refusing to run.
+    """
+    a = dict(LEGACY_ARCH)
+    a.update(ck.get("arch") or {})
+    net = Transcriber(feat=a["feat"], hidden=a["hidden"],
+                      ch=tuple(a["ch"]), layers=a["layers"])
+    net.load_state_dict(ck["model"])
+    return net
