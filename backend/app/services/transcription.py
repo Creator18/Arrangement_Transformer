@@ -890,33 +890,30 @@ def _transcribe_fullmix_of(
     if method == 'ml':
         try:
             from app.services import ml_transcription
-            # The DRUMLESS mix when separation produced one, else the raw mix.
+            # The RAW mix, drums and all.
             #
             # The model was trained on mixes CONTAINING drums with drums
-            # excluded from the target, so in principle it should not need
-            # this, and on ground truth it does not: 6 held-out Slakh tracks
-            # give note F1 0.625 on the raw mix against 0.629 drumless, a
-            # difference indistinguishable from noise.
+            # excluded from the target, so ignoring percussion is the task it
+            # was taught rather than something to arrange for it in advance.
+            # On ground truth the two agree: 6 held-out Slakh tracks give note
+            # F1 0.625 on the raw mix against 0.629 drumless, indistinguishable
+            # from noise.
             #
-            # But that measurement cannot settle the question, because Slakh's
-            # drums are SYNTHESISED from MIDI — clean, consistent sample-based
-            # kits.  A real recorded kit has cymbal wash, room bleed and
-            # compression, and whether "ignore drums" transfers from one to the
-            # other is exactly what Slakh does not contain the material to test.
+            # This briefly ran on Demucs' drumless mix instead, on the strength
+            # of one track sounding mildly better by ear.  That was the right
+            # kind of evidence to take seriously — Slakh's drums are
+            # SYNTHESISED from MIDI, so it cannot test whether "ignore drums"
+            # transfers to a real kit with cymbal wash and room bleed — but one
+            # track is one track, and it did not reproduce.  The two outputs
+            # share only 62% of their notes while differing with no drum
+            # signature at all (raw median pitch 57, drumless 59, the bulk of
+            # the disagreement mid-register either way), which is the shape of
+            # Demucs artefacts rather than of drums removed.
             #
-            # By ear on a real track the drumless version was mildly preferred.
-            # The two outputs share only 62% of their notes while differing
-            # with no drum signature — raw median pitch 57, drumless 59, the
-            # bulk of the disagreement mid-register either way — so this is
-            # below the resolution of anything measured so far, and the ear is
-            # the better evidence available.
-            #
-            # It costs nothing today: Demucs already runs for the flag that
-            # marks a song.  It does mean Demucs stays load-bearing on this
-            # path, which blocks skipping it for the speed win.
-            src = comp_dir / "harmonic.wav"
-            if not src.exists():
-                src = session_dir / "audio.wav"
+            # Going back to the raw mix also stops Demucs being load-bearing
+            # here: on the song path separation now feeds only the projection
+            # fallback, so skipping it is once again available as a speed win.
+            src = session_dir / "audio.wav"
             notes = ml_transcription.transcribe(src)
             print(f"[transcription] transcriber: {len(notes)} notes "
                   f"from {src.name}")
