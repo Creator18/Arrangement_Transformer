@@ -78,3 +78,4 @@ backend/eval/data/
 
 # Slakh roll caches (regenerated on demand)
 _rolls.npz
+data/
