@@ -91,7 +91,7 @@ def duration_of(path: pathlib.Path) -> float:
     return info.frames / float(info.samplerate)
 
 
-def fetch(sid: str, overwrite: bool) -> tuple[str, str]:
+def fetch(sid: str, overwrite: bool, sleep: int = 1) -> tuple[str, str]:
     dst = OUT / f"{sid}.wav"
     if dst.exists() and not overwrite:
         return sid, "skip"
@@ -108,8 +108,14 @@ def fetch(sid: str, overwrite: bool) -> tuple[str, str]:
         "-f", "bestaudio/best",
         "-x", "--audio-format", "wav",
         "--postprocessor-args", "ffmpeg:-ac 1 -ar 16000 -sample_fmt s16",
-        # Be a reasonable client: one retry burst, a pause between requests.
-        "--retries", "3", "--sleep-requests", "1",
+        # Pacing.  A first pass at 4 workers with a 1 s gap got the client
+        # bot-flagged 45% of the way through 2,974 songs: 1,017 of 1,632
+        # failures were a sign-in challenge rather than a missing video.  Those
+        # are recoverable by asking more slowly, so the pace is a flag and the
+        # retry pass uses a much larger one.
+        "--retries", "3",
+        "--sleep-requests", str(sleep),
+        "--sleep-interval", str(sleep), "--max-sleep-interval", str(sleep * 3),
         "-o", str(tmp.with_suffix("")) + ".%(ext)s",
         url,
     ]
@@ -150,6 +156,9 @@ def main():
                          "is enough to prove the whole pipeline end to end")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--sleep", type=int, default=1,
+                    help="seconds between requests; raise it on a retry pass, "
+                         "a bot challenge means we asked too fast")
     args = ap.parse_args()
 
     for tool in ("yt-dlp", "ffmpeg"):
@@ -160,8 +169,14 @@ def main():
 
     OUT.mkdir(parents=True, exist_ok=True)
     ids = ids_for(args.split)
+    # Songs already quarantined for a duration mismatch are not retried.  The
+    # referenced video is not going to become a different recording, so a retry
+    # pass would spend a download on each one to reach the same verdict — 440
+    # of them after the first pass, which is most of an hour for nothing.
+    rejected = {p.stem for p in BAD.glob("*.wav")} if BAD.is_dir() else set()
     todo = [i for i in ids
             if (DATA / "metadata" / f"{i}.yaml").exists()
+            and i not in rejected
             and (args.overwrite or not (OUT / f"{i}.wav").exists())]
     if args.limit:
         todo = todo[: args.limit]
@@ -173,7 +188,7 @@ def main():
     failures: dict[str, str] = {}
     done = 0
     with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        for sid, status in ex.map(lambda s: fetch(s, args.overwrite), todo):
+        for sid, status in ex.map(lambda s: fetch(s, args.overwrite, args.sleep), todo):
             done += 1
             key = status if status in ("ok", "skip") else status.split(":")[0]
             tally[key] = tally.get(key, 0) + 1
