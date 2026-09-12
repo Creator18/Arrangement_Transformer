@@ -33,7 +33,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from . import config as C
-from .arranger_data import AUDIO, DATA, Music2MidiSegments, available, split_ids
+from .arranger_data import AUDIO, DATA, Music2MidiSegments, available, usable_splits
 from .data import MelFront
 from .decode import decode_notes, note_scores
 from .model import Transcriber, from_checkpoint
@@ -64,7 +64,7 @@ def main():
 
     if not available():
         raise SystemExit(f"Music2MIDI not unpacked at {DATA}")
-    tr, va, te = split_ids(audio_dir)
+    tr, va, te, how = usable_splits(audio_dir)
     if not tr:
         raise SystemExit(
             f"no songs have audio in {audio_dir}.\n"
@@ -74,8 +74,8 @@ def main():
         )
     if args.limit:
         tr, va = tr[: args.limit], va[: max(1, args.limit // 5)]
-    print(f"music2midi: {len(tr)} train / {len(va)} val / {len(te)} test "
-          f"(with audio, from the dataset's own split)")
+    print(f"music2midi: {len(tr)} train / {len(va)} val / {len(te)} test")
+    print(f"split: {how}")
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dl_tr = DataLoader(Music2MidiSegments(tr, audio_dir, args.seg_per_song, seed=1),

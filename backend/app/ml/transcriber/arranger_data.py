@@ -82,6 +82,60 @@ def split_ids(audio_dir: Optional[pathlib.Path] = None
     return keep("train_id"), keep("val_id"), keep("test_id")
 
 
+def usable_splits(audio_dir: Optional[pathlib.Path] = None, min_held: int = 80):
+    """The official split when we have enough of it, a carved one when we don't.
+
+    The fetch left us 1,326 of 2,379 train songs but only 16 of 297 validation
+    and 0 of 298 test: `--split all` walks train first, so the bot flag that
+    stopped it 45% through landed entirely on the held-out sets.  Selecting a
+    checkpoint on 16 songs would be selecting on noise, and there would be no
+    test set to report against at all.
+
+    So when the official held-out sets are too thin, one is carved from what we
+    have.  Two things about how:
+
+    BY SONG, never by segment — segments of one song share instrumentation,
+    mix and arranger, so a segment split reports a memorisation score.  This is
+    the same rule data.split_tracks enforces for Slakh.
+
+    DETERMINISTIC, seeded — so every run, and every A/B against a previous run,
+    sees the identical held-out songs.  A reshuffled split silently changes what
+    a number means.
+
+    The cost is honest and should be stated wherever these numbers appear: a
+    carved split is not comparable to published Music2MIDI results, because it
+    is neither their songs nor their filtering.  It is internally valid, which
+    is what checkpoint selection actually needs.
+    """
+    tr, va, te = split_ids(audio_dir)
+
+    # Exclude pairs whose notes do not line up with the audio they were fetched
+    # against.  The duration gate proves the right FILE arrived; it cannot prove
+    # a note marked at 41.2 s happens at 41.2 s in it.  Measured by
+    # cross-correlating each song's acoustic onset envelope against its
+    # arrangement's note density: on 60 songs, 80% of matched pairs peak inside
+    # 0.25 s where only 5% of deliberately MISMATCHED pairs do, so the test
+    # discriminates — and 13% of pairs that passed the duration gate were still
+    # off by more than a second.  eval/music2midi_alignment_check.py
+    # --write-manifest records the verdict.
+    man = (audio_dir or AUDIO).parent / "alignment.json"
+    if man.exists():
+        import json
+        keep = set(json.loads(man.read_text(encoding="utf-8"))["keep"])
+        tr = [i for i in tr if i in keep]
+        va = [i for i in va if i in keep]
+        te = [i for i in te if i in keep]
+
+    if len(va) >= min_held and len(te) >= min_held:
+        return tr, va, te, "official"
+    pool = sorted(set(tr) | set(va) | set(te))
+    random.Random(20260912).shuffle(pool)
+    n_held = max(min_held, int(len(pool) * 0.10))
+    return (pool[2 * n_held:], pool[:n_held], pool[n_held:2 * n_held],
+            f"CARVED by song (official val/test had {len(va)}/{len(te)} "
+            f"downloadable; not comparable to published numbers)")
+
+
 def arrangement_rolls(sid: str, n_frames: int):
     """(onset, frame, velocity, has_dynamics) for one human piano cover.
 
