@@ -221,6 +221,12 @@ function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown
               fill={active ? `url(#active-${reg})` : 'url(#wk-grad)'}
               stroke={active ? 'none' : 'rgba(0,0,0,0.22)'}
               strokeWidth={0.6}
+              // CSS drop-shadow, NOT an SVG <filter>.  The obvious-looking
+              // optimisation — replace three chained blur passes with one
+              // cached feDropShadow pair — measured 56.8 -> 44.3 fps.  Chrome
+              // hardware-accelerates CSS filters on a composited layer and
+              // sends SVG filters down the software path, so fewer passes on
+              // the slow path lost to more passes on the fast one.
               style={active ? {
                 filter: [
                   `drop-shadow(0 0 6px ${REG_COLOR[reg].glow})`,
@@ -373,10 +379,41 @@ export default function PianoRollPlayer({
   const [dragging,    setDragging]    = useState(false)
 
   const audioRef   = useRef(null)
-  const rollRef    = useRef(null)   // scrollable roll container
+  const rollRef    = useRef(null)   // roll viewport (clips; does NOT scroll)
+  const stageRef   = useRef(null)   // the transformed layer inside it
   const wrapperRef = useRef(null)   // outer wrapper — measured for fit-to-width
   const isDragging = useRef(false)
   const rafRef     = useRef(null)
+
+  // Frame-accurate clock, deliberately NOT state.
+  //
+  // The rAF loop below used to setCurrentTime() every frame, which re-rendered
+  // this whole component 60 times a second — and this component renders one
+  // SVG <g> per note, so at ~2500 notes that is 5000 React elements rebuilt
+  // and diffed per frame, times the four players the results page mounts.
+  // Nothing the clock drives actually needs a React render: the scroll is a
+  // transform, the readout is two text nodes, and the key highlights only
+  // change when a note starts or ends.  So the clock lives in a ref and the
+  // few things it touches are written directly to the DOM.
+  const timeRef     = useRef(0)
+  const scrollRef   = useRef(0)
+  const clockElRef  = useRef(null)
+  const barElRef    = useRef(null)
+
+  // Move the roll by TRANSFORM, not scrollTop.
+  //
+  // scrollTop on a container holding a 20 000 px SVG repaints that SVG every
+  // frame — the browser has no way to know the vector content is unchanged.
+  // translate3d is composited on the GPU: the layer is rasterised once and
+  // thereafter only moved, so a long arrangement costs the same as a short
+  // one.  `scrollRef` keeps the logical scroll offset so seek arithmetic is
+  // unchanged from when this really was a scroll container.
+  const applyScroll = useCallback((v) => {
+    const y = Math.max(0, v)
+    scrollRef.current = y
+    const st = stageRef.current
+    if (st) st.style.transform = `translate3d(0, ${-y}px, 0)`
+  }, [])
 
   // Sync when parent results-page part pad changes
   useEffect(() => { setActivePart(defaultPart) }, [defaultPart])
@@ -452,23 +489,68 @@ export default function PianoRollPlayer({
   // pitch in the Set continuously, so the key never visibly lifted between
   // two strikes even though the roll clearly showed two. Keying the flash on
   // the onset makes a re-strike re-trigger.
-  const activeKeys = useMemo(() => {
-    if (currentTime <= 0) return new Map()
-    const sounding = []
+  //
+  // The candidate notes are prepared ONCE, sorted by onset, so the per-frame
+  // work is a walk over a window rather than a scan of the whole song.  With
+  // the scan, every frame touched all ~2500 notes and parseInt'd each pitch;
+  // sorted, a frame only visits notes that have already started and have not
+  // yet been passed by the cursor.
+  const timed = useMemo(() => {
+    const out = []
     for (const n of notes) {
       const p = parseInt(n.pitch, 10)
       if (p < midiLo || p > midiHi) continue
-      const inPart = activePart === 'all' || (p >= partLo && p <= partHi)
-      if (inPart && currentTime >= n.onset && currentTime < (n.offset ?? n.onset + 0.25)) {
-        sounding.push({ pitch: p, onset: n.onset })
-      }
+      if (!(activePart === 'all' || (p >= partLo && p <= partHi))) continue
+      const on = parseFloat(n.onset)
+      out.push({ pitch: p, onset: on, offset: n.offset ?? on + 0.25 })
+    }
+    out.sort((a, b) => a.onset - b.onset)
+    return out
+  }, [notes, activePart, partLo, partHi, midiLo, midiHi])
+
+  const [activeKeys, setActiveKeys] = useState(() => new Map())
+  const cursorRef = useRef(0)      // index of the first note not yet started
+
+  const keysAt = useCallback((t) => {
+    if (t <= 0) return new Map()
+    // Advance or rewind the cursor to the first note with onset > t.  Seeking
+    // backwards is rare, so it simply walks back rather than re-searching.
+    let c = cursorRef.current
+    while (c < timed.length && timed[c].onset <= t) c++
+    while (c > 0 && timed[c - 1].onset > t) c--
+    cursorRef.current = c
+    const sounding = []
+    // Notes are sorted by onset, not by offset, so a long note can still be
+    // sounding well behind the cursor.  Looking back over a bounded window is
+    // enough in practice and keeps this O(1) per frame; 512 covers any
+    // plausible pile-up of simultaneous onsets under a held chord.
+    for (let i = Math.max(0, c - 512); i < c; i++) {
+      const n = timed[i]
+      if (t < n.offset) sounding.push({ pitch: n.pitch, onset: n.onset })
     }
     // heldKeys applies the reach model: each hand is at most five fingers
     // inside a ~14-semitone window, and the two hands do not interleave.
     // Anything sounding that no hand could be on is still ringing under the
     // pedal — it is just not a pressed key, so it is not drawn as one.
     return heldKeys(sounding)
-  }, [notes, currentTime, activePart, partLo, partHi, midiLo, midiHi])
+  }, [timed])
+
+  // Same keys held, same onsets => the keyboard would paint identically, so
+  // there is nothing to re-render.  During a sustained chord this is every
+  // frame, which is why the check is worth making.
+  const sameKeys = (a, b) => {
+    if (a.size !== b.size) return false
+    for (const [p, on] of a) if (b.get(p) !== on) return false
+    return true
+  }
+
+  const syncKeys = useCallback((t) => {
+    const next = keysAt(t)
+    setActiveKeys(prev => (sameKeys(prev, next) ? prev : next))
+  }, [keysAt])
+
+  // Re-resolve when the note set or the part filter changes, not on the clock.
+  useEffect(() => { cursorRef.current = 0; syncKeys(timeRef.current) }, [syncKeys])
 
   // Click-to-hear.  Only when stopped: while the arrangement plays, clicks on
   // the roll are seeks, and a synth note over the recording would muddy the
@@ -550,10 +632,11 @@ export default function PianoRollPlayer({
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
       return
     }
+    let lastClock = -1
     function tick() {
       const audio = audioRef.current
       const roll  = rollRef.current
-      if (audio && !isDragging.current) {
+      if (audio && roll && !isDragging.current) {
         // Sample the clock every FRAME, not every `timeupdate`.
         //
         // timeupdate fires roughly 4 times a second in Chrome, so the
@@ -563,20 +646,41 @@ export default function PianoRollPlayer({
         // the audio was correct: the audio element plays continuously, only
         // the visual sampling was coarse.  At 60 Hz a re-strike as short as
         // ~17 ms apart now resolves.
-        setCurrentTime(audio.currentTime)
-      }
-      if (audio && roll && !isDragging.current) {
+        const t = audio.currentTime
+        timeRef.current = t
+
         // Pin the now-line to the bottom edge of the viewport (= top of the
-        // keyboard).  Future notes sit above; as time advances the SVG
-        // "falls" — scrollTop decreases and notes glide down into the keys.
-        const target = (maxTime - audio.currentTime) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight
-        roll.scrollTop = Math.max(0, target)
+        // keyboard).  Future notes sit above; as time advances the stage
+        // "falls" — the offset decreases and notes glide down into the keys.
+        applyScroll((maxTime - t) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight)
+
+        // The keyboard is the only part of the tree the clock can change, and
+        // only when a note actually starts or stops.
+        syncKeys(t)
+
+        // Readout and progress bar written straight to the DOM.  They are two
+        // text nodes and one width; routing them through state would drag the
+        // entire note layer along for the ride.
+        const whole = Math.floor(t)
+        if (whole !== lastClock) {
+          lastClock = whole
+          if (clockElRef.current) clockElRef.current.textContent = fmt(t)
+        }
+        const d = audio.duration
+        if (barElRef.current && d > 0) {
+          barElRef.current.style.width = `${(t / d) * 100}%`
+        }
       }
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-    return () => { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null } }
-  }, [playing, maxTime])
+    return () => {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      // Hand the clock back to React on pause, so the readout and the paused
+      // pinning effect resume from where playback actually stopped.
+      setCurrentTime(timeRef.current)
+    }
+  }, [playing, maxTime, applyScroll, syncKeys])
 
   // ── Transport ───────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {
@@ -602,12 +706,13 @@ export default function PianoRollPlayer({
     const audio = audioRef.current
     if (!c || !audio) return
     const rect = c.getBoundingClientRect()
-    const svgY = (clientY - rect.top) + c.scrollTop
+    const svgY = (clientY - rect.top) + scrollRef.current
     const t    = Math.max(0, Math.min(maxTime - (svgY - VIEWPORT_PAD) / PX_PER_S, duration || maxTime))
     audio.currentTime = t
+    timeRef.current = t
     setCurrentTime(t)
-    c.scrollTop = Math.max(0, ((maxTime - t) * PX_PER_S + VIEWPORT_PAD) - c.clientHeight)
-  }, [duration, maxTime])
+    applyScroll(((maxTime - t) * PX_PER_S + VIEWPORT_PAD) - c.clientHeight)
+  }, [duration, maxTime, applyScroll])
 
   const onMouseDown = useCallback((e) => {
     if (e.button !== 0) return
@@ -646,12 +751,12 @@ export default function PianoRollPlayer({
     const fraction = Math.max(0, Math.min(1, (e.clientX - bar.left) / bar.width))
     const t = fraction * duration
     audio.currentTime = t
+    timeRef.current = t
     setCurrentTime(t)
     if (rollRef.current) {
-      const target = (maxTime - t) * PX_PER_S + VIEWPORT_PAD - rollRef.current.clientHeight
-      rollRef.current.scrollTop = Math.max(0, target)
+      applyScroll((maxTime - t) * PX_PER_S + VIEWPORT_PAD - rollRef.current.clientHeight)
     }
-  }, [duration, maxTime])
+  }, [duration, maxTime, applyScroll])
 
   // When NOT playing (initial mount, paused, end-of-track), keep the roll
   // pinned to `currentTime`.  Without this the roll would snap to scrollTop=0
@@ -660,11 +765,17 @@ export default function PianoRollPlayer({
   useEffect(() => {
     const roll = rollRef.current
     if (!roll || playing) return
-    const target = (maxTime - currentTime) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight
-    roll.scrollTop = Math.max(0, target)
-  }, [currentTime, playing, maxTime, notes])
+    timeRef.current = currentTime
+    applyScroll((maxTime - currentTime) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight)
+    syncKeys(currentTime)
+  }, [currentTime, playing, maxTime, notes, applyScroll, syncKeys])
 
-  const pct = duration > 0 ? (currentTime / duration) * 100 : 0
+  // Read the clock from the ref while playing.  A render triggered by
+  // something else (a key lighting up) would otherwise repaint these two from
+  // the last state value and visibly jerk the readout and the bar backwards
+  // until the next frame corrected them.
+  const shownTime = playing ? timeRef.current : currentTime
+  const pct = duration > 0 ? (shownTime / duration) * 100 : 0
 
   // anime.js: reveal the roll with a bottom-up clip wipe on first mount.
   // One clip-path animation on the container — cheap even with thousands
@@ -676,6 +787,89 @@ export default function PianoRollPlayer({
       wipeReveal(rollRef.current, { duration: 1100, delay: 150 })
     }
   }, [notes])
+
+  // ── Memoised SVG layers ────────────────────────────────────────────────────
+  // The roll's contents do not depend on the clock — a note bar is at the same
+  // place in the stage whether or not it is currently sounding, because the
+  // playhead moves the stage rather than the notes.  So these are built when
+  // the music or the geometry changes and reused otherwise.  Without this, a
+  // key lighting up rebuilt every note and every beat line to paint one key.
+  const beatGrid = useMemo(() => Array.from({ length: beatCount + 1 }, (_, b) => {
+    const y          = yOf(b * beatDur)
+    const isMeasure  = b % 4 === 0
+    const measureNum = Math.floor(b / 4) + 1
+    return (
+      <g key={b}>
+        {/* Beat line across full roll */}
+        <line x1={TIMELINE_W} y1={y} x2={rollSvgW} y2={y}
+          stroke={isMeasure ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.030)'}
+          strokeWidth={isMeasure ? 1 : 0.5} />
+        {/* Tick into timeline strip */}
+        <line
+          x1={isMeasure ? TIMELINE_W * 0.30 : TIMELINE_W * 0.58}
+          y1={y}
+          x2={TIMELINE_W - 1} y2={y}
+          stroke={isMeasure ? 'rgba(245,158,11,0.55)' : 'rgba(255,255,255,0.18)'}
+          strokeWidth={isMeasure ? 1.5 : 0.75} />
+        {/* Measure number — placed below the line in viewport */}
+        {isMeasure && (
+          <text x={TIMELINE_W / 2} y={y + 9}
+            fontSize={8} fill="rgba(245,158,11,0.70)"
+            fontFamily="ui-monospace,monospace" fontWeight="700"
+            textAnchor="middle">
+            {measureNum}
+          </text>
+        )}
+      </g>
+    )
+  }), [beatCount, beatDur, maxTime, rollSvgW])
+
+  const noteLayer = useMemo(() => notes.map((n, i) => {
+    const p = parseInt(n.pitch, 10)
+    if (p < midiLo || p > midiHi) return null
+
+    const pos      = pitchPos(p, midiLo, noteW)
+    const onsetT   = parseFloat(n.onset)
+    const offsetT  = (n.offset ?? onsetT + 0.25)
+    const yTop     = yOf(offsetT)
+    const yBot     = yOf(onsetT)
+    const h        = Math.max(4, yBot - yTop)
+    const reg      = classify(p)
+    const inPart   = activePart === 'all' || (p >= partLo && p <= partHi)
+
+    // Velocity drives brightness.  The model's velocity head is
+    // now calibrated to the true dynamic range, so this is real
+    // expression rather than decoration: a quiet note should LOOK
+    // quiet, and the roll should show phrasing at a glance.
+    const vel = Math.max(1, Math.min(127, parseInt(n.velocity ?? 80, 10)))
+    const v   = vel / 127
+    const w   = Math.max(2, pos.w - 2)
+    const x   = TIMELINE_W + pos.x + 1
+
+    return (
+      <g key={i} opacity={inPart ? 1 : 0.10}>
+        <rect
+          x={x} y={yTop} width={w} height={h}
+          rx={Math.min(3, w / 2)}
+          fill={`url(#note-${reg})`}
+          opacity={0.42 + v * 0.5}
+        />
+        {/* Attack edge.  The bar's BOTTOM is the onset — the edge
+            that meets the keyboard — so a bright cap there reads as
+            the strike, and makes two repeated notes legible as two
+            events rather than one long bar. */}
+        {inPart && h > 5 && (
+          <rect
+            x={x} y={Math.max(yTop, yBot - 2.5)}
+            width={w} height={2.5}
+            rx={1.2}
+            fill={REG_COLOR[reg].fill}
+            opacity={0.55 + v * 0.45}
+          />
+        )}
+      </g>
+    )
+  }), [notes, midiLo, midiHi, noteW, activePart, partLo, partHi, maxTime])
 
   // ── LH/RH divider x position ───────────────────────────────────────────────
   const handDivX = (midiLo <= 60 && 60 <= midiHi)
@@ -720,7 +914,8 @@ export default function PianoRollPlayer({
         </button>
 
         <span className="text-[11px] tabular-nums text-zinc-400 flex-shrink-0">
-          {fmt(currentTime)} <span className="text-zinc-700">/</span> {fmt(duration)}
+          <span ref={clockElRef}>{fmt(shownTime)}</span>
+          <span className="text-zinc-700"> / </span>{fmt(duration)}
         </span>
 
         <div
@@ -739,7 +934,7 @@ export default function PianoRollPlayer({
         >
           <div className="h-0.5 w-full rounded-full overflow-hidden"
                style={{ background: 'rgba(255,255,255,0.04)' }}>
-            <div className="h-full rounded-full transition-none" style={{
+            <div ref={barElRef} className="h-full rounded-full transition-none" style={{
               width: `${pct}%`,
               background: 'linear-gradient(90deg, #f59e0b, #d97706)',
               boxShadow: pct > 0 ? '0 0 6px rgba(245,158,11,0.4)' : 'none',
@@ -805,16 +1000,32 @@ export default function PianoRollPlayer({
         <div
           ref={rollRef}
           style={{
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            maxHeight: rollHeight,
+            // The viewport CLIPS; it no longer scrolls.  Motion is a transform
+            // on the stage inside it, so the SVG rasterises once and the
+            // browser only recomposites — see applyScroll.
+            overflow: 'hidden',
+            height: rollHeight,
             cursor: 'row-resize',
             width: rollSvgW,
+            // Isolate this subtree: whatever changes inside cannot invalidate
+            // layout or paint for the rest of the page, which matters because
+            // the results page mounts four of these at once.
+            contain: 'strict',
           }}
           onMouseDown={onMouseDown}
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
         >
+         <div
+           ref={stageRef}
+           style={{
+             // Promoted to its own compositor layer up front.  Without this
+             // the first frame of playback pays for the promotion, which is
+             // exactly the moment the eye is watching.
+             willChange: 'transform',
+             transform: 'translate3d(0,0,0)',
+           }}
+         >
           <svg width={rollSvgW} height={rollSvgH} style={{ display: 'block' }}>
 
             {/* ── Timeline strip background ── */}
@@ -880,35 +1091,7 @@ export default function PianoRollPlayer({
             })()}
 
             {/* ── Beat / measure horizontal grid ── */}
-            {Array.from({ length: beatCount + 1 }, (_, b) => {
-              const y          = yOf(b * beatDur)
-              const isMeasure  = b % 4 === 0
-              const measureNum = Math.floor(b / 4) + 1
-              return (
-                <g key={b}>
-                  {/* Beat line across full roll */}
-                  <line x1={TIMELINE_W} y1={y} x2={rollSvgW} y2={y}
-                    stroke={isMeasure ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.030)'}
-                    strokeWidth={isMeasure ? 1 : 0.5} />
-                  {/* Tick into timeline strip */}
-                  <line
-                    x1={isMeasure ? TIMELINE_W * 0.30 : TIMELINE_W * 0.58}
-                    y1={y}
-                    x2={TIMELINE_W - 1} y2={y}
-                    stroke={isMeasure ? 'rgba(245,158,11,0.55)' : 'rgba(255,255,255,0.18)'}
-                    strokeWidth={isMeasure ? 1.5 : 0.75} />
-                  {/* Measure number — placed below the line in viewport */}
-                  {isMeasure && (
-                    <text x={TIMELINE_W / 2} y={y + 9}
-                      fontSize={8} fill="rgba(245,158,11,0.70)"
-                      fontFamily="ui-monospace,monospace" fontWeight="700"
-                      textAnchor="middle">
-                      {measureNum}
-                    </text>
-                  )}
-                </g>
-              )
-            })}
+            {beatGrid}
 
             {/* Octave banding: a faint stripe on every C..B group so pitch
                 is readable at a glance instead of by counting keys.  Drawn
@@ -932,54 +1115,10 @@ export default function PianoRollPlayer({
             {/*    white-pitch bars are wide (= white-key bottom width) and  */}
             {/*    black-pitch bars are narrow (= black-key width) — they    */}
             {/*    line up with the keys they fall onto.                     */}
-            {notes.map((n, i) => {
-              const p = parseInt(n.pitch, 10)
-              if (p < midiLo || p > midiHi) return null
-
-              const pos      = pitchPos(p, midiLo, noteW)
-              const onsetT   = parseFloat(n.onset)
-              const offsetT  = (n.offset ?? onsetT + 0.25)
-              const yTop     = yOf(offsetT)
-              const yBot     = yOf(onsetT)
-              const h        = Math.max(4, yBot - yTop)
-              const reg      = classify(p)
-              const inPart   = activePart === 'all' || (p >= partLo && p <= partHi)
-
-              // Velocity drives brightness.  The model's velocity head is
-              // now calibrated to the true dynamic range, so this is real
-              // expression rather than decoration: a quiet note should LOOK
-              // quiet, and the roll should show phrasing at a glance.
-              const vel = Math.max(1, Math.min(127, parseInt(n.velocity ?? 80, 10)))
-              const v   = vel / 127
-              const w   = Math.max(2, pos.w - 2)
-              const x   = TIMELINE_W + pos.x + 1
-
-              return (
-                <g key={i} opacity={inPart ? 1 : 0.10}>
-                  <rect
-                    x={x} y={yTop} width={w} height={h}
-                    rx={Math.min(3, w / 2)}
-                    fill={`url(#note-${reg})`}
-                    opacity={0.42 + v * 0.5}
-                  />
-                  {/* Attack edge.  The bar's BOTTOM is the onset — the edge
-                      that meets the keyboard — so a bright cap there reads as
-                      the strike, and makes two repeated notes legible as two
-                      events rather than one long bar. */}
-                  {inPart && h > 5 && (
-                    <rect
-                      x={x} y={Math.max(yTop, yBot - 2.5)}
-                      width={w} height={2.5}
-                      rx={1.2}
-                      fill={REG_COLOR[reg].fill}
-                      opacity={0.55 + v * 0.45}
-                    />
-                  )}
-                </g>
-              )
-            })}
+            {noteLayer}
 
           </svg>
+         </div>
         </div>
 
         {/* Fixed keyboard at the bottom */}
