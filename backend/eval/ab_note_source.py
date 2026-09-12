@@ -90,21 +90,27 @@ def main():
         "key_root") is not None else key_of(nmf)
     todo = [("nmf", f"NMF two-voice (drumless)", nmf, nk)]
 
-    # B — the transcriber, on the ORIGINAL mix, no separation
+    # B — the transcriber, on the ORIGINAL mix, no separation.
+    #
+    # Rendered once per CHECKPOINT, each at its OWN swept threshold.  Comparing
+    # two models at one shared threshold would not be a fair fight: the
+    # threshold is the calibration dial, the two models are calibrated
+    # differently, and their optima are measurably different (0.90 against
+    # 0.94).  On ground truth the gap is 0.710 -> 0.731, about 3% — small
+    # enough that the ear is the tiebreaker, which is what this page is for.
+    from app.ml.transcriber import config as MC
+    ckpts = [
+        ("ml_19M", MC.CKPT_DIR / "transcriber.pt", 0.94, "19.38M retrained"),
+        ("ml_2M", MC.CKPT_DIR / "transcriber_2.87M_f1_0.630.pt", 0.90,
+         "2.87M previous"),
+    ]
     if ML.available():
-        ns = ML.transcribe(sess / "audio.wav", onset_thr=args.best_thr)
-        todo.append(("ml", f"transcriber (RAW mix, thr {args.best_thr})",
-                     ns, key_of(ns)))
-        # Same model, Demucs' drumless mix instead.  On Slakh the two are
-        # indistinguishable (F1 0.625 vs 0.629) — but Slakh's drumless is the
-        # ground-truth stems summed, a perfect separation.  Demucs is not
-        # perfect, so on real audio this also carries its artefacts.
-        dl = sess / "components/harmonic.wav"
-        if dl.exists():
-            ns = ML.transcribe(dl, onset_thr=args.best_thr)
-            todo.append(("ml_drumless",
-                         f"transcriber (DRUMLESS, thr {args.best_thr})",
-                         ns, key_of(ns)))
+        for key_id, p, thr, label in ckpts:
+            if not p.exists():
+                print(f"skip {label}: no {p.name}")
+                continue
+            ns = ML.transcribe(sess / "audio.wav", ckpt=p, onset_thr=thr)
+            todo.append((key_id, f"{label}, raw mix, thr {thr}", ns, key_of(ns)))
     else:
         print("no transcriber checkpoint — NMF only")
 
