@@ -128,10 +128,37 @@ def usable_splits(audio_dir: Optional[pathlib.Path] = None, min_held: int = 80):
 
     if len(va) >= min_held and len(te) >= min_held:
         return tr, va, te, "official"
+
+    # The carved split is PINNED to disk on first use.
+    #
+    # Without this it is a function of which songs happen to be downloaded, so
+    # fetching the ~1,010 songs the bot flag blocked would silently reshuffle
+    # the held-out sets — and every number measured before the refetch would
+    # stop being comparable to every number after it, while still looking
+    # comparable.  Pinned, new songs can only ever join TRAIN, so a refetch is
+    # safe at any point and the ordering stops mattering.
+    import json
+    pin = (audio_dir or AUDIO).parent / "split.json"
+    if pin.exists():
+        d = json.loads(pin.read_text(encoding="utf-8"))
+        have = set(tr) | set(va) | set(te)
+        va2 = [i for i in d["val"] if i in have]
+        te2 = [i for i in d["test"] if i in have]
+        held = set(va2) | set(te2)
+        tr2 = sorted(have - held)
+        return (tr2, va2, te2,
+                f"CARVED, pinned ({pin.name}); new songs join train only")
+
     pool = sorted(set(tr) | set(va) | set(te))
     random.Random(20260912).shuffle(pool)
     n_held = max(min_held, int(len(pool) * 0.10))
-    return (pool[2 * n_held:], pool[:n_held], pool[n_held:2 * n_held],
+    train, val, test = pool[2 * n_held:], pool[:n_held], pool[n_held:2 * n_held]
+    try:
+        pin.write_text(json.dumps({"val": val, "test": test}, indent=1),
+                       encoding="utf-8")
+    except Exception:                                       # noqa: BLE001
+        pass
+    return (train, val, test,
             f"CARVED by song (official val/test had {len(va)}/{len(te)} "
             f"downloadable; not comparable to published numbers)")
 
