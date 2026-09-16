@@ -127,3 +127,23 @@ def from_checkpoint(ck: dict) -> "Transcriber":
                       ch=tuple(a["ch"]), layers=a["layers"])
     net.load_state_dict(ck["model"])
     return net
+
+
+def flatten_rnns(net: "Transcriber") -> "Transcriber":
+    """Re-pack every LSTM's weights into one buffer.  Call AFTER .to(device).
+
+    cuDNN's fused RNN kernels want the weights in a single contiguous block and
+    cache a descriptor pointing at it.  Building a model on the CPU, calling
+    load_state_dict, and only then moving it to the GPU leaves that descriptor
+    stale — the forward pass still works, and the BACKWARD pass dies with
+    `cuDNN error: CUDNN_STATUS_INTERNAL_ERROR`, which says nothing about the
+    actual cause.
+
+    That is why training from scratch was fine for 40 epochs while the first
+    fine-tune step crashed: train.py never loads a state_dict, so it never hits
+    this.  Any path that loads weights and then changes device has to re-pack.
+    """
+    for m in net.modules():
+        if isinstance(m, nn.LSTM):
+            m.flatten_parameters()
+    return net

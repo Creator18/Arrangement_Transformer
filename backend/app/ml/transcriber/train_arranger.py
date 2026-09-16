@@ -36,7 +36,7 @@ from . import config as C
 from .arranger_data import AUDIO, DATA, Music2MidiSegments, available, usable_splits
 from .data import MelFront
 from .decode import decode_notes, note_scores
-from .model import Transcriber, from_checkpoint
+from .model import Transcriber, flatten_rnns, from_checkpoint
 from .train import frame_f1
 
 
@@ -95,13 +95,13 @@ def main():
     # config edit cannot silently mismatch them.
     if args.resume and dst.exists():
         ck = torch.load(dst, map_location=dev, weights_only=False)
-        net = from_checkpoint(ck).to(dev)
+        net = flatten_rnns(from_checkpoint(ck).to(dev))
         start_ep = int(ck.get("epoch", 0)) + 1
         best = float(ck.get("conp_f1", -1.0))
         print(f"resumed arranger from epoch {start_ep - 1} (F1 {best:.3f})")
     elif src.exists():
         ck = torch.load(src, map_location=dev, weights_only=False)
-        net = from_checkpoint(ck).to(dev)
+        net = flatten_rnns(from_checkpoint(ck).to(dev))
         print(f"initialised from transcriber.pt "
               f"(epoch {ck.get('epoch')}, note F1 {ck.get('conp_f1', 0):.3f}, "
               f"{net.n_params() / 1e6:.2f}M params)")
