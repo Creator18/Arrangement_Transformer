@@ -35,7 +35,25 @@ from . import frontend as S
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 MAESTRO = ROOT / "data" / "maestro-v3.0.0"
 CACHE = ROOT / "data" / "maestro_render"          # single-piano (Salamander) clips
-CACHE_MULTI = ROOT / "data" / "maestro_render_multi"
+# The full multi-piano set is ~34 GB, so it lives OUTSIDE the project folder:
+# on D: when present (beside Slakh), overridable with ARRANGEMENT_RENDER_DIR.
+def _multi_dir() -> pathlib.Path:
+    import os
+    env = os.environ.get("ARRANGEMENT_RENDER_DIR")
+    if env:
+        return pathlib.Path(env)
+    d = pathlib.Path("D:/arrangement_data/maestro_render_multi")
+    return d if d.anchor and pathlib.Path(d.anchor).exists() else ROOT / "data" / "maestro_render_multi"
+
+
+CACHE_MULTI = _multi_dir()
+
+# Seconds rendered BEFORE each window and then cropped away.  Without it, a
+# note held across the window's start is rendered as starting at t=0 — a fresh
+# hammer attack in the audio while the label correctly says no onset.  Cutting
+# whole pieces into consecutive windows would put that contradiction at almost
+# every boundary.  Two seconds lets held notes ring into the window naturally.
+PRE_ROLL_S = 2.0
 PIANO_DIR = ROOT / "data" / "pianos"
 LATENCY_S = 0.0117          # Salamander only; kept so the Phase 2 cache stays valid
 
@@ -230,6 +248,54 @@ def build(split: str, n_pieces: int, seconds: float = 20.0,
 def load(p: pathlib.Path):
     z = np.load(p)
     return z["y"].astype(np.float32) / 32767.0, z["on"], z["fr"]
+
+
+def render_window(pm, t0: float, seconds: float, piano: str):
+    """One window of a parsed MIDI, rendered with pre-roll; (audio, onsets, frames).
+
+    The full-dataset path.  Unlike render_clip, the window position is given
+    (consecutive windows tile a whole piece) and audio is rendered from
+    t0 - PRE_ROLL_S, then cropped, so notes held across t0 ring into the
+    window instead of being re-struck at its first sample.
+    """
+    base = max(0.0, t0 - PRE_ROLL_S)
+    crop = t0 - base
+    span = crop + seconds
+    notes, labelled = [], []
+    for inst in pm.instruments:
+        for n in inst.notes:
+            if n.end <= base or n.start >= t0 + seconds:
+                continue
+            notes.append({"pitch": n.pitch, "onset": max(0.0, n.start - base),
+                          "offset": min(span, n.end - base), "velocity": n.velocity})
+            if n.end > t0:
+                labelled.append((n.pitch, n.start - t0, min(seconds, n.end - t0)))
+    y = render_with(piano, notes)
+    a = int(round(crop * S.SR))
+    n_samp = int(seconds * S.SR)
+    y = y[a:a + n_samp]
+    y = np.pad(y, (0, max(0, n_samp - len(y))))
+    peak = float(np.abs(y).max()) if len(y) else 0.0
+    if peak > 0.95:
+        y = y * (0.95 / peak)
+    lat = latencies()[piano]
+    T = S.n_frames(n_samp)
+    on = np.zeros((S.N_KEYS, T), np.uint8)
+    fr = np.zeros((S.N_KEYS, T), np.uint8)
+    for pitch, s, e in labelled:
+        k = pitch - 21
+        if not 0 <= k < S.N_KEYS:
+            continue
+        fa, fb = frame(max(0.0, s), lat), frame(e, lat)
+        fr[k, max(0, fa):min(T, max(fb, fa + 1))] = 1
+        if s >= 0 and fa < T:                 # struck inside this window
+            on[k, fa] = 1
+    return y.astype(np.float32), on, fr
+
+
+def piano_for(split: str, i: int) -> str:
+    """Deterministic piano per piece, so a re-run renders identically."""
+    return random.Random(f"{split}-{i}").choice(sorted(pianos()))
 
 
 def piano_of(p: pathlib.Path) -> str:
