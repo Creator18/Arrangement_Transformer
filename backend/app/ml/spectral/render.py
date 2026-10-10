@@ -35,15 +35,17 @@ from . import frontend as S
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 MAESTRO = ROOT / "data" / "maestro-v3.0.0"
 CACHE = ROOT / "data" / "maestro_render"          # single-piano (Salamander) clips
-# The full multi-piano set is ~34 GB, so it lives OUTSIDE the project folder:
-# on D: when present (beside Slakh), overridable with ARRANGEMENT_RENDER_DIR.
+# The full multi-piano set is ~34 GB, so it lives OUTSIDE the project folder,
+# on the internal NVMe drive: training re-reads it every epoch, and D: is an
+# external USB SSD — slower, and unpluggable mid-run.  Overridable with
+# ARRANGEMENT_RENDER_DIR (e.g. on a cluster).
 def _multi_dir() -> pathlib.Path:
     import os
     env = os.environ.get("ARRANGEMENT_RENDER_DIR")
     if env:
         return pathlib.Path(env)
-    d = pathlib.Path("D:/arrangement_data/maestro_render_multi")
-    return d if d.anchor and pathlib.Path(d.anchor).exists() else ROOT / "data" / "maestro_render_multi"
+    d = pathlib.Path("C:/arrangement_data/maestro_render_multi")
+    return d if pathlib.Path(d.anchor).exists() else ROOT / "data" / "maestro_render_multi"
 
 
 CACHE_MULTI = _multi_dir()
