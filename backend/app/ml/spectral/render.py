@@ -26,7 +26,7 @@ from __future__ import annotations
 import csv
 import pathlib
 import random
-from typing import List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -34,12 +34,116 @@ from . import frontend as S
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 MAESTRO = ROOT / "data" / "maestro-v3.0.0"
-CACHE = ROOT / "data" / "maestro_render"
-LATENCY_S = 0.0117
+CACHE = ROOT / "data" / "maestro_render"          # single-piano (Salamander) clips
+CACHE_MULTI = ROOT / "data" / "maestro_render_multi"
+PIANO_DIR = ROOT / "data" / "pianos"
+LATENCY_S = 0.0117          # Salamander only; kept so the Phase 2 cache stays valid
+
+# ── Multiple pianos ───────────────────────────────────────────────────────────
+#
+# One sampler in one simulated room lets a model learn "what Salamander sounds
+# like" instead of "what a piano sounds like", and then stumble on anything
+# else.  Each clip is rendered with a piano drawn at random, so the only thing
+# consistent across the training set is the piano-ness.
+#
+# NoFX variants are used where a library offers them: the sampler's own room
+# processing is applied to every piano identically, so the room varies with
+# the INSTRUMENT'S recording rather than with a baked-in reverb on some
+# libraries and not others.  The SF2 Upright KW is left out: the SF2 backend
+# loads a General MIDI soundfont before it, and caches the parsed font at
+# module level, so it cannot be switched per clip.  LivingRoom covers uprights.
+#
+# "Intimate" (the close-mic variant of the Headroom C3) is deliberately
+# excluded.  With half-peak latency correction, onset alignment averaged over
+# three pieces lands at lag 0 for every other piano and at -1 frame for
+# Intimate.  Keeping it would teach the model that timing shifts by 16 ms
+# depending on the recording, and it adds little variety beyond Headroom
+# itself, which is the same instrument.
+_PIANO_FILES = {
+    "headroom":   "headroom_c3/**/Headroom Piano (NoFX).sfz",
+    "maestro":    "maestro_cf3/**/Maestro Concert Grand.sfz",
+    "splendid":   "splendid_steinway/**/Splendid Grand Piano.sfz",
+    "livingroom": "livingroom_upright/**/KeyPleezer LivingRoom Upright - Free Micro SFZ.sfz",
+}
 
 
-def frame(t: float) -> int:
-    return int(round((t + LATENCY_S) * S.FPS))
+def pianos() -> Dict[str, pathlib.Path]:
+    """name -> .sfz path, for every piano actually present on disk."""
+    from app.services import sfz_sampler as Z
+    out = {}
+    if Z.SFZ_PATH is not None:
+        out["salamander"] = pathlib.Path(Z.SFZ_PATH)
+    for name, pat in _PIANO_FILES.items():
+        hit = next(PIANO_DIR.glob(pat), None)
+        if hit is not None:
+            out[name] = hit
+    return out
+
+
+_SALAMANDER = None
+
+
+def render_with(piano: str, notes: List[dict]) -> np.ndarray:
+    """Render through one named piano, with the sampler's standard room."""
+    global _SALAMANDER
+    from app.services import sfz_sampler as Z
+    from app.services.sampler import _room
+    if _SALAMANDER is None:
+        _SALAMANDER = Z.SFZ_PATH
+    Z.SFZ_PATH = pianos()[piano]           # the synth cache is keyed on this path
+    try:
+        return _room(Z.render_notes_sfz(notes, sr=S.SR), S.SR).astype(np.float32)
+    finally:
+        Z.SFZ_PATH = _SALAMANDER
+
+
+def latencies() -> Dict[str, float]:
+    """Per-piano onset latency in seconds, measured once and cached.
+
+    The 11.7 ms figure was measured on Salamander alone.  Every sample library
+    trims its recordings differently, so each one starts its notes after its
+    own delay — and a label shift tuned for one piano would leave every other
+    piano's labels misaligned by the difference.  Measured on single notes
+    across the keyboard, median over pitch and velocity.
+
+    "Where the note starts" is the time the attack envelope reaches HALF ITS
+    PEAK.  The first version used the first sample above the noise floor, and
+    the libraries disagreed by up to two frames afterwards: piano samples ramp
+    up over several milliseconds with library-specific shapes, and the close-
+    mic "Intimate" variant catches hammer contact well before the tone builds.
+    Half-peak is the same point on the energy curve whatever a library's
+    trimming, which is what a model needs — one timing convention across every
+    instrument, so timing never becomes a function of which piano played.
+    """
+    import json
+    p = PIANO_DIR / "latency_halfpeak.json"
+    cache = json.loads(p.read_text()) if p.exists() else {}
+    names = pianos()
+    if all(n in cache for n in names):
+        return cache
+    t0 = 1.0
+    for name in names:
+        if name in cache:
+            continue
+        lags = []
+        for pitch in (33, 48, 60, 72, 84, 96):
+            for vel in (40, 100):
+                y = render_with(name, [{"pitch": pitch, "onset": t0,
+                                        "offset": t0 + 1.0, "velocity": vel}])
+                # 1 ms RMS envelope, peak within 200 ms of the nominal onset,
+                # first crossing of half that peak
+                env = np.sqrt(np.convolve(y ** 2, np.ones(24) / 24, mode="same"))
+                lo, hi = int((t0 - 0.05) * S.SR), int((t0 + 0.2) * S.SR)
+                w = env[lo:hi]
+                i = int(np.argmax(w >= 0.5 * w.max())) + lo
+                lags.append(i / S.SR - t0)
+        cache[name] = float(np.median(lags))
+    p.write_text(json.dumps(cache, indent=1))
+    return cache
+
+
+def frame(t: float, latency: float = LATENCY_S) -> int:
+    return int(round((t + latency) * S.FPS))
 
 
 def pieces(split: str) -> List[dict]:
@@ -47,8 +151,12 @@ def pieces(split: str) -> List[dict]:
     return [r for r in rows if r["split"] == split]
 
 
-def render_clip(row: dict, seconds: float, seed: int):
-    """(audio float32 @ SR, onset roll, frame roll) for one random window."""
+def render_clip(row: dict, seconds: float, seed: int, piano: Optional[str] = None):
+    """(audio float32 @ SR, onset roll, frame roll) for one random window.
+
+    piano=None renders through the default sampler with the Salamander
+    latency; a name renders through that piano with ITS measured latency.
+    """
     import pretty_midi
     from app.services.sampler import render_notes
 
@@ -66,8 +174,18 @@ def render_clip(row: dict, seconds: float, seed: int):
                           "offset": min(seconds, n.end - t0),
                           "velocity": n.velocity,
                           "struck": n.start >= t0})   # began inside the window
-    y = render_notes([{k: v for k, v in n.items() if k != "struck"} for n in notes],
-                     sr=S.SR).astype(np.float32)
+    plain = [{k: v for k, v in n.items() if k != "struck"} for n in notes]
+    if piano is None:                       # legacy single-piano path (Phase 2 cache)
+        y = render_notes(plain, sr=S.SR).astype(np.float32)
+        lat = LATENCY_S
+    else:
+        y = render_with(piano, plain)
+        lat = latencies()[piano]
+    # Libraries are recorded at different levels; keep every clip out of the
+    # int16 clipping range rather than let the loudest piano distort.
+    peak = float(np.abs(y).max()) if len(y) else 0.0
+    if peak > 0.95:
+        y = y * (0.95 / peak)
     n_samp = int(seconds * S.SR)
     y = np.pad(y, (0, max(0, n_samp - len(y))))[:n_samp]
     T = S.n_frames(n_samp)
@@ -77,24 +195,34 @@ def render_clip(row: dict, seconds: float, seed: int):
         k = n["pitch"] - 21
         if not 0 <= k < S.N_KEYS:
             continue
-        a, b = frame(n["onset"]), frame(n["offset"])
+        a, b = frame(n["onset"], lat), frame(n["offset"], lat)
         fr[k, max(0, a):min(T, max(b, a + 1))] = 1
         if n["struck"] and a < T:
             on[k, a] = 1
     return y, on, fr
 
 
-def build(split: str, n_pieces: int, seconds: float = 20.0) -> List[pathlib.Path]:
-    """Render and cache clips; idempotent."""
-    out = CACHE / split
+def build(split: str, n_pieces: int, seconds: float = 20.0,
+          multi: bool = False) -> List[pathlib.Path]:
+    """Render and cache clips; idempotent.
+
+    multi=False keeps the original Salamander-only cache, so Phase 2's numbers
+    stay reproducible.  multi=True writes a separate cache where each clip's
+    piano is drawn at random — deterministically from (split, index), so a
+    rebuild produces the same piano for the same clip — and the choice is
+    stored in the file, so results can later be broken down per piano.
+    """
+    out = (CACHE_MULTI if multi else CACHE) / split
     out.mkdir(parents=True, exist_ok=True)
+    names = sorted(pianos()) if multi else []
     paths = []
     for i, row in enumerate(pieces(split)[:n_pieces]):
         p = out / f"{i:04d}.npz"
         if not p.exists():
-            y, on, fr = render_clip(row, seconds, seed=i)
+            piano = random.Random(f"{split}-{i}").choice(names) if multi else None
+            y, on, fr = render_clip(row, seconds, seed=i, piano=piano)
             np.savez_compressed(p, y=(np.clip(y, -1, 1) * 32767).astype(np.int16),
-                                on=on, fr=fr)
+                                on=on, fr=fr, piano=piano or "salamander")
         paths.append(p)
     return paths
 
@@ -102,3 +230,8 @@ def build(split: str, n_pieces: int, seconds: float = 20.0) -> List[pathlib.Path
 def load(p: pathlib.Path):
     z = np.load(p)
     return z["y"].astype(np.float32) / 32767.0, z["on"], z["fr"]
+
+
+def piano_of(p: pathlib.Path) -> str:
+    z = np.load(p)
+    return str(z["piano"]) if "piano" in z.files else "salamander"
