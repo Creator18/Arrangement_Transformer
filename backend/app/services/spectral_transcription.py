@@ -31,10 +31,14 @@ CKPT = pathlib.Path(os.environ.get(
     "ARRANGEMENT_SPECTRAL_CKPT",
     ROOT / "app" / "ml" / "spectral" / "checkpoints" / "run1_v100_60k" / "best.pt"))
 
-# Onset threshold, swept on 800 validation clips by eval/spectral_evaluate.py:
-# 0.5 -> F1 0.847, 0.93 -> 0.868 (best, bracketed: 0.97 -> 0.859, 0.99 ->
-# 0.781).  On all 3,686 test clips that is note F1 0.851 tuned vs 0.830 at 0.5.
-ONSET_THR = float(os.environ.get("ARRANGEMENT_SPECTRAL_ONSET_THR", 0.93))
+# Onset threshold.  Swept on 800 rendered validation clips the best was 0.93
+# (F1 0.868), but rendered audio flatters confidence.  On 12 REAL MAESTRO
+# recordings against the full MIDI truth (eval/real_audio_eval.py), with the
+# short-note filters off: 0.85 -> F1 0.899, 0.90 -> 0.900, 0.93 -> 0.898 —
+# flat at the top, and 0.85 keeps more of the soft playing (recall 0.713 vs
+# 0.655 at 0.93).  Chosen on those same 12 recordings, so not an independent
+# score.
+ONSET_THR = float(os.environ.get("ARRANGEMENT_SPECTRAL_ONSET_THR", 0.85))
 FRAME_THR = 0.5
 WINDOW_S, EDGE_S = 20.0, 2.0
 
