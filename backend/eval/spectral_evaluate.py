@@ -18,11 +18,16 @@
     It is slow, so both models are compared on a fixed 600-clip subset
     balanced across pianos.
 
-References are decoded from the label rolls exactly as during training, and
-scored with mir_eval (50 ms onset tolerance), so every number here is on one
-footing.
+References are decoded from the label rolls with NO length filter and
+re-strikes kept (the old decoder-built references hid 42% of true notes), and
+the models' output goes through the same fixed decoder the app now uses.
+Scored with mir_eval (50 ms onset tolerance).
 
-    python eval/spectral_evaluate.py --ckpt <best.pt> --data <render dir>
+--ckpt is repeatable (label=path) to compare models on identical clips;
+--baseline-clips 0 runs ByteDance on every test clip.  On the real-recording
+set (piano="real") ByteDance is in-domain: it was trained on MAESTRO audio.
+
+    python eval/spectral_evaluate.py --ckpt new=<best.pt> --data <clip dir>
 """
 from __future__ import annotations
 
@@ -46,10 +51,13 @@ ONSET_THRS = [0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.98, 0.99]
 FRAME_THRS = [0.3, 0.5]
 
 
+FIXED = dict(min_frames=1, min_note_s=0.0, keep_restruck=True)
+
+
 def _ref(on, fr):
     from app.ml.transcriber.decode import decode_notes
     return decode_notes(on.astype(np.float32), fr.astype(np.float32),
-                        np.zeros(on.shape, np.float32), 0.5, 0.5)
+                        np.zeros(on.shape, np.float32), 0.5, 0.5, **FIXED)
 
 
 def _score_clip(job):
@@ -60,7 +68,7 @@ def _score_clip(job):
     out = {}
     for ot, ft in thrs:
         est = decode_notes(po.astype(np.float32), pf.astype(np.float32),
-                           pv.astype(np.float32), ot, ft)
+                           pv.astype(np.float32), ot, ft, **FIXED)
         out[(ot, ft)] = note_scores(ref, est)
     return i, out
 
@@ -82,7 +90,7 @@ def mean(rows, k):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", action="append", required=True, help="label=path, repeatable")
     ap.add_argument("--data", required=True)
     ap.add_argument("--val-clips", type=int, default=800)
     ap.add_argument("--baseline-clips", type=int, default=600)
@@ -93,17 +101,38 @@ def main():
     args = ap.parse_args()
 
     import torch
+    from app.ml.spectral.data import clips
+
+    dev = torch.device("cuda")
+    amp = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch.float16
+    pool = mp.Pool(args.procs)
+    report = {"models": {}}
+    te = clips(args.data, "test")
+    if args.limit_test:
+        te = te[:: max(1, len(te) // args.limit_test)][: args.limit_test]
+    for spec in args.ckpt:
+        label, path = spec.split("=", 1) if "=" in spec else ("spectral", spec)
+        print(f"\n======== {label}: {path}", flush=True)
+        report["models"][label] = {"ckpt": path}
+        tres, best, per = evaluate_model(args, path, report["models"][label], pool, te, dev, amp)
+        last = (label, tres, best, per)
+    baseline(args, report, pool, te, *last)
+    if args.out:
+        pathlib.Path(args.out).write_text(json.dumps(report, indent=1))
+        print(f"\nwrote {args.out}")
+
+
+def evaluate_model(args, path, report, pool, te, dev, amp):
+    import torch
     from app.ml.spectral import frontend as S
     from app.ml.spectral.data import RenderedClips, clips
     from app.ml.spectral.model import from_checkpoint
-
-    dev = torch.device("cuda")
-    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    ck = torch.load(path, map_location="cpu", weights_only=False)
     net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()
     fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
-    amp = torch.bfloat16 if torch.cuda.get_device_capability(0)[0] >= 8 else torch.float16
-    print(f"checkpoint step {ck['step']} (validation F1 {ck['best']:.3f} at thr 0.5), "
+    report["step"] = int(ck["step"])
+    print(f"checkpoint step {ck['step']} (validation F1 {ck['best']:.3f}), "
           f"{torch.cuda.get_device_name(0)}", flush=True)
 
     def infer(paths):
@@ -122,9 +151,6 @@ def main():
                 if (i + 1) % 500 == 0:
                     print(f"   inference {i + 1}/{len(ds)}", flush=True)
         return res
-
-    pool = mp.Pool(args.procs)
-    report = {"ckpt": args.ckpt, "step": int(ck["step"])}
 
     # ── 1. threshold sweep on validation ───────────────────────────────────
     va = clips(args.data, "validation")
@@ -156,9 +182,6 @@ def main():
     print(f"   ({time.time() - t0:.0f} s)", flush=True)
 
     # ── 2 + 3. test, all clips, per piano ──────────────────────────────────
-    te = clips(args.data, "test")
-    if args.limit_test:
-        te = te[:: max(1, len(te) // args.limit_test)][: args.limit_test]
     print(f"\n2 TEST on all {len(te)} test clips (never seen in training or selection)",
           flush=True)
     tres = infer(te)
@@ -186,7 +209,13 @@ def main():
         print(f"   {p:<11} {len(rows):>5} clips   note F1 {mean(rows, 'conp_f1'):.3f}  "
               f"(P {mean(rows, 'conp_p'):.3f}  R {mean(rows, 'conp_r'):.3f})")
 
-    # ── 4. baseline on a fixed, piano-balanced subset ──────────────────────
+    return tres, best, per
+
+
+def baseline(args, report, pool, te, label, tres, best, per):
+    """ByteDance on the same test clips, compared with the LAST --ckpt model."""
+    from app.ml.spectral import frontend as S
+    pianos = sorted({r[5] for r in tres})
     if not args.no_baseline:
         # Loaded directly, exactly as app/services/transcription.py does it,
         # rather than importing the whole service and its dependency chain.
@@ -200,7 +229,7 @@ def main():
         for i, r in enumerate(tres):
             by_p[r[5]].append(i)
         rng = random.Random(0)
-        take = args.baseline_clips // len(by_p)
+        take = (args.baseline_clips // len(by_p)) if args.baseline_clips else 10 ** 9
         sub = sorted(i for p in by_p for i in rng.sample(by_p[p], min(take, len(by_p[p]))))
         print(f"\n4 BASELINE (ByteDance piano transcriber) on {len(sub)} test clips, "
               f"{take} per piano", flush=True)
@@ -220,7 +249,7 @@ def main():
         ours = [per[best][i] for i in sub]
         theirs = [base[i] for i in sub]
         print(f"   {'model':<26}{'note F1':>9}{'P':>7}{'R':>7}{'+offsets':>10}")
-        for name, rows in (("spectral (ours, tuned)", ours), ("ByteDance baseline", theirs)):
+        for name, rows in ((f"{label} (tuned)", ours), ("ByteDance baseline", theirs)):
             print(f"   {name:<26}{mean(rows, 'conp_f1'):>9.3f}{mean(rows, 'conp_p'):>7.3f}"
                   f"{mean(rows, 'conp_r'):>7.3f}{mean(rows, 'conpoff_f1'):>10.3f}")
         print("   per piano (ours / baseline):")
@@ -231,10 +260,6 @@ def main():
             t = [base[i] for i in sub if tres[i][5] == p]
             report["baseline"]["per_piano"][p] = [mean(o, "conp_f1"), mean(t, "conp_f1")]
             print(f"     {p:<11} {mean(o, 'conp_f1'):.3f} / {mean(t, 'conp_f1'):.3f}")
-
-    if args.out:
-        pathlib.Path(args.out).write_text(json.dumps(report, indent=1))
-        print(f"\nwrote {args.out}")
 
 
 if __name__ == "__main__":
