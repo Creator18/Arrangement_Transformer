@@ -25,6 +25,40 @@ from torch.utils.data import Dataset
 from . import frontend as S
 
 
+def augment(y: np.ndarray) -> np.ndarray:
+    """Make a rendered clip sound less like a sampler in a simulated room.
+
+    On 12 real MAESTRO recordings the model trained on clean renders lost
+    soft notes (recall 0.655 vs 0.968 for loud ones) and held notes too long
+    (median 1.33x true length) — real recordings ring with room and pedal
+    that renders lack, and the model read ringing as a held key.  Training on
+    reverberant, noisier renders whose labels still say "released here"
+    teaches the difference.  Applied to rendered clips only: real recordings
+    already carry a real room.
+    """
+    from scipy.signal import fftconvolve
+    sr = S.SR
+    if random.random() < 0.7:                          # room: decaying-noise impulse response
+        rt60 = random.uniform(0.2, 1.4)
+        n = int(rt60 * sr)
+        t = np.arange(n) / sr
+        ir = np.random.randn(n).astype(np.float32) * np.exp(-6.9 * t / rt60).astype(np.float32)
+        ir /= np.sqrt((ir ** 2).sum()) + 1e-9
+        wet = random.uniform(0.1, 0.45)
+        y = (1 - wet) * y + wet * fftconvolve(y, ir)[: len(y)].astype(np.float32)
+    if random.random() < 0.6:                          # spectral tilt: brighter or darker mics
+        spec = np.fft.rfft(y)
+        f = np.fft.rfftfreq(len(y), 1 / sr)
+        db = random.uniform(-4, 4) * np.log2(np.maximum(f, 50) / 1000) / 3.3
+        y = np.fft.irfft(spec * 10 ** (db / 20), n=len(y)).astype(np.float32)
+    if random.random() < 0.5:                          # background noise, 25-50 dB below signal
+        rms = np.sqrt((y ** 2).mean()) + 1e-9
+        snr = random.uniform(25, 50)
+        y = y + np.random.randn(len(y)).astype(np.float32) * rms * 10 ** (-snr / 20)
+    y = y * 10 ** (random.uniform(-9, 3) / 20)         # level: soft passages must stay findable
+    return np.clip(y, -1, 1).astype(np.float32)
+
+
 def clips(root: pathlib.Path, split: str) -> List[pathlib.Path]:
     d = pathlib.Path(root) / split
     return sorted(p for p in d.glob("*.npz") if not p.name.endswith(".tmp.npz"))
@@ -32,10 +66,11 @@ def clips(root: pathlib.Path, split: str) -> List[pathlib.Path]:
 
 class RenderedClips(Dataset):
     def __init__(self, paths: List[pathlib.Path], crop_s: Optional[float] = 8.0,
-                 random_crop: bool = True):
+                 random_crop: bool = True, augment: bool = False):
         self.paths = paths
         self.crop = int(crop_s * S.SR) if crop_s else None
         self.random_crop = random_crop
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -69,6 +104,8 @@ class RenderedClips(Dataset):
             if on.shape[1] < T:
                 pad = ((0, 0), (0, T - on.shape[1]))
                 on, fr, vel = (np.pad(a, pad) for a in (on, fr, vel))
+        if self.augment and not ("piano" in z.files and str(z["piano"]) == "real"):
+            y = augment(y)
         return (torch.from_numpy(y),
                 torch.from_numpy(on.astype(np.float32)),
                 torch.from_numpy(fr.astype(np.float32)),

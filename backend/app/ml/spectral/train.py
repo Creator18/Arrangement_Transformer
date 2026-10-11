@@ -96,6 +96,16 @@ def main():
     ap.add_argument("--max-minutes", type=float, default=460.0,
                     help="save and exit before this wall-clock budget (8 h job limit)")
     ap.add_argument("--limit-train", type=int, default=0, help="trial runs only")
+    ap.add_argument("--data-real", default="",
+                    help="root of REAL-recording clips (eval/fetch_real_clips.py) to mix in")
+    ap.add_argument("--real-frac", type=float, default=0.5,
+                    help="expected fraction of each batch drawn from --data-real")
+    ap.add_argument("--val-data", default="",
+                    help="validate on this root instead of --data (e.g. real recordings)")
+    ap.add_argument("--augment", action="store_true",
+                    help="room/noise/EQ/level augmentation on RENDERED clips")
+    ap.add_argument("--init", default="",
+                    help="start from this checkpoint's weights (fine-tune) when no last.pt exists")
     args = ap.parse_args()
 
     t_start = time.time()
@@ -115,12 +125,16 @@ def main():
         f"precision {'bfloat16' if bf16 else 'float16 + grad scaler'}")
 
     tr_paths = clips(args.data, args.train_split)
-    va_paths = clips(args.data, args.val_split)
+    real_paths = clips(args.data_real, args.train_split) if args.data_real else []
+    va_paths = clips(args.val_data or args.data, args.val_split)
     if args.limit_train:
         tr_paths = tr_paths[: args.limit_train]
     random.Random(0).shuffle(va_paths)
     va_paths = sorted(va_paths[: args.val_clips])     # fixed subset, every evaluation
-    say(f"data {args.data}: {len(tr_paths)} train clips, {len(va_paths)} validation clips")
+    say(f"data {args.data}: {len(tr_paths)} rendered train clips"
+        + (f" + {len(real_paths)} real ({args.real_frac:.0%} of each batch)" if real_paths else "")
+        + f", {len(va_paths)} validation clips from {args.val_data or args.data}"
+        + (", augmenting rendered clips" if args.augment else ""))
 
     fe = S.SpectralFrontend().to(dev).eval()
     net = SpectralTranscriber(d=args.d, depth=args.depth, heads=args.heads).to(dev)
@@ -145,6 +159,13 @@ def main():
         fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
         step, best = int(ck["step"]), float(ck["best"])
         say(f"resumed from step {step} (best note F1 {best:.3f})")
+    elif args.init:
+        # Fine-tune: weights AND front-end normalisation come from the source
+        # model, so the features it was trained on mean the same thing here.
+        ck = torch.load(os.path.expanduser(args.init), map_location=dev, weights_only=False)
+        net.load_state_dict(ck["model"])
+        fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
+        say(f"initialised from {args.init} (step {ck['step']})")
     else:
         # normalisation from FULL-register training audio, never a narrow slice
         cal = RenderedClips(random.Random(1).sample(tr_paths, min(64, len(tr_paths))),
@@ -166,9 +187,20 @@ def main():
         torch.save(ck, tmp)
         tmp.replace(path)                       # atomic: never a half-written checkpoint
 
-    tr_dl = DataLoader(RenderedClips(tr_paths, args.crop, random_crop=True),
-                       batch_size=args.batch, shuffle=True, num_workers=args.workers,
-                       pin_memory=True, drop_last=True, persistent_workers=args.workers > 0)
+    tr_set = RenderedClips(tr_paths + real_paths, args.crop, random_crop=True,
+                           augment=args.augment)
+    if real_paths:
+        # Weighted so a batch is ~real_frac real however many clips each side
+        # has; drawn with replacement, an "epoch" is just len(tr_set) draws.
+        from torch.utils.data import WeightedRandomSampler
+        w = ([(1 - args.real_frac) / len(tr_paths)] * len(tr_paths)
+             + [args.real_frac / len(real_paths)] * len(real_paths))
+        sampler = WeightedRandomSampler(w, num_samples=len(w), replacement=True)
+    else:
+        sampler = None
+    tr_dl = DataLoader(tr_set, batch_size=args.batch, shuffle=sampler is None, sampler=sampler,
+                       num_workers=args.workers, pin_memory=True, drop_last=True,
+                       persistent_workers=args.workers > 0)
     va_dl = DataLoader(RenderedClips(va_paths, args.val_crop, random_crop=False),
                        batch_size=max(1, args.batch // 4), shuffle=False,
                        num_workers=args.workers)
