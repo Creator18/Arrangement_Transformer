@@ -67,6 +67,9 @@ def main():
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--splits", default="test,validation,train")
     ap.add_argument("--limit", type=int, default=0, help="pieces per split, for a trial")
+    ap.add_argument("--shard", default="",
+                    help="i/N: render only every N-th piece starting at i, for a "
+                         "Slurm job array (--shard $SLURM_ARRAY_TASK_ID/N)")
     args = ap.parse_args()
 
     import warnings
@@ -83,10 +86,20 @@ def main():
         for i, row in enumerate(rows):
             jobs.append((split, i, row["midi_filename"], float(row["duration"]),
                          R.piano_for(split, i)))
+    log_name = "progress.log"
+    if args.shard:
+        # Strided over a stable (split, index) order, so long and short pieces
+        # spread evenly across shards rather than one task drawing all the
+        # long ones.  Every shard sees the same order, so together they cover
+        # each piece exactly once.
+        si, sn = (int(v) for v in args.shard.split("/"))
+        jobs.sort(key=lambda j: (j[0], j[1]))
+        jobs = jobs[si::sn]
+        log_name = f"progress_{si:03d}.log"
     jobs.sort(key=lambda j: (j[4], j[0], j[1]))      # group by piano
     total_win = sum(max(1, math.ceil(j[3] / SECONDS)) for j in jobs)
 
-    log = open(R.CACHE_MULTI / "progress.log", "a", buffering=1, encoding="utf-8")
+    log = open(R.CACHE_MULTI / log_name, "a", buffering=1, encoding="utf-8")
 
     def say(msg):
         line = f"{time.strftime('%H:%M:%S')}  {msg}"
