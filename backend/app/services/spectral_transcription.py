@@ -29,7 +29,12 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CKPT = pathlib.Path(os.environ.get(
     "ARRANGEMENT_SPECTRAL_CKPT",
-    ROOT / "app" / "ml" / "spectral" / "checkpoints" / "run1_v100_60k" / "best.pt"))
+    ROOT / "app" / "ml" / "spectral" / "checkpoints" / "run2_real_finetune" / "best.pt"))
+# run2 = run1 fine-tuned on 50% REAL MAESTRO recordings + augmented renders.
+# On 12 real test recordings (unfiltered MIDI truth): note F1 0.900 -> 0.960,
+# F1 with offsets 0.451 -> 0.690, soft-note recall 0.713 -> 0.835 — level with
+# ByteDance (0.966) on notes and well ahead on durations (0.417).
+# run1 (rendered audio only) is still at checkpoints/run1_v100_60k/best.pt.
 
 # Onset threshold.  Swept on 800 rendered validation clips the best was 0.93
 # (F1 0.868), but rendered audio flatters confidence.  On 12 REAL MAESTRO

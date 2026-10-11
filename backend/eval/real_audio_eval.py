@@ -73,6 +73,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
     ap.add_argument("--no-bytedance", action="store_true")
+    ap.add_argument("--ckpt", action="append", default=[],
+                    help="label=path; repeat to compare models (default: the app's checkpoint)")
     args = ap.parse_args()
     import librosa
     from app.services import spectral_transcription as ST
@@ -80,6 +82,7 @@ def main():
     from app.ml.corrector import correct_notes
 
     wavs = sorted(pathlib.Path(args.dir).glob("*.wav"))
+    ckpts = [tuple(c.split("=", 1)) for c in args.ckpt] or [("spectral", str(ST.CKPT))]
     rows = collections.defaultdict(list)
     band_hit = collections.defaultdict(lambda: np.zeros(len(BANDS)))
     rep_hit = collections.Counter()
@@ -91,11 +94,15 @@ def main():
         n_true += len(ref)
         band_tot += [sum(lo <= n["velocity"] < hi for n in ref) for _, lo, hi in BANDS]
         rep_tot += sum(n["gap"] < 0.15 for n in ref)
-        on, fr, vl = ST.rolls(w)
-        systems = {("spectral old", 0.93): decode_notes(on, fr, vl, 0.93, 0.5)}
-        for t in THRS:
-            systems[("spectral fixed", t)] = decode_notes(on, fr, vl, t, 0.5, min_frames=1,
-                                                         min_note_s=0.0, keep_restruck=True)
+        systems = {}
+        for label, path in ckpts:
+            ST.CKPT = pathlib.Path(path); ST._cache.clear()
+            on, fr, vl = ST.rolls(w)
+            if label == ckpts[0][0]:
+                systems[(f"{label} old-dec", 0.93)] = decode_notes(on, fr, vl, 0.93, 0.5)
+            for t in THRS:
+                systems[(label, t)] = decode_notes(on, fr, vl, t, 0.5, min_frames=1,
+                                                   min_note_s=0.0, keep_restruck=True)
         if not args.no_bytedance:
             from app.services import transcription as TR
             systems[("ByteDance", None)] = TR._onsets_frames_notes(w)
@@ -105,7 +112,7 @@ def main():
             band_hit[key] += [sum(1 for i in hit if lo <= ref[i]["velocity"] < hi) for _, lo, hi in BANDS]
             rep_hit[key] += sum(1 for i in hit if ref[i]["gap"] < 0.15)
         # durations: fixed spectral at 0.93, before vs after the corrector
-        est = systems[("spectral fixed", 0.93)]
+        est = systems[(ckpts[-1][0], 0.85)]
         y, sr = librosa.load(str(w), sr=22050, mono=True)
         beats = librosa.frames_to_time(librosa.beat.beat_track(y=y, sr=sr)[1], sr=sr)
         for name, ns in (("as decoded", est), ("after corrector", correct_notes(est, beats))):
@@ -125,13 +132,13 @@ def main():
     print(f"\n(repeats = {rep_tot} notes re-struck within 150 ms of the same key)")
     print(f"\nrecall by dynamics:\n{'system':<16}{'thr':>6}" + "".join(f"{b[0]:>16}" for b in BANDS))
     for key in rows:
-        if key[0] == "spectral fixed" and key[1] not in (0.5, 0.85, 0.93):
+        if key[1] is not None and key[1] not in (0.5, 0.85, 0.93):
             continue
         thr = "" if key[1] is None else f"{key[1]:.2f}"
         print(f"{key[0]:<16}{thr:>6}" + "".join(f"{band_hit[key][i] / max(1, band_tot[i]):>16.3f}"
                                                for i in range(len(BANDS))))
     print(f"   band sizes: " + ", ".join(f"{b[0]} {int(band_tot[i])}" for i, b in enumerate(BANDS)))
-    print("\ncorrector on real audio (spectral fixed, thr 0.93):")
+    print("\ncorrector on real audio (newest model, thr 0.85):")
     for name in ("as decoded", "after corrector"):
         r = np.array(dur[name + " ratio"])
         print(f"   {name:<16} F1+offsets {np.mean(dur[name]):.3f}   median length vs true "
