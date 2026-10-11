@@ -295,6 +295,30 @@ def render_window(pm, t0: float, seconds: float, piano: str):
     return y.astype(np.float32), on, fr
 
 
+def velocity_roll(pm, t0: float, seconds: float, piano: str) -> np.ndarray:
+    """(88, T) uint8 velocity at each onset frame, for a window render_window made.
+
+    The rendered clips were saved with onset and frame labels only.  Velocity
+    comes straight from the MIDI rather than from re-rendering 36,401 clips,
+    and uses EXACTLY render_window's mapping — the same frame() rounding and
+    the same per-piano latency — so each velocity sits on its onset frame.
+    eval/make_velocity_rolls.py checks that against the stored onset rolls.
+    """
+    lat = latencies()[piano]
+    T = S.n_frames(int(seconds * S.SR))
+    vel = np.zeros((S.N_KEYS, T), np.uint8)
+    for inst in pm.instruments:
+        for n in inst.notes:
+            s = n.start - t0
+            if s < 0 or s >= seconds:
+                continue
+            k = n.pitch - 21
+            fa = frame(s, lat)
+            if 0 <= k < S.N_KEYS and fa < T:
+                vel[k, fa] = max(vel[k, fa], int(n.velocity))
+    return vel
+
+
 def piano_for(split: str, i: int) -> str:
     """Deterministic piano per piece, so a re-run renders identically."""
     return random.Random(f"{split}-{i}").choice(sorted(pianos()))
