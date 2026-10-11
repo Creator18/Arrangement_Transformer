@@ -60,7 +60,13 @@ def main():
             if not np.array_equal(vel > 0, z["on"] > 0):
                 d = int(((vel > 0) != (z["on"] > 0)).sum())
                 raise SystemExit(f"{clip}: velocity and onset labels disagree at {d} cells")
-            np.save(out, vel)
+            # Atomic, like the audio clips: a reader must never see a half-
+            # written file.  The first version used a plain np.save, and a
+            # training job started while this was still running crashed on an
+            # empty .vel.npy ("No data left in file").
+            tmp = out.with_name(out.stem + ".tmp.npy")
+            np.save(tmp, vel)
+            tmp.replace(out)
             written += 1
             checked += 1
     print(f"wrote {written} velocity rolls, every one consistent with its onset roll")

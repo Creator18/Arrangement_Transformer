@@ -45,9 +45,16 @@ class RenderedClips(Dataset):
         z = np.load(p)
         y = z["y"].astype(np.float32) / 32767.0
         on, fr = z["on"], z["fr"]
+        # A missing or unreadable velocity file costs that clip its velocity
+        # target (masked out of the loss), never the whole run.
         vp = p.with_name(p.stem + ".vel.npy")
-        vel = np.load(vp) if vp.exists() else np.zeros_like(on)
-        has_vel = vp.exists()
+        try:
+            vel = np.load(vp)
+            has_vel = vel.shape == on.shape
+        except Exception:                                   # noqa: BLE001
+            vel, has_vel = None, False
+        if not has_vel:
+            vel = np.zeros_like(on)
         if self.crop and len(y) > self.crop:
             # Module-level `random`, not a per-instance generator: DataLoader
             # workers each receive a COPY of the dataset, so an instance RNG

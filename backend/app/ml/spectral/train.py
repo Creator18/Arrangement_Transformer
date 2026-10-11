@@ -96,7 +96,11 @@ def main():
     ckdir.mkdir(parents=True, exist_ok=True)
     say = log_to(ckdir / "train.log")
 
-    bf16 = torch.cuda.is_bf16_supported()
+    # bfloat16 only on GPUs that do it in hardware (compute capability 8+:
+    # A100, H200).  torch.cuda.is_bf16_supported() also returns True on a V100,
+    # because bf16 can be EMULATED there — the first cluster trial ran on a
+    # V100 in slow emulated bf16 because of exactly that.
+    bf16 = torch.cuda.get_device_capability(0)[0] >= 8
     amp_dtype = torch.bfloat16 if bf16 else torch.float16
     say(f"GPU {torch.cuda.get_device_name(0)}, "
         f"{torch.cuda.get_device_properties(0).total_memory / 1e9:.0f} GB, "
