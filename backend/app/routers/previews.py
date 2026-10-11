@@ -64,7 +64,8 @@ def _render_one(session_dir: Path, src_file: Path, notes_key: str,
     # decides how long the sound actually lasts.
     pedal = data.get("pedal", [])
     t0 = time.time()
-    audio = render_notes(notes, sr=PREVIEW_SR, pedal=pedal)
+    from app.services.sampler import audible
+    audio = render_notes(audible(notes), sr=PREVIEW_SR, pedal=pedal)
     sf.write(str(out_path), audio, PREVIEW_SR, subtype="PCM_16")
     return {"notes": len(notes), "render_s": round(time.time() - t0, 2),
             "cached": False}

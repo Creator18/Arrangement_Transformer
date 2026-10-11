@@ -38,6 +38,14 @@ ONSET_THR = float(os.environ.get("ARRANGEMENT_SPECTRAL_ONSET_THR", 0.93))
 FRAME_THR = 0.5
 WINDOW_S, EDGE_S = 20.0, 2.0
 
+# Keep short notes and fast repeats (default on).  The shared decoder deletes
+# notes under 80 ms and the re-struck note before a repeat; against an
+# unfiltered ground truth that removed a third of this model's correct notes
+# (F1 0.968 -> 0.757) and three quarters of notes re-struck within 150 ms.
+# Playback gives short notes an audible minimum length instead.  Set
+# ARRANGEMENT_SPECTRAL_KEEP_SHORT=0 for the old behaviour, to A/B the two.
+KEEP_SHORT = os.environ.get("ARRANGEMENT_SPECTRAL_KEEP_SHORT", "1") != "0"
+
 _cache: Dict[str, Any] = {}
 
 
@@ -61,16 +69,20 @@ def _load():
     return net, fe, dev
 
 
-def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None) -> List[Dict[str, Any]]:
+def rolls(audio_path: pathlib.Path):
+    """(onset, frame, velocity) probabilities, each (88, T), for a whole file.
+
+    Split out of transcribe() so an evaluation can run the model once and
+    decode many ways.  Returns None for an empty file.
+    """
     import librosa
     import torch
     from app.ml.spectral import frontend as S
-    from app.ml.transcriber.decode import decode_notes
 
     net, fe, dev = _load()
     y, _ = librosa.load(str(audio_path), sr=S.SR, mono=True)
     if y.size == 0:
-        return []
+        return None
     T = S.n_frames(len(y))
     win = int(WINDOW_S * S.FPS)          # frames per window
     edge = int(EDGE_S * S.FPS)           # frames discarded at each inner edge
@@ -89,8 +101,23 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None) -> L
             fr[:, a + lo:a + hi] = pf[:, lo:hi]
             vl[:, a + lo:a + hi] = pv[:, lo:hi]
             f0 = a + hi
-    notes = decode_notes(on, fr, vl, onset_thr if onset_thr is not None else ONSET_THR,
-                         FRAME_THR)
+    return on, fr, vl
+
+
+def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None) -> List[Dict[str, Any]]:
+    import librosa
+    from app.ml.transcriber.decode import decode_notes
+
+    r = rolls(audio_path)
+    if r is None:
+        return []
+    on, fr, vl = r
+    thr = onset_thr if onset_thr is not None else ONSET_THR
+    if KEEP_SHORT:
+        notes = decode_notes(on, fr, vl, thr, FRAME_THR, min_frames=1,
+                             min_note_s=0.0, keep_restruck=True)
+    else:
+        notes = decode_notes(on, fr, vl, thr, FRAME_THR)
     out = []
     for n in notes:
         p = int(n["pitch"])

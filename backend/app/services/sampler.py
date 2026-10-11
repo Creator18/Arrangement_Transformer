@@ -79,6 +79,32 @@ def _room(audio, sr):
         return audio
 
 
+MIN_AUDIBLE_S = 0.08
+
+
+def audible(notes: List[Dict], min_s: float = MIN_AUDIBLE_S) -> List[Dict]:
+    """Copies of `notes` with every note at least `min_s` long, for PLAYBACK.
+
+    A sampler renders a very short note as a click with no body; the
+    transcriber used to fix that by deleting short notes, which also deleted a
+    third of the real notes and most fast repeats.  Lengthening is done here,
+    at render time, instead.  A note is never stretched past the next strike
+    of the same key, so repeats stay separate.  Applied by the preview and
+    export renderers, NOT inside render_notes: render_notes also produces
+    training audio, whose labels must match what was rendered.
+    """
+    out = [dict(n) for n in notes]
+    nxt: Dict[int, float] = {}
+    for n in sorted(out, key=lambda n: -float(n["onset"])):
+        p, on = int(n["pitch"]), float(n["onset"])
+        off = float(n.get("offset", on + min_s))
+        if off - on < min_s:
+            n["offset"] = min(on + min_s, nxt.get(p, float("inf")))
+            n["offset"] = max(n["offset"], off)
+        nxt[p] = on
+    return out
+
+
 def render_notes(notes: List[Dict], sr: int = 22050,
                  pedal: Optional[List[Dict]] = None) -> np.ndarray:
     """

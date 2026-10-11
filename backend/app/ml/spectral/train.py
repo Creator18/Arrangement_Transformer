@@ -52,13 +52,21 @@ def log_to(path):
 
 
 def note_f1(po, pf, go, gf):
-    """Mean note F1 / P / R and frame F1 over a batch of (T, 88) arrays."""
+    """Mean note F1 / P / R and frame F1 over a batch of (T, 88) arrays.
+
+    Both sides decode with the short-note filters OFF.  The first full run
+    selected its checkpoint with them on, applied to the reference too, which
+    removed 42% of true notes from the ground truth — so the score choosing
+    the "best" model was blind to short notes and fast repeats.  Selection now
+    rewards exactly the fine detail that was being lost.
+    """
     from app.ml.transcriber.decode import decode_notes, note_scores
     agg = {"conp_f1": 0.0, "conp_p": 0.0, "conp_r": 0.0}
     tp = fp = fn = 0
+    full = dict(min_frames=1, min_note_s=0.0, keep_restruck=True)
     for i in range(len(po)):
-        est = decode_notes(po[i].T, pf[i].T, np.zeros_like(po[i].T), 0.5, 0.5)
-        ref = decode_notes(go[i].T, gf[i].T, np.zeros_like(go[i].T), 0.5, 0.5)
+        est = decode_notes(po[i].T, pf[i].T, np.zeros_like(po[i].T), 0.5, 0.5, **full)
+        ref = decode_notes(go[i].T, gf[i].T, np.zeros_like(go[i].T), 0.5, 0.5, **full)
         s = note_scores(ref, est)
         for k in agg:
             agg[k] += s[k]

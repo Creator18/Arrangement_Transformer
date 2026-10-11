@@ -65,6 +65,8 @@ def render_notes_to_audio(notes: list, sr: int = 22050) -> np.ndarray:
     """
     if not notes:
         return np.zeros(sr, dtype=np.float32)
+    from app.services.sampler import audible
+    notes = audible(notes)            # short notes get a body, not deleted upstream
 
     max_time = max(float(n.get("offset", n["onset"] + 0.5)) for n in notes)
     total_samples = int((max_time + 2.0) * sr)

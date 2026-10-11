@@ -29,7 +29,8 @@ MIN_NOTE_S = 0.08
 def decode_notes(onset: np.ndarray, frame: np.ndarray,
                  velocity: np.ndarray = None,
                  onset_thr: float = 0.5, frame_thr: float = 0.5,
-                 min_frames: int = 2) -> List[Dict]:
+                 min_frames: int = 2, min_note_s: float = None,
+                 keep_restruck: bool = False) -> List[Dict]:
     """Rolls (88, T) of probabilities -> [{pitch, onset, offset, velocity}].
 
     A note begins only where the ONSET head fires, never merely where the
@@ -79,11 +80,25 @@ def decode_notes(onset: np.ndarray, frame: np.ndarray,
         for a, b in zip(group[:-1], group[1:]):
             if b["onset"] < a["offset"]:
                 a["offset"] = b["onset"] - RELEASE_S
+                if keep_restruck:
+                    # Never let the cut push a note below one frame — it is a
+                    # real strike, and dropping it is how fast repeats vanish.
+                    a["offset"] = min(b["onset"], max(a["offset"], a["onset"] + 1 / C.FPS))
         # Notes shorter than a grace note are clicks, not tone: 10.3% of the
         # output was under 80 ms, which a sampler renders as a transient with
         # no body.
+        #
+        # That is a RENDERING problem, and deleting the notes was the wrong
+        # fix for transcription: measured against an unfiltered ground truth
+        # (eval/spectral_detail_tests.py, 600 clips) this rule plus the
+        # re-strike cut removed a third of correctly detected notes and three
+        # quarters of notes re-struck within 150 ms.  min_note_s=0 with
+        # keep_restruck=True keeps them; playback gives short notes an audible
+        # minimum length instead (sampler.audible).  The default is unchanged
+        # so existing callers behave exactly as before.
+        floor = MIN_NOTE_S if min_note_s is None else min_note_s
         out.extend(n for n in group
-                   if n["offset"] - n["onset"] >= MIN_NOTE_S)
+                   if n["offset"] - n["onset"] >= floor)
     out.sort(key=lambda n: (n["onset"], n["pitch"]))
     return out
 

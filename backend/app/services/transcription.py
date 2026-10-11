@@ -242,6 +242,12 @@ def _get_of_transcriptor():
 # was the only way to stop the sound.
 _last_pedal: List[Dict[str, float]] = []
 
+# Which model produced the notes now moving through the pipeline.  Kept at
+# module level like _last_pedal, because per-note tags get dropped by any stage
+# that rebuilds note dicts (measured: a role tag survived on ~200 of 2,851
+# notes through one such stage).
+_last_source: str = "bytedance"
+
 
 def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
     """
@@ -951,14 +957,16 @@ def _transcribe_fullmix_of(
                 from app.services import spectral_transcription
                 if spectral_transcription.available():
                     notes = spectral_transcription.transcribe(audio_path)
-                    global _last_pedal
+                    global _last_pedal, _last_source
                     _last_pedal = []        # no pedal head: notes end at key-up
+                    _last_source = "spectral"
                     print(f"[transcription] spectral: {len(notes)} notes")
             except Exception as e:                          # noqa: BLE001
                 print(f"[transcription] spectral failed ({type(e).__name__}: {e}); "
                       f"falling back to ByteDance")
                 notes = None
         if notes is None:
+            _last_source = "bytedance"
             notes = _onsets_frames_notes(audio_path)
             print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
 
@@ -1037,9 +1045,18 @@ def _transcribe_fullmix_of(
         try:
             from app.ml.corrector import correct_notes, available
             if available():
+                # The duration head was trained on THIS pipeline's ByteDance
+                # output and pulls lengths toward what that model gets wrong.
+                # On the spectral model's notes, measured against true key
+                # releases (60 rendered clips), it took offset-aware F1 from
+                # 0.811 to 0.397 and median length from 1.00x to 1.57x.  Hand
+                # assignment is unaffected and stays on.
+                dur_ok = CORRECTOR_APPLY_DURATION and (
+                    _last_source != "spectral"
+                    or _os.environ.get("ARRANGEMENT_SPECTRAL_CORRECTOR") == "1")
                 quantized = correct_notes(
                     quantized, beat_times,
-                    apply_duration=CORRECTOR_APPLY_DURATION,
+                    apply_duration=dur_ok,
                     apply_hand=CORRECTOR_APPLY_HAND)
         except Exception as e:
             print(f"[transcription] corrector skipped: {e}")
