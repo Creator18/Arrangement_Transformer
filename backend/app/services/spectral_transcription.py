@@ -31,9 +31,10 @@ CKPT = pathlib.Path(os.environ.get(
     "ARRANGEMENT_SPECTRAL_CKPT",
     ROOT / "app" / "ml" / "spectral" / "checkpoints" / "run1_v100_60k" / "best.pt"))
 
-# Onset/frame thresholds.  0.5/0.5 is what training validated at; replace with
-# the threshold-sweep result from eval/spectral_evaluate.py once it is in.
-ONSET_THR = float(os.environ.get("ARRANGEMENT_SPECTRAL_ONSET_THR", 0.5))
+# Onset threshold, swept on 800 validation clips by eval/spectral_evaluate.py:
+# 0.5 -> F1 0.847, 0.93 -> 0.868 (best, bracketed: 0.97 -> 0.859, 0.99 ->
+# 0.781).  On all 3,686 test clips that is note F1 0.851 tuned vs 0.830 at 0.5.
+ONSET_THR = float(os.environ.get("ARRANGEMENT_SPECTRAL_ONSET_THR", 0.93))
 FRAME_THR = 0.5
 WINDOW_S, EDGE_S = 20.0, 2.0
 
