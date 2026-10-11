@@ -815,6 +815,11 @@ USE_RESTRIKE_DETECTION = False
 # Demucs still runs, because the beat grid comes from that step.
 SONG_MODE = 'ml'
 
+# Solo-piano note source: 'bytedance' (default, checkpoint note_F1=0.9677) or
+# 'spectral' (the pitch-aligned patch transformer, app/ml/spectral).
+import os as _os
+PIANO_MODE = _os.environ.get("ARRANGEMENT_PIANO_MODE", "bytedance")
+
 
 def _song_method(session_dir: Path, meta: Dict) -> str:
     """Which note source to use: 'ml', 'projection' or 'of'.
@@ -936,8 +941,26 @@ def _transcribe_fullmix_of(
             use_projection = False
 
     if not use_projection:
-        notes = _onsets_frames_notes(audio_path)
-        print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
+        notes = None
+        # Opt-in: the spectral patch transformer on the solo-piano path.
+        # ByteDance stays the default until the new model has been measured
+        # against it; the new one was trained on rendered audio only, so a
+        # real upload here is its first real-audio test.
+        if method == 'of' and PIANO_MODE == 'spectral':
+            try:
+                from app.services import spectral_transcription
+                if spectral_transcription.available():
+                    notes = spectral_transcription.transcribe(audio_path)
+                    global _last_pedal
+                    _last_pedal = []        # no pedal head: notes end at key-up
+                    print(f"[transcription] spectral: {len(notes)} notes")
+            except Exception as e:                          # noqa: BLE001
+                print(f"[transcription] spectral failed ({type(e).__name__}: {e}); "
+                      f"falling back to ByteDance")
+                notes = None
+        if notes is None:
+            notes = _onsets_frames_notes(audio_path)
+            print(f"[transcription] of_fullmix: {len(notes)} notes from full mix")
 
     # Repeated-note recovery.  Measured against ground truth: we produce only
     # 46% of the re-strikes real performances contain, because a key struck
