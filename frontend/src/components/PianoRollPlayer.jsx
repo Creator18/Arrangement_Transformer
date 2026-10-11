@@ -104,78 +104,56 @@ function fmt(s) {
 }
 
 // ── Horizontal Keyboard SVG ───────────────────────────────────────────────────
-// Runs LEFT → RIGHT: bass (low pitch) on the left, treble (high pitch) on the right.
-// Real-piano geometry: every white key has the SAME bottom width (12·noteW/7)
-// and they sit edge-to-edge with no gaps along the bottom.  The TOP portion of
-// each white key is narrower wherever a black key rides above it — so C/E/F/B
-// have a one-sided notch and D/G/A have notches on both sides, but every key's
-// bottom remains visually identical.  Black keys are short and float above
-// the boundary between the two whites they belong between.
+// Runs LEFT → RIGHT: bass on the left, treble on the right, with real-piano
+// geometry — every white key the same width (12·noteW/7), black keys riding
+// over the boundary between the two whites they sit between.
+//
+// The look follows the flat "Keys" keyboard design, in its dark-mode palette
+// because the app is dark: plain white keys with a hairline border and
+// rounded bottoms, black keys three-fifths of the height, an orange pressed
+// state, and a label on every C.  The previous ivory gradients, sheen stripes,
+// press-dip and per-register glow are gone.
+//
+// Kept on purpose, because they carry information rather than decoration:
+//   - keys light up from playback (activeKeys, with the hand-reach model)
+//   - the re-strike flash, keyed on the onset, so a repeated note reads as
+//     two strikes rather than one long press
+//   - click-to-hear while paused
+const KEY_COLORS = {
+  white:        '#e5e5e5',   // neutral-200
+  whiteBorder:  '#404040',   // neutral-700
+  whitePressed: '#fdba74',   // orange-300
+  black:        '#171717',   // neutral-900
+  blackBorder:  '#0a0a0a',   // neutral-950
+  blackPressed: '#f97316',   // orange-500
+  label:        '#a3a3a3',   // neutral-400
+}
+
+// A key with square top corners and rounded bottom ones (rounded-b-md).
+function bottomRoundedPath(x, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2))
+  return [
+    `M ${x} 0`, `H ${x + w}`, `V ${h - rr}`,
+    `Q ${x + w} ${h} ${x + w - rr} ${h}`, `H ${x + rr}`,
+    `Q ${x} ${h} ${x} ${h - rr}`, 'Z',
+  ].join(' ')
+}
+
 function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown }) {
   const pitchRange = midiHi - midiLo + 1
   const totalW     = TIMELINE_W + pitchRange * noteW
   const WHITE_H    = KEY_H - 1
-  const BLACK_H    = Math.round(KEY_H * 0.62)
-  const wkw        = (noteW * 12) / 7    // white-key bottom width (= octave / 7)
-  const blackW     = wkw * 0.6            // black-key visual width
-
-  // Press feel — same shape, two depths so blacks dip a touch less than whites.
-  const PRESS_W = 2.5
-  const PRESS_B = 1.8
-  const pressTransition = 'transform 70ms cubic-bezier(0.2, 0.85, 0.3, 1.15)'
-
-  // Build the notched white-key path.  All coordinates are in keyboard space
-  // (TIMELINE_W is added at the call site). Corners on the OUTSIDE of the key
-  // (the four exposed corners) get a small radius; the two inner step-out
-  // corners are left sharp because they sit under the black keys and don't
-  // visually need rounding.
-  const wkPath = (topL, topR, botL, botR) => {
-    const r = 2.5
-    return [
-      `M ${topL + r} 0`,
-      `L ${topR - r} 0`,
-      `Q ${topR} 0 ${topR} ${r}`,
-      `L ${topR} ${BLACK_H}`,
-      `L ${botR} ${BLACK_H}`,
-      `L ${botR} ${KEY_H - r}`,
-      `Q ${botR} ${KEY_H} ${botR - r} ${KEY_H}`,
-      `L ${botL + r} ${KEY_H}`,
-      `Q ${botL} ${KEY_H} ${botL} ${KEY_H - r}`,
-      `L ${botL} ${BLACK_H}`,
-      `L ${topL} ${BLACK_H}`,
-      `L ${topL} ${r}`,
-      `Q ${topL} 0 ${topL + r} 0`,
-      'Z',
-    ].join(' ')
-  }
+  const BLACK_H    = Math.round(KEY_H * 0.6)          // h-3/5
+  const wkw        = (noteW * 12) / 7
+  const radius     = Math.min(6, wkw * 0.25)          // rounded-b-md, scaled for narrow keys
+  const labelSize  = Math.max(6, Math.min(10, wkw * 0.42))
+  const pressable  = (pitch) => interactive
+    ? { onMouseDown: (e) => { e.stopPropagation(); onKeyDown?.(pitch) },
+        style: { cursor: 'pointer' } }
+    : { style: { cursor: 'default' } }
 
   return (
     <svg width={totalW} height={KEY_H} style={{ display: 'block', flexShrink: 0 }}>
-      <defs>
-        {/* Ivory: bright top → mid body → soft cool shadow at the bottom */}
-        <linearGradient id="wk-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#ffffff" />
-          <stop offset="6%"   stopColor="#fbfbfd" />
-          <stop offset="55%"  stopColor="#ececf0" />
-          <stop offset="100%" stopColor="#bcbcc4" />
-        </linearGradient>
-        {/* Ebony: glossy top sheen, deep matte body, soft reflective rim */}
-        <linearGradient id="bk-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#3a3a42" />
-          <stop offset="10%"  stopColor="#1c1c20" />
-          <stop offset="55%"  stopColor="#0a0a0c" />
-          <stop offset="100%" stopColor="#000000" />
-        </linearGradient>
-        {/* Active-key gradients (one per register, full saturation top → softer bottom) */}
-        {Object.entries(REG_COLOR).map(([reg, { fill }]) => (
-          <linearGradient key={reg} id={`active-${reg}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor={fill} stopOpacity="1"    />
-            <stop offset="55%"  stopColor={fill} stopOpacity="0.92" />
-            <stop offset="100%" stopColor={fill} stopOpacity="0.65" />
-          </linearGradient>
-        ))}
-      </defs>
-
       {/* Timeline-strip patch */}
       <rect x={0} y={0} width={TIMELINE_W} height={KEY_H} fill="rgba(0,0,0,0.45)" />
       <text x={TIMELINE_W / 2} y={KEY_H / 2}
@@ -185,168 +163,58 @@ function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown
         KEY
       </text>
 
-      {/* ── White keys (bottom layer) — uniform bottom, notched top ── */}
+      {/* ── White keys (bottom layer) ── */}
       {Array.from({ length: pitchRange }, (_, i) => {
         const pitch = midiLo + i
         if (isBlack(pitch)) return null
-        const pos = pitchPos(pitch, midiLo, noteW)
-        const botL = TIMELINE_W + pos.x
-        const botR = botL + pos.w                        // bottom span = wkw
-
-        // Top span: pinched in by half a black-key width on whichever sides
-        // have an adjacent black neighbour.
-        const pc      = ((pitch % 12) + 12) % 12
-        const leftPc  = (pc + 11) % 12
-        const rightPc = (pc + 1) % 12
-        const topL = (leftPc  in BLACK_BOUNDARY) ? botL + blackW / 2 : botL
-        const topR = (rightPc in BLACK_BOUNDARY) ? botR - blackW / 2 : botR
-
+        const pos    = pitchPos(pitch, midiLo, noteW)
+        const x      = TIMELINE_W + pos.x + 0.5            // half-pixel: crisp 1px border
+        const w      = pos.w - 1
         const active = activeKeys.has(pitch)
-        const reg    = classify(pitch)
-        const isC    = pitch % 12 === 0
-        const octave = Math.floor(pitch / 12) - 1
+        const d      = bottomRoundedPath(x, w, WHITE_H, radius)
         return (
-          <g
-            key={pitch}
-            onMouseDown={interactive ? (e) => { e.stopPropagation(); onKeyDown?.(pitch) } : undefined}
-            style={{
-              transform: active ? `translateY(${PRESS_W}px)` : 'translateY(0px)',
-              transition: pressTransition,
-              cursor: interactive ? 'pointer' : 'default',
-            }}
-          >
-            {/* Body — notched path */}
-            <path
-              d={wkPath(topL, topR, botL, botR)}
-              fill={active ? `url(#active-${reg})` : 'url(#wk-grad)'}
-              stroke={active ? 'none' : 'rgba(0,0,0,0.22)'}
-              strokeWidth={0.6}
-              // CSS drop-shadow, NOT an SVG <filter>.  The obvious-looking
-              // optimisation — replace three chained blur passes with one
-              // cached feDropShadow pair — measured 56.8 -> 44.3 fps.  Chrome
-              // hardware-accelerates CSS filters on a composited layer and
-              // sends SVG filters down the software path, so fewer passes on
-              // the slow path lost to more passes on the fast one.
-              style={active ? {
-                filter: [
-                  `drop-shadow(0 0 6px ${REG_COLOR[reg].glow})`,
-                  `drop-shadow(0 0 14px ${REG_COLOR[reg].glow})`,
-                  `drop-shadow(0 0 26px ${REG_COLOR[reg].glow})`,
-                ].join(' '),
-              } : undefined}
-            />
-            {/* Re-strike flash.  Keyed on the ONSET so a repeated note mounts
-                a NEW element, and a CSS keyframe animation restarts on mount
-                (a plain transition would not — a remounted element is painted
-                straight into its final state with nothing to animate from,
-                which is exactly why two consecutive notes used to look like
-                one long press). */}
+          <g key={pitch} {...pressable(pitch)}>
+            <path d={d}
+              fill={active ? KEY_COLORS.whitePressed : KEY_COLORS.white}
+              stroke={KEY_COLORS.whiteBorder} strokeWidth={1} />
+            {/* Re-strike flash: keyed on the ONSET so a repeated note mounts a
+                new element and the CSS keyframe restarts. */}
             {active && (
-              <path
-                key={activeKeys.get(pitch)}
-                className="key-strike"
-                d={wkPath(topL, topR, botL, botR)}
-                fill="#ffffff"
-              />
+              <path key={activeKeys.get(pitch)} className="key-strike" d={d} fill="#ffffff" />
             )}
-            {/* Top highlight stripe — 3D ivory sheen, sized to top span */}
-            {!active && (
-              <rect
-                x={topL + 1} y={1.5}
-                width={Math.max(1, topR - topL - 2)} height={2}
-                rx={1}
-                fill="rgba(255,255,255,0.95)"
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-            {/* Inner bottom shadow — across the wider bottom span */}
-            {!active && (
-              <rect
-                x={botL + 0.5} y={KEY_H - 4}
-                width={Math.max(1, botR - botL - 1)} height={3}
-                rx={1.5}
-                fill="rgba(0,0,0,0.10)"
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-            {isC && !active && (
-              <text
-                x={(botL + botR) / 2} y={KEY_H - 5}
-                fontSize={5} fill="rgba(80,80,90,0.75)"
-                fontFamily="ui-monospace,monospace" fontWeight="700"
-                textAnchor="middle">
-                C{octave}
+            {pitch % 12 === 0 && (
+              <text x={x + w / 2} y={WHITE_H - 6}
+                fontSize={labelSize} fill={KEY_COLORS.label}
+                fontFamily="ui-sans-serif,system-ui,sans-serif"
+                textAnchor="middle" style={{ pointerEvents: 'none' }}>
+                C{Math.floor(pitch / 12) - 1}
               </text>
             )}
           </g>
         )
       })}
 
-      {/* ── Black keys (top layer) — float over the white-key boundary ── */}
+      {/* ── Black keys (top layer), three-fifths of the height ── */}
       {Array.from({ length: pitchRange }, (_, i) => {
-        const pitch  = midiLo + i
+        const pitch = midiLo + i
         if (!isBlack(pitch)) return null
         const pos    = pitchPos(pitch, midiLo, noteW)
-        const xL     = TIMELINE_W + pos.x
-        const w      = pos.w
+        const x      = TIMELINE_W + pos.x
         const active = activeKeys.has(pitch)
-        const reg    = classify(pitch)
+        const d      = bottomRoundedPath(x, pos.w, BLACK_H, Math.min(radius, pos.w * 0.3))
         return (
-          <g
-            key={pitch}
-            onMouseDown={interactive ? (e) => { e.stopPropagation(); onKeyDown?.(pitch) } : undefined}
-            style={{
-              transform: active ? `translateY(${PRESS_B}px)` : 'translateY(0px)',
-              transition: pressTransition,
-              cursor: interactive ? 'pointer' : 'default',
-            }}
-          >
-            <rect
-              x={xL} y={0}
-              width={w} height={BLACK_H}
-              rx={2}
-              fill={active ? `url(#active-${reg})` : 'url(#bk-grad)'}
-              style={active ? {
-                filter: [
-                  `drop-shadow(0 0 6px ${REG_COLOR[reg].glow})`,
-                  `drop-shadow(0 0 14px ${REG_COLOR[reg].glow})`,
-                  `drop-shadow(0 0 26px ${REG_COLOR[reg].glow})`,
-                ].join(' '),
-              } : undefined}
-            />
+          <g key={pitch} {...pressable(pitch)}>
+            <path d={d}
+              fill={active ? KEY_COLORS.blackPressed : KEY_COLORS.black}
+              stroke={KEY_COLORS.blackBorder} strokeWidth={1} />
             {active && (
-              <rect
-                key={activeKeys.get(pitch)}
-                className="key-strike"
-                x={xL} y={0} width={w} height={BLACK_H} rx={2}
-                fill="#ffffff"
-              />
-            )}
-            {/* Glossy top sheen */}
-            {!active && (
-              <rect
-                x={xL + 0.6} y={1}
-                width={Math.max(0.5, w - 1.2)} height={1.5}
-                rx={0.8}
-                fill="rgba(255,255,255,0.22)"
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-            {/* Subtle reflective rim near the bottom */}
-            {!active && (
-              <rect
-                x={xL + 0.6} y={BLACK_H - 4}
-                width={Math.max(0.5, w - 1.2)} height={1}
-                rx={0.5}
-                fill="rgba(255,255,255,0.07)"
-                style={{ pointerEvents: 'none' }}
-              />
+              <path key={activeKeys.get(pitch)} className="key-strike" d={d} fill="#ffffff" />
             )}
           </g>
         )
       })}
 
-      {/* ── Middle-C dashed divider only — no harsh top separator ── */}
+      {/* ── Middle-C dashed divider ── */}
       {midiLo <= 60 && 60 <= midiHi && (() => {
         const divX = TIMELINE_W + (60 - midiLo) * noteW
         return (
