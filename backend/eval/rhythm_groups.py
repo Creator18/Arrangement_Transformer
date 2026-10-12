@@ -183,6 +183,74 @@ def top_voice(notes):
     return mel
 
 
+MELODY_MODEL = ROOT / "app" / "ml" / "melody_split.joblib"
+
+
+def note_features(notes):
+    """Per-note features for melody-vs-accompaniment, from onsets and pitches only."""
+    on, off, p = notes[:, 0], notes[:, 1], notes[:, 2]
+    n = len(notes)
+    ev = np.concatenate([[0], np.cumsum(np.diff(on) > 0.03)])
+    size = np.bincount(ev)[ev]
+    rank = np.zeros(n)                                   # 0 = highest in its onset event
+    for e in np.unique(ev):
+        ix = np.flatnonzero(ev == e)
+        rank[ix[np.argsort(-p[ix])]] = np.arange(len(ix))
+    top = rank == 0
+    order = np.argsort(on)
+    hi1, med2, dens = np.zeros(n), np.zeros(n), np.zeros(n)
+    lo = np.searchsorted(on, on - 1.0); hi = np.searchsorted(on, on + 1.0)
+    lo2 = np.searchsorted(on, on - 2.0); hi2 = np.searchsorted(on, on + 2.0)
+    for i in range(n):
+        hi1[i] = p[lo[i]:hi[i]].max(); med2[i] = np.median(p[lo2[i]:hi2[i]])
+        dens[i] = hi[i] - lo[i]
+    # interval to the previous top-voice note (melodies move in small steps)
+    tops = np.flatnonzero(top)
+    prev_top = np.full(n, np.nan)
+    j = np.searchsorted(on[tops], on, "left") - 1
+    ok = j >= 0
+    prev_top[ok] = p[tops[j[ok]]]
+    step = np.abs(p - np.nan_to_num(prev_top, nan=p))
+    return np.c_[p, rank, size, top, off - on, p - hi1, p - med2, dens, step]
+
+
+def train_melody_split(data):
+    """Fit the split on POP909's real MELODY track; report held-out precision/recall."""
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    import joblib
+    X, y, g = [], [], []
+    for pid, notes, mel, *_ in pieces("pop909", data, "0/1"):
+        o = np.argsort(notes[:, 0], kind="stable"); notes, mel = notes[o], mel[o]
+        X.append(note_features(notes)); y.append(mel); g.append(np.full(len(notes), int(pid)))
+    X, y, g = np.concatenate(X), np.concatenate(y), np.concatenate(g)
+    te = g % 10 == 0                                      # every 10th song held out
+    clf = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.1).fit(X[~te], y[~te])
+    pr = clf.predict(X[te]); sky = X[te, 3].astype(bool) & (X[te, 0] >= 60)
+    for name, z in (("top-voice rule", sky), ("trained split", pr)):
+        tp = (z & y[te]).sum()
+        print(f"   {name:<15} melody precision {tp / max(1, z.sum()):.3f}  recall {tp / max(1, y[te].sum()):.3f}")
+    clf = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.1).fit(X, y)
+    joblib.dump(clf, MELODY_MODEL)
+    print(f"   saved {MELODY_MODEL}")
+
+
+def melody_split(notes):
+    """Trained split when available (one melody note per onset event at most), else top voice."""
+    if not MELODY_MODEL.exists():
+        return top_voice(notes)
+    import joblib
+    clf = getattr(melody_split, "clf", None) or joblib.load(MELODY_MODEL)
+    melody_split.clf = clf
+    pr = clf.predict_proba(note_features(notes))[:, 1]
+    ev = np.concatenate([[0], np.cumsum(np.diff(notes[:, 0]) > 0.03)])
+    mel = np.zeros(len(notes), bool)
+    for e in np.unique(ev):
+        ix = np.flatnonzero(ev == e)
+        j = ix[np.argmax(pr[ix])]
+        mel[j] = pr[j] > 0.5
+    return mel
+
+
 def passage_bars(m, sub):
     """Bars per passage so a passage spans ~4 quarter-beats of music: meter-dependent."""
     return {"4/4": 1, "3/4": 2, "2/4": 2, "6/8": 2, "12/8": 1, "9/8": 1}[meter_name(m, sub)]
@@ -255,7 +323,7 @@ def stage_meter_fp(args, with_fp):
             rec.update(beat_f=fb, downbeat_f=fd, skyline_p=prec, skyline_r=rec_)
             evals.append((fb, fd, prec, rec_, m == 4))
         if with_fp:
-            mmask = mel if mel is not None else top_voice(notes)
+            mmask = mel if mel is not None else melody_split(notes)
             fps = fingerprints(notes, mmask, beats, m, ph, sub)
             rec["passages"] = [(t, v.tolist()) for t, v in fps]
         rows.append(rec)
@@ -269,6 +337,12 @@ def stage_meter_fp(args, with_fp):
               f"MELODY track: precision {e[:, 2].mean():.3f}, recall {e[:, 3].mean():.3f}")
 
 
+# A 2/4 passage is two bars = four beats, the same span as one 4/4 bar, and
+# most "2/4" songs are 4/4 counted at the other bar level (several 2/4 groups
+# duplicated 4/4 ones in the first pass).  Likewise two 6/8 bars = one 12/8 bar.
+MERGE = {"2/4": "4/4", "6/8": "12/8"}
+
+
 def stage_cluster(args):
     from sklearn.cluster import KMeans
     out = pathlib.Path(args.out)
@@ -279,7 +353,7 @@ def stage_cluster(args):
             v = np.array(v, np.float32)
             if v.sum() == 0:
                 continue                                     # silent accompaniment: no rhythm to group
-            by_meter.setdefault(r["meter"], []).append((r["source"], r["id"], t, v))
+            by_meter.setdefault(MERGE.get(r["meter"], r["meter"]), []).append((r["source"], r["id"], t, v))
     report, labels = [], {}
     for meter, items in sorted(by_meter.items(), key=lambda x: -len(x[1])):
         bpb = items[0][3].shape[0] // (2 * SLOTS)
@@ -324,13 +398,15 @@ def stage_cluster(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", required=True, choices=["meter", "fingerprint", "cluster"])
+    ap.add_argument("--stage", required=True, choices=["meter", "fingerprint", "cluster", "train-melody"])
     ap.add_argument("--source", default="pop909", choices=["pop909", "m2m"])
     ap.add_argument("--data", default=str(ROOT.parent / "data"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--shard", default="0/1")
     args = ap.parse_args()
-    if args.stage == "cluster":
+    if args.stage == "train-melody":
+        train_melody_split(pathlib.Path(args.data))
+    elif args.stage == "cluster":
         stage_cluster(args)
     else:
         stage_meter_fp(args, args.stage == "fingerprint")
