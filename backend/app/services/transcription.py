@@ -825,6 +825,7 @@ SONG_MODE = 'ml'
 # 'spectral' (the pitch-aligned patch transformer, app/ml/spectral).
 import os as _os
 PIANO_MODE = _os.environ.get("ARRANGEMENT_PIANO_MODE", "bytedance")
+PIANO_GRID_SNAP = _os.environ.get("ARRANGEMENT_PIANO_GRID_SNAP") == "1"
 
 
 def _song_method(session_dir: Path, meta: Dict) -> str:
@@ -1033,7 +1034,14 @@ def _transcribe_fullmix_of(
     refined = refine_notes(all_notes, tempo)
     refined = dedupe_octave_partials(refined)
 
-    if len(beat_times) >= 2:
+    # Solo piano keeps the transcriber's timing.  The 16th-note snap moved 67%
+    # of notes (a third by >30 ms) on 12 real MAESTRO recordings and took F1
+    # at a 20 ms window from 0.936 to 0.485: trills and runs faster than 16ths
+    # were pulled onto grid lines and drifted audibly against the original
+    # (eval/post_timing_check.py).  Notation export quantizes on its own.
+    if method == 'of' and not PIANO_GRID_SNAP:
+        quantized = refined
+    elif len(beat_times) >= 2:
         quantized = _beat_adaptive_quantize(refined, beat_times, subdivisions=4)
     else:
         quantized = quantize_notes(refined, tempo, subdivisions=16)
