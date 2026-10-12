@@ -215,23 +215,22 @@ export default function ProcessingPage() {
       setCurrentStep(3); await segmentAudio(sessionId)
       setCurrentStep(4); await transformArrangement(sessionId, preset.octaves, preset.components)
 
-      // Render ONLY the transformed track before landing on Results.  The
-      // Salamander pass is the single largest slice of the wait (38% of
-      // upload-to-result, measured), and rendering both up front made the
-      // user wait for a track they cannot listen to simultaneously.
-      setCurrentStep(5); await renderPreviews(sessionId, false, 'transformed')
+      // Render ONLY the original track before landing on Results — it is the
+      // default view.  The Salamander pass is the single largest slice of the
+      // wait (38% of upload-to-result, measured), and rendering both up front
+      // made the user wait for a track they cannot listen to simultaneously.
+      setCurrentStep(5); await renderPreviews(sessionId, false, 'original_arrangement')
 
       // Warm the browser cache for the one that exists, so first-click on
       // Listen is a cache hit rather than a download.  Failure is silent —
       // playback still works, it just streams.
-      await fetch(getTransformedAudioUrl(sessionId), { cache: 'reload' }).catch(() => {})
+      await fetch(getTranscriptionAudioUrl(sessionId), { cache: 'reload' }).catch(() => {})
 
-      // The original arrangement renders in the background while the user
-      // is already on Results.  Not awaited: by the time they switch to
-      // that track it is normally ready, and if not the endpoint simply
-      // serves it lazily on request.
-      renderPreviews(sessionId, false, 'original_arrangement')
-        .then(() => fetch(getTranscriptionAudioUrl(sessionId), { cache: 'reload' }))
+      // The transformed arrangement renders in the background while the user
+      // is already on Results.  Not awaited: by the time they switch to it
+      // it is normally ready, and if not the endpoint serves it lazily.
+      renderPreviews(sessionId, false, 'transformed')
+        .then(() => fetch(getTransformedAudioUrl(sessionId), { cache: 'reload' }))
         .catch(() => {})
 
       setCurrentStep(6); await scoreFidelity(sessionId)

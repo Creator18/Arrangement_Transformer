@@ -33,6 +33,18 @@ def _apply_original_cleanup(session_dir, segment_result):
     from app.services.music_theory import apply_chord_and_scale_snap
     from app.services.nmf_voice_leading import detect_scale
 
+    # Solo piano is a transcription of what was played: keep every note.  On
+    # Flight of the Bumblebee (chromatic, no single scale) this cleanup took
+    # 137 of 1,569 correctly heard notes out of the Original track.  The
+    # guardrails stay for songs, whose notes are approximations.
+    try:
+        with open(session_dir / "components.json") as f:
+            if json.load(f).get("method") == "raw+madmom":
+                print("[segment] ORIGINAL cleanup skipped: solo piano")
+                return None
+    except (OSError, ValueError):
+        pass
+
     with open(transcription_file) as f:
         trans = json.load(f)
 

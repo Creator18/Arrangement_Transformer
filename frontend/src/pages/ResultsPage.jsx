@@ -212,7 +212,8 @@ export default function ResultsPage() {
   // Which arrangement the stage shows.  The two rolls used to be stacked, each
   // squeezed into 370px; only one can be listened to at a time, so showing one
   // at full height and switching is both clearer and bigger.
-  const [range,            setRange]            = useState('transformed')
+  // Original first: it is what the user listens to, and the faithful one.
+  const [range,            setRange]            = useState('original')
   const [stageH,           setStageH]           = useState(560)
   // Live monitoring trim, RELATIVE to what the server already rendered.
   // Zero means untouched — see the note in tonechain.js about why mirroring
@@ -362,8 +363,8 @@ export default function ResultsPage() {
         {tab === 0 && (
           <div>
             <div className="ct-mono" style={{ marginBottom: 10 }}>Range</div>
-            {[['transformed', 'Transformed', '5 octaves'],
-              ['original',    'Original',    '7 octaves']].map(([k, label, sub]) => (
+            {[['original',    'Original',    '7 octaves'],
+              ['transformed', 'Transformed', '5 octaves']].map(([k, label, sub]) => (
               <button key={k} onClick={() => setRange(k)}
                 style={{
                   display: 'block', width: '100%', textAlign: 'left',
