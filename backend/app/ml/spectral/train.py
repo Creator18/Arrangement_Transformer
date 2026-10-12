@@ -102,6 +102,10 @@ def main():
                     help="expected fraction of each batch drawn from --data-real")
     ap.add_argument("--val-data", default="",
                     help="validate on this root instead of --data (e.g. real recordings)")
+    ap.add_argument("--mix-p", type=float, default=0.0,
+                    help="probability of burying a second clip 12-24 dB under each example")
+    ap.add_argument("--soft-weight", type=float, default=0.0,
+                    help="extra onset-loss weight for soft notes (vel < 50), up to 1+w at vel 0")
     ap.add_argument("--augment", action="store_true",
                     help="room/noise/EQ/level augmentation on RENDERED clips")
     ap.add_argument("--init", default="",
@@ -188,7 +192,7 @@ def main():
         tmp.replace(path)                       # atomic: never a half-written checkpoint
 
     tr_set = RenderedClips(tr_paths + real_paths, args.crop, random_crop=True,
-                           augment=args.augment)
+                           augment=args.augment, mix_p=args.mix_p)
     if real_paths:
         # Weighted so a batch is ~real_frac real however many clips each side
         # has; drawn with replacement, an "epoch" is just len(tr_set) draws.
@@ -248,7 +252,13 @@ def main():
             # label exists — a regression over the silent 99% would learn zero
             m = (onT > 0.5) * hv.view(-1, 1, 1)
             l_vel = (((torch.sigmoid(c) - vlT) ** 2) * m).sum() / m.sum().clamp(min=1)
-            loss = (F.binary_cross_entropy_with_logits(a, onT, pos_weight=pw_on)
+            # Soft onsets count extra: 61% of real-audio misses were vel < 50.
+            # Weight rises linearly from 1 at vel 50 to 1 + soft_weight at vel 0.
+            w_on = None
+            if args.soft_weight:
+                soft = ((50 / 127 - vlT) / (50 / 127)).clamp(0, 1) * m
+                w_on = 1 + args.soft_weight * soft
+            loss = (F.binary_cross_entropy_with_logits(a, onT, weight=w_on, pos_weight=pw_on)
                     + F.binary_cross_entropy_with_logits(b, frT, pos_weight=pw_fr)
                     + 0.5 * l_vel)
             opt.zero_grad(set_to_none=True)
