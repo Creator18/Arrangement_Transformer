@@ -102,6 +102,8 @@ def main():
                     help="expected fraction of each batch drawn from --data-real")
     ap.add_argument("--val-data", default="",
                     help="validate on this root instead of --data (e.g. real recordings)")
+    ap.add_argument("--n-cond", type=int, default=0,
+                    help="conditioning labels (4 for song-to-piano difficulty: 3 levels + unknown)")
     ap.add_argument("--mix-p", type=float, default=0.0,
                     help="probability of burying a second clip 12-24 dB under each example")
     ap.add_argument("--soft-weight", type=float, default=0.0,
@@ -141,7 +143,8 @@ def main():
         + (", augmenting rendered clips" if args.augment else ""))
 
     fe = S.SpectralFrontend().to(dev).eval()
-    net = SpectralTranscriber(d=args.d, depth=args.depth, heads=args.heads).to(dev)
+    net = SpectralTranscriber(d=args.d, depth=args.depth, heads=args.heads,
+                              n_cond=args.n_cond).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=0.01)
 
     def lr_at(step):
@@ -167,7 +170,10 @@ def main():
         # Fine-tune: weights AND front-end normalisation come from the source
         # model, so the features it was trained on mean the same thing here.
         ck = torch.load(os.path.expanduser(args.init), map_location=dev, weights_only=False)
-        net.load_state_dict(ck["model"])
+        # a conditioned model adds cond_emb on top of a transcription checkpoint
+        missing, unexpected = net.load_state_dict(ck["model"], strict=not args.n_cond)
+        if missing or unexpected:
+            say(f"new parameters (zero-initialised): {missing}; unexpected: {unexpected}")
         fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
         say(f"initialised from {args.init} (step {ck['step']})")
     else:
@@ -192,7 +198,8 @@ def main():
         tmp.replace(path)                       # atomic: never a half-written checkpoint
 
     tr_set = RenderedClips(tr_paths + real_paths, args.crop, random_crop=True,
-                           augment=args.augment, mix_p=args.mix_p)
+                           augment=args.augment, mix_p=args.mix_p,
+                           with_cond=bool(args.n_cond))
     if real_paths:
         # Weighted so a batch is ~real_frac real however many clips each side
         # has; drawn with replacement, an "epoch" is just len(tr_set) draws.
@@ -205,7 +212,8 @@ def main():
     tr_dl = DataLoader(tr_set, batch_size=args.batch, shuffle=sampler is None, sampler=sampler,
                        num_workers=args.workers, pin_memory=True, drop_last=True,
                        persistent_workers=args.workers > 0)
-    va_dl = DataLoader(RenderedClips(va_paths, args.val_crop, random_crop=False),
+    va_dl = DataLoader(RenderedClips(va_paths, args.val_crop, random_crop=False,
+                                     with_cond=bool(args.n_cond)),
                        batch_size=max(1, args.batch // 4), shuffle=False,
                        num_workers=args.workers)
     pw_on = torch.tensor(30.0, device=dev)
@@ -216,10 +224,12 @@ def main():
         po, pf, go, gf = [], [], [], []
         verr, vn = 0.0, 0.0
         with torch.no_grad():
-            for wav, on, fr, vel, hv in va_dl:
+            for batch in va_dl:
+                wav, on, fr, vel, hv = batch[:5]
+                cond = batch[5].to(dev) if len(batch) > 5 else None
                 x = fe(wav.to(dev, non_blocking=True))
                 with torch.autocast("cuda", dtype=amp_dtype):
-                    a, b, c = net(x)
+                    a, b, c = net(x, cond)
                 po.append(torch.sigmoid(a.float()).cpu().numpy())
                 pf.append(torch.sigmoid(b.float()).cpu().numpy())
                 onT = on.transpose(1, 2).numpy(); go.append(onT)
@@ -237,7 +247,9 @@ def main():
     t_log, run_loss, n_loss = time.time(), 0.0, 0
     done = False
     while not done:
-        for wav, on, fr, vel, hv in tr_dl:
+        for batch in tr_dl:
+            wav, on, fr, vel, hv = batch[:5]
+            cond = batch[5].to(dev, non_blocking=True) if len(batch) > 5 else None
             wav = wav.to(dev, non_blocking=True)
             onT = on.to(dev, non_blocking=True).transpose(1, 2)
             frT = fr.to(dev, non_blocking=True).transpose(1, 2)
@@ -246,7 +258,7 @@ def main():
             with torch.no_grad():
                 x = fe(wav)
             with torch.autocast("cuda", dtype=amp_dtype):
-                a, b, c = net(x)
+                a, b, c = net(x, cond)
             a, b, c = a.float(), b.float(), c.float()
             # velocity is scored only at true onsets, and only where a velocity
             # label exists — a regression over the silent 99% would learn zero

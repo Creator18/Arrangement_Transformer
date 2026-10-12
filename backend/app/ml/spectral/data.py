@@ -66,12 +66,16 @@ def clips(root: pathlib.Path, split: str) -> List[pathlib.Path]:
 
 class RenderedClips(Dataset):
     def __init__(self, paths: List[pathlib.Path], crop_s: Optional[float] = 8.0,
-                 random_crop: bool = True, augment: bool = False, mix_p: float = 0.0):
+                 random_crop: bool = True, augment: bool = False, mix_p: float = 0.0,
+                 with_cond: bool = False):
         self.paths = paths
         self.crop = int(crop_s * S.SR) if crop_s else None
         self.random_crop = random_crop
         self.augment = augment
         self.mix_p = mix_p
+        # Song-to-piano clips carry an arrangement difficulty (0 beginner,
+        # 1 intermediate, 2 advanced); 3 = unknown.  Returned as a 6th item.
+        self.with_cond = with_cond
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -80,14 +84,15 @@ class RenderedClips(Dataset):
         item = self._load(i)
         if self.mix_p and random.random() < self.mix_p:
             item = self._mix(item, self._load(random.randrange(len(self.paths))))
-        y, on, fr, vel, has_vel, real = item
+        y, on, fr, vel, has_vel, real, cond = item
         if self.augment and not real:
             y = augment(y)
+        extra = (torch.tensor(cond),) if self.with_cond else ()
         return (torch.from_numpy(y),
                 torch.from_numpy(on.astype(np.float32)),
                 torch.from_numpy(fr.astype(np.float32)),
                 torch.from_numpy(vel.astype(np.float32) / 127.0),
-                torch.tensor(1.0 if has_vel else 0.0))
+                torch.tensor(1.0 if has_vel else 0.0)) + extra
 
     @staticmethod
     def _mix(a, b):
@@ -100,8 +105,8 @@ class RenderedClips(Dataset):
         velocity is scaled down (x0.4) — approximate, but on the right side:
         they ARE soft in this audio.
         """
-        ya, ona, fra, vela, hva, ra = a
-        yb, onb, frb, velb, hvb, _ = b
+        ya, ona, fra, vela, hva, ra, ca = a
+        yb, onb, frb, velb, hvb, _, _ = b
         n = min(len(ya), len(yb)); T = min(ona.shape[1], onb.shape[1])
         ra_ = np.sqrt((ya[:n] ** 2).mean()) + 1e-6
         rb_ = np.sqrt((yb[:n] ** 2).mean()) + 1e-6
@@ -112,7 +117,7 @@ class RenderedClips(Dataset):
         fr[:, :T] = np.maximum(fra[:, :T], frb[:, :T])
         add = (onb[:, :T] > 0) & (ona[:, :T] == 0)
         vel[:, :T] = np.where(add, (velb[:, :T] * 0.4).astype(vel.dtype), vela[:, :T])
-        return np.clip(y, -1, 1).astype(np.float32), on, fr, vel, hva and hvb, ra
+        return np.clip(y, -1, 1).astype(np.float32), on, fr, vel, hva and hvb, ra, ca
 
     def _load(self, i: int):
         p = self.paths[i]
@@ -143,5 +148,6 @@ class RenderedClips(Dataset):
             if on.shape[1] < T:
                 pad = ((0, 0), (0, T - on.shape[1]))
                 on, fr, vel = (np.pad(a, pad) for a in (on, fr, vel))
-        real = "piano" in z.files and str(z["piano"]) == "real"
-        return y, on, fr, vel, has_vel, real
+        real = "piano" in z.files and str(z["piano"]) in ("real", "m2m")
+        cond = int(z["difficulty"]) if "difficulty" in z.files else 3
+        return y, on, fr, vel, has_vel, real, cond

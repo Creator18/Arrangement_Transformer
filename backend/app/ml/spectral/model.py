@@ -41,7 +41,7 @@ SKIP TO THE OUTPUT — patches are 32 ms wide but onsets need 16 ms.  The
 from __future__ import annotations
 
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -110,10 +110,13 @@ class Block(nn.Module):
 
 
 class SpectralTranscriber(nn.Module):
-    def __init__(self, d: int = 256, depth: int = 6, heads: int = 4, stem: int = 32):
+    def __init__(self, d: int = 256, depth: int = 6, heads: int = 4, stem: int = 32,
+                 n_cond: int = 0):
         super().__init__()
         C = len(S.HARMONICS) + 1
         self.arch = {"d": d, "depth": depth, "heads": heads, "stem": stem}
+        if n_cond:
+            self.arch["n_cond"] = n_cond
         self.stem = nn.Sequential(
             nn.Conv2d(C, stem, 3, padding=1), nn.GELU(),
             nn.Conv2d(stem, stem, 3, padding=1), nn.GELU())
@@ -121,6 +124,12 @@ class SpectralTranscriber(nn.Module):
         self.patch = nn.Conv2d(stem, d, (PATCH_H, PATCH_W), stride=(PATCH_H_STEP, PATCH_W))
         self.pitch_emb = nn.Parameter(torch.zeros(1, ROWS, 1, d))      # absolute register
         nn.init.normal_(self.pitch_emb, std=0.02)
+        # Optional conditioning label (song-to-piano: arrangement difficulty),
+        # added to every token.  Zero-initialised, so a model fine-tuned from a
+        # transcription checkpoint starts out exactly as that checkpoint.
+        self.cond_emb = nn.Embedding(n_cond, d) if n_cond else None
+        if n_cond:
+            nn.init.zeros_(self.cond_emb.weight)
         self.blocks = nn.ModuleList(Block(d, heads) for _ in range(depth))
         self.norm = nn.LayerNorm(d)
         # back to the full grid: overlapping rows sum, as patches overlapped
@@ -130,13 +139,18 @@ class SpectralTranscriber(nn.Module):
         # 3 bins per key -> one value per key, three outputs (onset/frame/velocity)
         self.head = nn.Conv2d(stem, 3, (3, 1), stride=(3, 1))
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(B, 7, 264, T) features -> onset, frame, velocity logits, each (B, T, 88)."""
+    def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(B, 7, 264, T) features -> onset, frame, velocity logits, each (B, T, 88).
+
+        cond: (B,) integer labels, used only by a model built with n_cond."""
         B, _, Fb, T = x.shape
         s = self.stem(x)                                               # (B, c, 264, T)
         Tp = math.ceil(T / PATCH_W) * PATCH_W
         z = self.patch(F.pad(s, (0, Tp - T, 0, F_PAD - Fb)))           # (B, d, R, N)
         z = z.permute(0, 2, 3, 1) + self.pitch_emb                     # (B, R, N, d)
+        if self.cond_emb is not None and cond is not None:
+            z = z + self.cond_emb(cond.long())[:, None, None, :]
         for blk in self.blocks:
             z = blk(z)
         z = self.norm(z).permute(0, 3, 1, 2)                           # (B, d, R, N)
