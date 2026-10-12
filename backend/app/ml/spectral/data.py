@@ -65,34 +65,56 @@ def clips(root: pathlib.Path, split: str) -> List[pathlib.Path]:
 
 
 class RenderedClips(Dataset):
+    """Clips -> training tuples.
+
+    Always (wav, onset, frame, velocity/127, has_velocity).  Then, by flag:
+      with_cond   + difficulty label (0-2, 3 = unknown)          [index 5]
+      with_roles  + melody roll, bass roll, notes_valid, roles_valid  [6..9]
+                    (with_roles implies the cond slot is present)
+
+    Curriculum clips (eval/make_curriculum_clips.py) carry "mel"/"bass" rolls
+    marking which keys at each frame belong to the melody and the bass line,
+    and a "scope": "all" when every pitched note in the audio is labelled
+    (Slakh: exact per-stem MIDI) or "melody" when only the melody is (MUSDB:
+    vocals labelled by pitch tracking, accompaniment unlabelled) — then the
+    onset/frame loss must be masked, or every unlabelled accompaniment note
+    would be taught as a false positive.
+    """
+
     def __init__(self, paths: List[pathlib.Path], crop_s: Optional[float] = 8.0,
                  random_crop: bool = True, augment: bool = False, mix_p: float = 0.0,
-                 with_cond: bool = False):
+                 with_cond: bool = False, with_roles: bool = False):
         self.paths = paths
         self.crop = int(crop_s * S.SR) if crop_s else None
         self.random_crop = random_crop
         self.augment = augment
         self.mix_p = mix_p
-        # Song-to-piano clips carry an arrangement difficulty (0 beginner,
-        # 1 intermediate, 2 advanced); 3 = unknown.  Returned as a 6th item.
-        self.with_cond = with_cond
+        self.with_cond = with_cond or with_roles
+        self.with_roles = with_roles
 
     def __len__(self) -> int:
         return len(self.paths)
 
     def __getitem__(self, i: int):
-        item = self._load(i)
+        c = self._load(i)
         if self.mix_p and random.random() < self.mix_p:
-            item = self._mix(item, self._load(random.randrange(len(self.paths))))
-        y, on, fr, vel, has_vel, real, cond = item
-        if self.augment and not real:
+            c = self._mix(c, self._load(random.randrange(len(self.paths))))
+        y = c["y"]
+        if self.augment and not c["real"]:
             y = augment(y)
-        extra = (torch.tensor(cond),) if self.with_cond else ()
-        return (torch.from_numpy(y),
-                torch.from_numpy(on.astype(np.float32)),
-                torch.from_numpy(fr.astype(np.float32)),
-                torch.from_numpy(vel.astype(np.float32) / 127.0),
-                torch.tensor(1.0 if has_vel else 0.0)) + extra
+        out = (torch.from_numpy(y),
+               torch.from_numpy(c["on"].astype(np.float32)),
+               torch.from_numpy(c["fr"].astype(np.float32)),
+               torch.from_numpy(c["vel"].astype(np.float32) / 127.0),
+               torch.tensor(1.0 if c["has_vel"] else 0.0))
+        if self.with_cond:
+            out += (torch.tensor(c["cond"]),)
+        if self.with_roles:
+            out += (torch.from_numpy(c["mel"].astype(np.float32)),
+                    torch.from_numpy(c["bass"].astype(np.float32)),
+                    torch.tensor(1.0 if c["scope"] == "all" else 0.0),
+                    torch.tensor(1.0 if c["has_roles"] else 0.0))
+        return out
 
     @staticmethod
     def _mix(a, b):
@@ -103,21 +125,24 @@ class RenderedClips(Dataset):
         found ones.  Burying a whole clip under another puts quiet notes under
         loud attacks everywhere, with exact labels.  The buried notes'
         velocity is scaled down (x0.4) — approximate, but on the right side:
-        they ARE soft in this audio.
+        they ARE soft in this audio.  Role rolls keep the first clip's (the
+        buried clip is accompaniment, never the melody).
         """
-        ya, ona, fra, vela, hva, ra, ca = a
-        yb, onb, frb, velb, hvb, _, _ = b
-        n = min(len(ya), len(yb)); T = min(ona.shape[1], onb.shape[1])
-        ra_ = np.sqrt((ya[:n] ** 2).mean()) + 1e-6
-        rb_ = np.sqrt((yb[:n] ** 2).mean()) + 1e-6
+        n = min(len(a["y"]), len(b["y"])); T = min(a["on"].shape[1], b["on"].shape[1])
+        ra_ = np.sqrt((a["y"][:n] ** 2).mean()) + 1e-6
+        rb_ = np.sqrt((b["y"][:n] ** 2).mean()) + 1e-6
         g = ra_ / rb_ * 10 ** (-random.uniform(12, 24) / 20)
-        y = ya.copy(); y[:n] += g * yb[:n]
-        on = ona.copy(); fr = fra.copy(); vel = vela.copy()
-        on[:, :T] = np.maximum(ona[:, :T], onb[:, :T])
-        fr[:, :T] = np.maximum(fra[:, :T], frb[:, :T])
-        add = (onb[:, :T] > 0) & (ona[:, :T] == 0)
-        vel[:, :T] = np.where(add, (velb[:, :T] * 0.4).astype(vel.dtype), vela[:, :T])
-        return np.clip(y, -1, 1).astype(np.float32), on, fr, vel, hva and hvb, ra, ca
+        c = dict(a)
+        c["y"] = a["y"].copy(); c["y"][:n] += g * b["y"][:n]
+        c["y"] = np.clip(c["y"], -1, 1).astype(np.float32)
+        for k in ("on", "fr", "vel"):
+            c[k] = a[k].copy()
+        c["on"][:, :T] = np.maximum(a["on"][:, :T], b["on"][:, :T])
+        c["fr"][:, :T] = np.maximum(a["fr"][:, :T], b["fr"][:, :T])
+        add = (b["on"][:, :T] > 0) & (a["on"][:, :T] == 0)
+        c["vel"][:, :T] = np.where(add, (b["vel"][:, :T] * 0.4).astype(a["vel"].dtype), a["vel"][:, :T])
+        c["has_vel"] = a["has_vel"] and b["has_vel"]
+        return c
 
     def _load(self, i: int):
         p = self.paths[i]
@@ -134,6 +159,10 @@ class RenderedClips(Dataset):
             vel, has_vel = None, False
         if not has_vel:
             vel = np.zeros_like(on)
+        has_roles = "mel" in z.files
+        mel = z["mel"] if has_roles else np.zeros_like(on)
+        bass = z["bass"] if has_roles else np.zeros_like(on)
+        rolls = [on, fr, vel, mel, bass]
         if self.crop and len(y) > self.crop:
             # Module-level `random`, not a per-instance generator: DataLoader
             # workers each receive a COPY of the dataset, so an instance RNG
@@ -144,10 +173,14 @@ class RenderedClips(Dataset):
             s = (s // S.HOP) * S.HOP
             y = y[s:s + self.crop]
             f0, T = s // S.HOP, S.n_frames(self.crop)
-            on, fr, vel = (a[:, f0:f0 + T] for a in (on, fr, vel))
-            if on.shape[1] < T:
-                pad = ((0, 0), (0, T - on.shape[1]))
-                on, fr, vel = (np.pad(a, pad) for a in (on, fr, vel))
-        real = "piano" in z.files and str(z["piano"]) in ("real", "m2m")
-        cond = int(z["difficulty"]) if "difficulty" in z.files else 3
-        return y, on, fr, vel, has_vel, real, cond
+            rolls = [a[:, f0:f0 + T] for a in rolls]
+            if rolls[0].shape[1] < T:
+                pad = ((0, 0), (0, T - rolls[0].shape[1]))
+                rolls = [np.pad(a, pad) for a in rolls]
+        on, fr, vel, mel, bass = rolls
+        piano = str(z["piano"]) if "piano" in z.files else ""
+        return dict(y=y, on=on, fr=fr, vel=vel, has_vel=has_vel, mel=mel, bass=bass,
+                    has_roles=has_roles,
+                    scope=str(z["scope"]) if "scope" in z.files else "all",
+                    real=piano in ("real", "m2m", "slakh", "musdb"),
+                    cond=int(z["difficulty"]) if "difficulty" in z.files else 3)

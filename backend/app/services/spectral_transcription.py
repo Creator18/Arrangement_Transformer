@@ -106,7 +106,7 @@ def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
             seg = y[a * S.HOP:(a + win - 1) * S.HOP]
             x = fe(torch.from_numpy(seg.astype(np.float32))[None].to(dev))
             c = torch.tensor([cond], device=dev) if cond is not None else None
-            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in net(x, c))
+            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in net(x, c)[:3])
             lo = f0 - a
             hi = min(lo + keep, po.shape[1], T - a)
             on[:, a + lo:a + hi] = po[:, lo:hi]

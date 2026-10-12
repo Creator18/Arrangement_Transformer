@@ -102,6 +102,9 @@ def main():
                     help="expected fraction of each batch drawn from --data-real")
     ap.add_argument("--val-data", default="",
                     help="validate on this root instead of --data (e.g. real recordings)")
+    ap.add_argument("--roles", action="store_true",
+                    help="curriculum: melody/bass outputs, scope-masked note loss")
+    ap.add_argument("--role-weight", type=float, default=1.0)
     ap.add_argument("--n-cond", type=int, default=0,
                     help="conditioning labels (4 for song-to-piano difficulty: 3 levels + unknown)")
     ap.add_argument("--mix-p", type=float, default=0.0,
@@ -144,7 +147,7 @@ def main():
 
     fe = S.SpectralFrontend().to(dev).eval()
     net = SpectralTranscriber(d=args.d, depth=args.depth, heads=args.heads,
-                              n_cond=args.n_cond).to(dev)
+                              n_cond=args.n_cond, roles=args.roles).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=0.01)
 
     def lr_at(step):
@@ -171,7 +174,7 @@ def main():
         # model, so the features it was trained on mean the same thing here.
         ck = torch.load(os.path.expanduser(args.init), map_location=dev, weights_only=False)
         # a conditioned model adds cond_emb on top of a transcription checkpoint
-        missing, unexpected = net.load_state_dict(ck["model"], strict=not args.n_cond)
+        missing, unexpected = net.load_state_dict(ck["model"], strict=not (args.n_cond or args.roles))
         if missing or unexpected:
             say(f"new parameters (zero-initialised): {missing}; unexpected: {unexpected}")
         fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
@@ -199,7 +202,7 @@ def main():
 
     tr_set = RenderedClips(tr_paths + real_paths, args.crop, random_crop=True,
                            augment=args.augment, mix_p=args.mix_p,
-                           with_cond=bool(args.n_cond))
+                           with_cond=bool(args.n_cond), with_roles=args.roles)
     if real_paths:
         # Weighted so a batch is ~real_frac real however many clips each side
         # has; drawn with replacement, an "epoch" is just len(tr_set) draws.
@@ -213,7 +216,7 @@ def main():
                        num_workers=args.workers, pin_memory=True, drop_last=True,
                        persistent_workers=args.workers > 0)
     va_dl = DataLoader(RenderedClips(va_paths, args.val_crop, random_crop=False,
-                                     with_cond=bool(args.n_cond)),
+                                     with_cond=bool(args.n_cond), with_roles=args.roles),
                        batch_size=max(1, args.batch // 4), shuffle=False,
                        num_workers=args.workers)
     pw_on = torch.tensor(30.0, device=dev)
@@ -223,13 +226,22 @@ def main():
         net.eval()
         po, pf, go, gf = [], [], [], []
         verr, vn = 0.0, 0.0
+        role_tp = np.zeros(2); role_fp = np.zeros(2); role_fn = np.zeros(2)
         with torch.no_grad():
             for batch in va_dl:
                 wav, on, fr, vel, hv = batch[:5]
                 cond = batch[5].to(dev) if len(batch) > 5 else None
                 x = fe(wav.to(dev, non_blocking=True))
                 with torch.autocast("cuda", dtype=amp_dtype):
-                    a, b, c = net(x, cond)
+                    outs = net(x, cond)
+                a, b, c = outs[:3]
+                if args.roles and len(batch) > 9:
+                    rv = batch[9].numpy()[:, None, None] > 0
+                    for r, (z, y) in enumerate(((outs[3], batch[6]), (outs[4], batch[7]))):
+                        pr = (torch.sigmoid(z.float()).cpu().numpy() > 0.5) & rv
+                        gt = (y.transpose(1, 2).numpy() > 0.5) & rv
+                        role_tp[r] += (pr & gt).sum(); role_fp[r] += (pr & ~gt).sum()
+                        role_fn[r] += (~pr & gt).sum()
                 po.append(torch.sigmoid(a.float()).cpu().numpy())
                 pf.append(torch.sigmoid(b.float()).cpu().numpy())
                 onT = on.transpose(1, 2).numpy(); go.append(onT)
@@ -239,6 +251,7 @@ def main():
                 verr += float((np.abs(vp - vel.transpose(1, 2).numpy()) * m).sum())
                 vn += float(m.sum())
         net.train()
+        validate.roles = 2 * role_tp / np.maximum(1, 2 * role_tp + role_fp + role_fn)
         s, ff = note_f1(np.concatenate(po), np.concatenate(pf),
                         np.concatenate(go), np.concatenate(gf))
         return s, ff, (verr / vn * 127 if vn else float("nan"))
@@ -258,8 +271,8 @@ def main():
             with torch.no_grad():
                 x = fe(wav)
             with torch.autocast("cuda", dtype=amp_dtype):
-                a, b, c = net(x, cond)
-            a, b, c = a.float(), b.float(), c.float()
+                outs = net(x, cond)
+            a, b, c = (t.float() for t in outs[:3])
             # velocity is scored only at true onsets, and only where a velocity
             # label exists — a regression over the silent 99% would learn zero
             m = (onT > 0.5) * hv.view(-1, 1, 1)
@@ -270,9 +283,24 @@ def main():
             if args.soft_weight:
                 soft = ((50 / 127 - vlT) / (50 / 127)).clamp(0, 1) * m
                 w_on = 1 + args.soft_weight * soft
-            loss = (F.binary_cross_entropy_with_logits(a, onT, weight=w_on, pos_weight=pw_on)
-                    + F.binary_cross_entropy_with_logits(b, frT, pos_weight=pw_fr)
-                    + 0.5 * l_vel)
+            if args.roles:
+                # Curriculum clips: onset/frame loss only where every pitched
+                # note is labelled (scope "all"); melody/bass loss wherever the
+                # clip has role rolls.  Per-clip means, then averaged over the
+                # clips that qualify.
+                nv = batch[8].to(dev).view(-1, 1, 1); rv = batch[9].to(dev).view(-1, 1, 1)
+                mel = batch[6].to(dev).transpose(1, 2); bas = batch[7].to(dev).transpose(1, 2)
+                pc = lambda l, w: (l * w).sum() / (w.sum() * l.shape[1] * l.shape[2]).clamp(min=1)
+                bce = lambda z, y, pw: F.binary_cross_entropy_with_logits(z, y, pos_weight=pw, reduction="none")
+                w_o = nv if w_on is None else nv * w_on
+                l_notes = pc(bce(a, onT, pw_on), w_o) + pc(bce(b, frT, pw_fr), nv)
+                l_role = (pc(bce(outs[3].float(), mel, pw_fr), rv)
+                          + pc(bce(outs[4].float(), bas, pw_fr), rv))
+                loss = l_notes + args.role_weight * l_role + 0.5 * l_vel
+            else:
+                loss = (F.binary_cross_entropy_with_logits(a, onT, weight=w_on, pos_weight=pw_on)
+                        + F.binary_cross_entropy_with_logits(b, frT, pos_weight=pw_fr)
+                        + 0.5 * l_vel)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -296,7 +324,9 @@ def main():
                 save(last)
                 say(f"VAL step {step}: note F1 {s['conp_f1']:.3f} (P {s['conp_p']:.3f} "
                     f"R {s['conp_r']:.3f})  frame F1 {ff:.3f}  velocity MAE {vmae:.1f}"
-                    f"{'  * best' if improved else ''}")
+                    + (f"  melody F1 {validate.roles[0]:.3f}  bass F1 {validate.roles[1]:.3f}"
+                       if args.roles else "")
+                    + f"{'  * best' if improved else ''}")
 
             minutes = (time.time() - t_start) / 60
             if step >= args.total_steps or minutes > args.max_minutes:

@@ -41,7 +41,7 @@ SKIP TO THE OUTPUT — patches are 32 ms wide but onsets need 16 ms.  The
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -111,12 +111,14 @@ class Block(nn.Module):
 
 class SpectralTranscriber(nn.Module):
     def __init__(self, d: int = 256, depth: int = 6, heads: int = 4, stem: int = 32,
-                 n_cond: int = 0):
+                 n_cond: int = 0, roles: bool = False):
         super().__init__()
         C = len(S.HARMONICS) + 1
         self.arch = {"d": d, "depth": depth, "heads": heads, "stem": stem}
         if n_cond:
             self.arch["n_cond"] = n_cond
+        if roles:
+            self.arch["roles"] = True
         self.stem = nn.Sequential(
             nn.Conv2d(C, stem, 3, padding=1), nn.GELU(),
             nn.Conv2d(stem, stem, 3, padding=1), nn.GELU())
@@ -138,12 +140,19 @@ class SpectralTranscriber(nn.Module):
         self.fuse = nn.Sequential(nn.Conv2d(2 * stem, stem, 3, padding=1), nn.GELU())
         # 3 bins per key -> one value per key, three outputs (onset/frame/velocity)
         self.head = nn.Conv2d(stem, 3, (3, 1), stride=(3, 1))
+        # Optional role outputs (curriculum training): is this key, at this
+        # frame, part of the MELODY / the BASS line.  A separate head so a
+        # transcription checkpoint loads unchanged; zero-initialised weights
+        # with a negative bias start it at "not melody, not bass" everywhere.
+        self.role_head = nn.Conv2d(stem, 2, (3, 1), stride=(3, 1)) if roles else None
+        if roles:
+            nn.init.zeros_(self.role_head.weight); nn.init.constant_(self.role_head.bias, -4.0)
 
-    def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None
-                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None):
         """(B, 7, 264, T) features -> onset, frame, velocity logits, each (B, T, 88).
 
-        cond: (B,) integer labels, used only by a model built with n_cond."""
+        cond: (B,) integer labels, used only by a model built with n_cond.
+        A model built with roles=True returns two more: melody, bass logits."""
         B, _, Fb, T = x.shape
         s = self.stem(x)                                               # (B, c, 264, T)
         Tp = math.ceil(T / PATCH_W) * PATCH_W
@@ -155,9 +164,12 @@ class SpectralTranscriber(nn.Module):
             z = blk(z)
         z = self.norm(z).permute(0, 3, 1, 2)                           # (B, d, R, N)
         u = self.unpatch(z)[:, :, :Fb, :T]                             # (B, c, 264, T)
-        y = self.head(self.fuse(torch.cat([u, s], dim=1)))             # (B, 3, 88, T)
-        y = y.permute(1, 0, 3, 2)                                      # (3, B, T, 88)
-        return y[0], y[1], y[2]
+        h = self.fuse(torch.cat([u, s], dim=1))
+        y = self.head(h).permute(1, 0, 3, 2)                           # (3, B, T, 88)
+        if self.role_head is None:
+            return y[0], y[1], y[2]
+        r = self.role_head(h).permute(1, 0, 3, 2)                      # (2, B, T, 88)
+        return y[0], y[1], y[2], r[0], r[1]
 
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())

@@ -102,7 +102,8 @@ def main():
     pool = mp.Pool(7)                       # before CUDA is touched: workers fork clean
     ap = argparse.ArgumentParser()
     ap.add_argument("--m2m", required=True)
-    ap.add_argument("--ckpt", required=True, help="s2p model best.pt")
+    ap.add_argument("--ckpt", required=True, action="append",
+                    help="s2p model: path, or label=path; repeat to compare versions")
     ap.add_argument("--piano", required=True)
     ap.add_argument("--september", default="")
     ap.add_argument("--out", default="")
@@ -130,9 +131,11 @@ def main():
         wav = m2m / "audio" / f"{sid}.wav"
         out = {}
         ST.CKPT = pathlib.Path(args.piano); out["piano"] = ("spec", ST.rolls(wav))
-        ST.CKPT = pathlib.Path(args.ckpt)
-        out["s2p-v1"] = ("spec", ST.rolls(wav, cond=LEVELS.index(level[sid])))
-        out["s2p-v1 adv"] = ("spec", ST.rolls(wav, cond=2))
+        for spec in args.ckpt:
+            label, path = spec.split("=", 1) if "=" in spec else ("s2p-v1", spec)
+            ST.CKPT = pathlib.Path(path)
+            out[label] = ("spec", ST.rolls(wav, cond=LEVELS.index(level[sid])))
+            out[f"{label} adv"] = ("spec", ST.rolls(wav, cond=2))
         if args.september:
             out["september"] = ("mel", MT.rolls(wav, ckpt=pathlib.Path(args.september)))
         return out
@@ -164,7 +167,7 @@ def main():
         song = dict(np.load(m2m / "scorecard" / f"song_{sid}.npz"))
         lv = level[sid]
         for name, (kind, r) in systems(sid).items():
-            tgt = "advanced" if name == "s2p-v1 adv" else lv
+            tgt = "advanced" if name.endswith(" adv") else lv
             pend.append(pool.apply_async(_test_job, ((name, kind, r, best[name], ref, song, lv, tgt, ranges),)))
         pend.append(pool.apply_async(_test_job, (("human (reference)", "human", None, 0, ref, song, lv, lv, ranges),)))
         print(f"  test {sid} {lv}", flush=True)
