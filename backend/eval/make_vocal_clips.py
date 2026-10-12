@@ -38,10 +38,43 @@ sys.path.insert(0, str(ROOT / "eval"))
 from make_curriculum_clips import rolls          # noqa: E402
 
 SECONDS = 20.0
+# pYIN reports a note once it is sure of the pitch, after the attack: measured
+# against real MAESTRO as the reference, vocal labels land 23 ms late (jitter
+# 27 ms) and bass 35 ms late (eval/label_alignment_check.py).  Each onset is
+# moved to the nearest attack in its ISOLATED stem's onset envelope; where no
+# clear attack exists (legato, slurs) the onset is shifted by the median lag and
+# MASKED out of the onset loss, so the model is never taught a guessed attack.
+LATE = {"voc": 0.023, "bas": 0.035}
+CONV = 0.0262            # envelope peak -> half-peak label convention (MAESTRO reference)
+ENV_SR, ENV_HOP = 22050, 128
 MIXES = [("vocals", ["vocals"], "all"), ("vocals_drums", ["vocals", "drums"], "all"),
          ("vocals_bass", ["vocals", "bass", "drums"], "all"),
          ("vocals_other", ["vocals", "other"], "melody"),
          ("full", ["vocals", "bass", "drums", "other"], "melody")]
+
+
+def refine(notes, stem24, late):
+    """[on, off, pitch, vel] -> [on, off, pitch, vel, sure]: onsets moved to real attacks."""
+    import librosa
+    from scipy.signal import find_peaks
+    if len(notes) == 0:
+        return np.zeros((0, 5))
+    y = librosa.resample(stem24, orig_sr=24000, target_sr=ENV_SR)
+    e = librosa.onset.onset_strength(y=y, sr=ENV_SR, hop_length=ENV_HOP, lag=1, max_size=1)
+    e = (e - e.mean()) / (e.std() + 1e-9)
+    pk, _ = find_peaks(e, height=1.0, distance=int(0.03 * ENV_SR / ENV_HOP))
+    tp = pk * ENV_HOP / ENV_SR
+    out = []
+    for on, off, p, v in notes:
+        guess = on - late
+        c = tp[(tp >= on - 0.09) & (tp <= on + 0.03)]
+        if len(c):
+            new, sure = c[np.argmin(np.abs(c - CONV - guess))] - CONV, 1.0
+        else:
+            new, sure = guess, 0.0
+        new = max(0.0, new)
+        out.append((new, max(off, new + 0.03), p, v, sure))
+    return np.array(out)
 
 
 def pyin_notes(y, sr, lo, hi):
@@ -92,6 +125,8 @@ def main():
                 y16 = librosa.resample(stem["bass"], orig_sr=S.SR, target_sr=16000)
                 bas = pyin_notes(y16, 16000, "E1", "G3")
                 np.savez(cache, voc=voc, bas=bas)
+            voc, bas = refine(voc, stem["vocals"], LATE["voc"]), refine(bas, stem["bass"], LATE["bas"])
+            np.savez(out.parent / f"labels2_{tr.name}.npz", voc=voc, bas=bas)
             dur = len(stem["vocals"]) / S.SR
             for name, parts, scope in MIXES:
                 for w in range(args.windows):
@@ -100,7 +135,7 @@ def main():
                         continue
                     for _ in range(30):                          # a window where the voice sings
                         t0 = rng.uniform(0, max(0.0, dur - SECONDS))
-                        if ((voc[:, 0] >= t0) & (voc[:, 0] < t0 + SECONDS)).sum() >= 8:
+                        if len(voc) and ((voc[:, 0] >= t0) & (voc[:, 0] < t0 + SECONDS)).sum() >= 8:
                             break
                     else:
                         continue
@@ -108,12 +143,19 @@ def main():
                     mix = sum(np.pad(stem[k][a:a + seg], (0, max(0, seg - len(stem[k][a:a + seg]))))
                               for k in parts)
                     mix = mix * 0.5 / (np.abs(mix).max() + 1e-6)
-                    v_on, v_fr, v_vel = rolls(voc, t0, T, S.FPS)
-                    b_on, b_fr, b_vel = rolls(bas, t0, T, S.FPS) if "bass" in parts else (np.zeros_like(v_on),) * 3
+                    v_on, v_fr, v_vel = rolls(voc[:, :4], t0, T, S.FPS)
+                    b_on, b_fr, b_vel = rolls(bas[:, :4], t0, T, S.FPS) if "bass" in parts else (np.zeros_like(v_on),) * 3
+                    # onset mask: 0 within 2 frames of an UNSURE onset on its key
+                    onmask = np.ones_like(v_on)
+                    for arr in ([voc] + ([bas] if "bass" in parts else [])):
+                        for s_, e_, p_, v_, sure in arr:
+                            f = int(round((s_ - t0) * S.FPS)); k = int(p_) - 21
+                            if not sure and 0 <= k < 88 and -2 <= f < T + 2:
+                                onmask[k, max(0, f - 2):max(0, f + 3)] = 0
                     tmp = dst.with_name(dst.stem + ".tmp.npz")
                     np.savez_compressed(tmp, y=(np.clip(mix, -1, 1) * 32767).astype(np.int16),
                                         on=np.maximum(v_on, b_on), fr=np.maximum(v_fr, b_fr),
-                                        mel=v_fr, bass=b_fr, piano="musdb", scope=scope,
+                                        mel=v_fr, bass=b_fr, onmask=onmask, piano="musdb", scope=scope,
                                         stage=len([p for p in parts if p != "drums"]), mix=name)
                     tmp.replace(dst)
                     n_out += 1

@@ -39,6 +39,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 SECONDS = 20.0
+# Per-instrument label shift (ms, + = the sound starts after the MIDI note), from
+# eval/label_alignment_check.py on 491 isolated stems, relative to real MAESTRO
+# (Disklavier MIDI) as the reference: each Slakh class is a different sample
+# library with its own latency/attack.  Applied so every onset label sits where
+# the attack actually is — mismatched onsets taught the onset head to hedge.
+CLASS_SHIFT_MS = {"Guitar": 11.6, "Piano": -5.8, "Strings (continued)": 17.4, "Bass": 5.8,
+                  "Organ": -5.8, "Reed": 17.4, "Pipe": 11.6, "Synth Lead": 0.0, "Synth Pad": 5.8,
+                  "Brass": 11.6, "Strings": 17.4, "Chromatic Percussion": -5.8}
 SPLITS = {"train": "train", "validation": "validation", "test": "test"}
 
 
@@ -121,6 +129,8 @@ def main():
             if len(pitched) < args.stage:
                 continue
             notes = {k: stem_notes(tr / "MIDI" / f"{k}.mid") for k in pitched}
+            for k in pitched:
+                notes[k][:, :2] += CLASS_SHIFT_MS.get(stems[k].get("inst_class", ""), 0.0) / 1000
             dur = sf.info(str(tr / "stems" / f"{pitched[0]}.flac")).duration
             for c in range(args.combos):
                 # half the combinations keep a bass part when the track has one,

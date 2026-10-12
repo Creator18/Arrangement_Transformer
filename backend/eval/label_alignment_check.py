@@ -21,12 +21,14 @@ systematic lag beyond ~8 ms or jitter of ~16 ms+ is a frame or more off.
 from __future__ import annotations
 
 import argparse
+import sys
 import collections
 import pathlib
 import random
 
 import numpy as np
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 SR, HOP = 22050, 128
 DT = HOP / SR                                   # 5.8 ms
 
@@ -65,6 +67,8 @@ def main():
     ap.add_argument("--musdb", required=True)
     ap.add_argument("--labels", required=True)
     ap.add_argument("--tracks", type=int, default=60)
+    ap.add_argument("--labels-prefix", default="labels_", help="labels2_ = the refined labels")
+    ap.add_argument("--slakh-shift", action="store_true", help="apply the per-class correction")
     ap.add_argument("--maestro-clips", default="", help="real MAESTRO clips: the known-good reference")
     args = ap.parse_args()
     import librosa, yaml, pretty_midi
@@ -104,6 +108,9 @@ def main():
             if not (wav.exists() and mid.exists()):
                 continue
             notes = [n.start for i in pretty_midi.PrettyMIDI(str(mid)).instruments for n in i.notes]
+            if args.slakh_shift:
+                from make_curriculum_clips import CLASS_SHIFT_MS
+                notes = [n + CLASS_SHIFT_MS.get(v.get("inst_class", ""), 0.0) / 1000 for n in notes]
             if len(notes) < 20:
                 continue
             t0 = float(np.percentile(notes, 30))
@@ -125,13 +132,14 @@ def main():
     print("\nMUSDB: pYIN labels vs the isolated stems")
     for kind, stem in (("voc", "vocals"), ("bas", "bass")):
         rs = []
-        for lab in sorted(pathlib.Path(args.labels).glob("labels_*.npz")):
-            name = lab.stem[len("labels_"):]
+        for lab in sorted(pathlib.Path(args.labels).glob(f"{args.labels_prefix}*.npz")):
+            name = lab.stem[len(args.labels_prefix):]
             tr = next((pathlib.Path(args.musdb) / s / name for s in ("train", "test")
                        if (pathlib.Path(args.musdb) / s / name).exists()), None)
             if tr is None:
                 continue
-            on = np.load(lab)[kind][:, 0]
+            arr = np.load(lab)[kind]
+            on = arr[:, 0] if arr.shape[1] < 5 else arr[arr[:, 4] > 0, 0]     # refined: sure onsets only
             if len(on) < 20:
                 continue
             y, _ = librosa.load(str(tr / f"{stem}.wav"), sr=SR, mono=True, duration=120)

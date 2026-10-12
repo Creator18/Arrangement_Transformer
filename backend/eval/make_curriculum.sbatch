@@ -14,7 +14,7 @@ source activate ~/envs/arr
 # numba's on-disk cache on the shared filesystem segfaults pYIN; keep it node-local
 export NUMBA_CACHE_DIR=/tmp/numba_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 cd ~/arrangement_transformer/backend
-OUT=/scratch/basu.ang/curriculum
+OUT=${OUTROOT:-/scratch/basu.ang/curriculum}
 N=${SLURM_ARRAY_TASK_COUNT}
 if [ "$KIND" = vocal ]; then
   python -u eval/make_vocal_clips.py --musdb /scratch/basu.ang/datasets/musdb18hq --out $OUT \

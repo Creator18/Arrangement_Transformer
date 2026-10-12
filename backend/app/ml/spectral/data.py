@@ -113,7 +113,8 @@ class RenderedClips(Dataset):
             out += (torch.from_numpy(c["mel"].astype(np.float32)),
                     torch.from_numpy(c["bass"].astype(np.float32)),
                     torch.tensor(1.0 if c["scope"] == "all" else 0.0),
-                    torch.tensor(1.0 if c["has_roles"] else 0.0))
+                    torch.tensor(1.0 if c["has_roles"] else 0.0),
+                    torch.from_numpy(c["onmask"].astype(np.float32)))
         return out
 
     @staticmethod
@@ -162,7 +163,8 @@ class RenderedClips(Dataset):
         has_roles = "mel" in z.files
         mel = z["mel"] if has_roles else np.zeros_like(on)
         bass = z["bass"] if has_roles else np.zeros_like(on)
-        rolls = [on, fr, vel, mel, bass]
+        onmask = z["onmask"] if "onmask" in z.files else np.ones_like(on)
+        rolls = [on, fr, vel, mel, bass, onmask]
         if self.crop and len(y) > self.crop:
             # Module-level `random`, not a per-instance generator: DataLoader
             # workers each receive a COPY of the dataset, so an instance RNG
@@ -177,9 +179,9 @@ class RenderedClips(Dataset):
             if rolls[0].shape[1] < T:
                 pad = ((0, 0), (0, T - rolls[0].shape[1]))
                 rolls = [np.pad(a, pad) for a in rolls]
-        on, fr, vel, mel, bass = rolls
+        on, fr, vel, mel, bass, onmask = rolls
         piano = str(z["piano"]) if "piano" in z.files else ""
-        return dict(y=y, on=on, fr=fr, vel=vel, has_vel=has_vel, mel=mel, bass=bass,
+        return dict(y=y, on=on, fr=fr, vel=vel, has_vel=has_vel, mel=mel, bass=bass, onmask=onmask,
                     has_roles=has_roles,
                     scope=str(z["scope"]) if "scope" in z.files else "all",
                     real=piano in ("real", "m2m", "slakh", "musdb"),

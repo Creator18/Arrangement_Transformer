@@ -290,9 +290,11 @@ def main():
                 # clips that qualify.
                 nv = batch[8].to(dev).view(-1, 1, 1); rv = batch[9].to(dev).view(-1, 1, 1)
                 mel = batch[6].to(dev).transpose(1, 2); bas = batch[7].to(dev).transpose(1, 2)
-                pc = lambda l, w: (l * w).sum() / (w.sum() * l.shape[1] * l.shape[2]).clamp(min=1)
+                # weighted mean: w is per clip (B,1,1) or per element (B,T,88)
+                pc = lambda l, w: (l * w).sum() / torch.broadcast_to(w, l.shape).sum().clamp(min=1)
                 bce = lambda z, y, pw: F.binary_cross_entropy_with_logits(z, y, pos_weight=pw, reduction="none")
-                w_o = nv if w_on is None else nv * w_on
+                om = batch[10].to(dev).transpose(1, 2) if len(batch) > 10 else 1.0
+                w_o = (nv if w_on is None else nv * w_on) * om      # unsure onsets are not taught
                 l_notes = pc(bce(a, onT, pw_on), w_o) + pc(bce(b, frT, pw_fr), nv)
                 l_role = (pc(bce(outs[3].float(), mel, pw_fr), rv)
                           + pc(bce(outs[4].float(), bas, pw_fr), rv))
