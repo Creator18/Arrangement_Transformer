@@ -314,6 +314,13 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     print(f"[separation] content: {content}")
     if SKIP_DEMUCS_FOR_PIANO and content.get("piano_only"):
         return _separate_piano_only(wav_path, session_dir, content)
+    # Piano-only experiment: songs are transcribed from the original mix by
+    # the piano model, so stems would go unused.  madmom beat-tracks a full
+    # mix directly (drums only help it).
+    import os
+    if os.environ.get("ARRANGEMENT_PIANO_ONLY") == "1":
+        print("[separation] piano-only experiment: treating the mix as piano")
+        return _separate_piano_only(wav_path, session_dir, content)
 
     model = _get_separator()
     sr_model = int(model.samplerate)

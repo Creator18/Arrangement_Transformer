@@ -63,8 +63,9 @@ def available() -> bool:
 
 
 def _load():
-    if "net" in _cache:
-        return _cache["net"], _cache["fe"], _cache["dev"]
+    # keyed by checkpoint, so an evaluation alternating models loads each once
+    if CKPT in _cache:
+        return _cache[CKPT]
     import torch
     from app.ml.spectral import frontend as S
     from app.ml.spectral.model import from_checkpoint
@@ -73,16 +74,17 @@ def _load():
     net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()
     fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
-    _cache.update(net=net, fe=fe, dev=dev)
+    _cache[CKPT] = (net, fe, dev)
     print(f"[spectral] loaded {CKPT.name} (step {ck['step']}) on {dev}")
     return net, fe, dev
 
 
-def rolls(audio_path: pathlib.Path):
+def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
     """(onset, frame, velocity) probabilities, each (88, T), for a whole file.
 
     Split out of transcribe() so an evaluation can run the model once and
-    decode many ways.  Returns None for an empty file.
+    decode many ways.  Returns None for an empty file.  `cond` is the
+    conditioning label for a model built with one (song-to-piano difficulty).
     """
     import librosa
     import torch
@@ -103,7 +105,8 @@ def rolls(audio_path: pathlib.Path):
             a = max(0, f0 - edge)        # window start, frames
             seg = y[a * S.HOP:(a + win - 1) * S.HOP]
             x = fe(torch.from_numpy(seg.astype(np.float32))[None].to(dev))
-            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in net(x))
+            c = torch.tensor([cond], device=dev) if cond is not None else None
+            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in net(x, c))
             lo = f0 - a
             hi = min(lo + keep, po.shape[1], T - a)
             on[:, a + lo:a + hi] = po[:, lo:hi]
@@ -113,20 +116,32 @@ def rolls(audio_path: pathlib.Path):
     return on, fr, vl
 
 
-def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None) -> List[Dict[str, Any]]:
+def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
+               ckpt: Optional[pathlib.Path] = None, cond: Optional[int] = None,
+               frame_thr: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Notes for a file.  ckpt/cond select another spectral model and its
+    conditioning label — the song-to-piano arranger at a difficulty."""
     import librosa
     from app.ml.transcriber.decode import decode_notes
+    global CKPT
 
-    r = rolls(audio_path)
+    keep = CKPT
+    if ckpt is not None:
+        CKPT = pathlib.Path(ckpt)
+    try:
+        r = rolls(audio_path, cond=cond)
+    finally:
+        CKPT = keep
     if r is None:
         return []
     on, fr, vl = r
     thr = onset_thr if onset_thr is not None else ONSET_THR
+    fthr = frame_thr if frame_thr is not None else FRAME_THR
     if KEEP_SHORT:
-        notes = decode_notes(on, fr, vl, thr, FRAME_THR, min_frames=1,
+        notes = decode_notes(on, fr, vl, thr, fthr, min_frames=1,
                              min_note_s=0.0, keep_restruck=True)
     else:
-        notes = decode_notes(on, fr, vl, thr, FRAME_THR)
+        notes = decode_notes(on, fr, vl, thr, fthr)
     out = []
     for n in notes:
         p = int(n["pitch"])

@@ -826,6 +826,17 @@ SONG_MODE = 'ml'
 import os as _os
 PIANO_MODE = _os.environ.get("ARRANGEMENT_PIANO_MODE", "bytedance")
 PIANO_GRID_SNAP = _os.environ.get("ARRANGEMENT_PIANO_GRID_SNAP") == "1"
+# Song-to-piano arranger (spectral, difficulty-conditioned).  Set the checkpoint
+# to use it for songs; with ARRANGEMENT_PIANO_ONLY the song skips Demucs and
+# reaches this branch on the original mix.  Threshold provisional until the v1
+# evaluation tunes it on validation songs.
+SONG_ARRANGER = _os.environ.get("ARRANGEMENT_SONG_ARRANGER") or None
+SONG_ARRANGER_LEVEL = int(_os.environ.get("ARRANGEMENT_SONG_LEVEL", "2"))
+SONG_ARRANGER_THR = float(_os.environ.get("ARRANGEMENT_SONG_ARRANGER_THR", "0.6"))
+# Note length: at the transcriber's 0.5 frame threshold v1 arrangements came out
+# about half the length of the human ones (median 0.08-0.17 s vs 0.19-0.24 s on
+# three songs); 0.3 lands near the human lengths.
+SONG_ARRANGER_FRAME_THR = float(_os.environ.get("ARRANGEMENT_SONG_ARRANGER_FRAME_THR", "0.3"))
 
 
 def _song_method(session_dir: Path, meta: Dict) -> str:
@@ -847,6 +858,11 @@ def _song_method(session_dir: Path, meta: Dict) -> str:
     mode = os.environ.get('ARRANGEMENT_SONG_MODE', SONG_MODE).lower()
     if meta.get('separation_skipped') or meta.get('method') == 'raw+madmom':
         return 'of'         # solo piano
+    # Experiment switch: every upload, songs included, goes through the solo
+    # piano transcriber (the spectral model when ARRANGEMENT_PIANO_MODE is
+    # 'spectral'), with no projection and no song-path rules.
+    if os.environ.get('ARRANGEMENT_PIANO_ONLY') == '1':
+        return 'of'
     if mode == 'ml':
         from app.services import ml_transcription
         if ml_transcription.available():
@@ -956,9 +972,24 @@ def _transcribe_fullmix_of(
         if method == 'of' and PIANO_MODE == 'spectral':
             try:
                 from app.services import spectral_transcription
-                if spectral_transcription.available():
+                global _last_pedal, _last_source
+                content = (meta or {}).get("content") or {}
+                if SONG_ARRANGER and content.get("piano_only") is False:
+                    # Tagged spectral too: the corrector's duration head was
+                    # trained on ByteDance output and, untagged, shortened
+                    # every arranged note (2,356 of 2,356 on the first song).
+                    _last_pedal, _last_source = [], "spectral"
+                    # A song, heard by the song-to-piano arranger at the
+                    # requested difficulty (0 beginner, 1 intermediate,
+                    # 2 advanced).  Solo piano stays on the transcriber.
+                    notes = spectral_transcription.transcribe(
+                        audio_path, onset_thr=SONG_ARRANGER_THR,
+                        ckpt=SONG_ARRANGER, cond=SONG_ARRANGER_LEVEL,
+                        frame_thr=SONG_ARRANGER_FRAME_THR)
+                    print(f"[transcription] song-to-piano arranger "
+                          f"(level {SONG_ARRANGER_LEVEL}, thr {SONG_ARRANGER_THR})")
+                elif spectral_transcription.available():
                     notes = spectral_transcription.transcribe(audio_path)
-                    global _last_pedal, _last_source
                     _last_pedal = []        # no pedal head: notes end at key-up
                     _last_source = "spectral"
                     print(f"[transcription] spectral: {len(notes)} notes")

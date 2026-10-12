@@ -37,6 +37,10 @@ def _apply_original_cleanup(session_dir, segment_result):
     # Flight of the Bumblebee (chromatic, no single scale) this cleanup took
     # 137 of 1,569 correctly heard notes out of the Original track.  The
     # guardrails stay for songs, whose notes are approximations.
+    import os
+    if os.environ.get("ARRANGEMENT_PIANO_ONLY") == "1":
+        print("[segment] ORIGINAL cleanup skipped: piano-only experiment")
+        return None
     try:
         with open(session_dir / "components.json") as f:
             if json.load(f).get("method") == "raw+madmom":
