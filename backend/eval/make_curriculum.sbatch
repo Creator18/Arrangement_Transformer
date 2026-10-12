@@ -20,6 +20,7 @@ if [ "$KIND" = vocal ]; then
   python -u eval/make_vocal_clips.py --musdb /scratch/basu.ang/datasets/musdb18hq --out $OUT \
       --windows 6 --shard ${SLURM_ARRAY_TASK_ID}/$N
 else
-  python -u eval/make_curriculum_clips.py --slakh /scratch/basu.ang/datasets/slakh2100_redux/slakh2100_flac_redux \
+  SLAKH=$(dirname "$(find /scratch/basu.ang/datasets/slakh2100_redux -maxdepth 3 -type d -name train | head -1)")
+  python -u eval/make_curriculum_clips.py --slakh "$SLAKH" \
       --out $OUT --stage $STAGE --combos ${COMBOS:-3} --windows ${WINDOWS:-2} --shard ${SLURM_ARRAY_TASK_ID}/$N
 fi
