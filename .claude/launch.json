@@ -1,0 +1,119 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--port",
+        "8000"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-spectral",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-piano-only",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-song2piano",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/s2p_v1/best.pt'; os.environ.setdefault('ARRANGEMENT_SONG_LEVEL','2'); os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-song2piano-v2",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/s2p_v2/best.pt'; os.environ['ARRANGEMENT_SONG_LEVEL']='2'; os.environ['ARRANGEMENT_SONG_ARRANGER_THR']='0.6'; os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-song2piano-v3",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/s2p_v3/best.pt'; os.environ['ARRANGEMENT_SONG_LEVEL']='2'; os.environ['ARRANGEMENT_SONG_ARRANGER_THR']='0.6'; os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-song2piano-slakh",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/s2p_sk/best.pt'; os.environ['ARRANGEMENT_SONG_LEVEL']='2'; os.environ['ARRANGEMENT_SONG_ARRANGER_THR']='0.5'; os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "backend-audio-arranger",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/s2p_v1/best.pt'; os.environ.setdefault('ARRANGEMENT_SONG_LEVEL','2'); os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); os.environ['ARRANGEMENT_SONG_ARRANGER_KIND']='audio_arranger'; import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "frontend",
+      "port": 5173
+    },
+    {
+      "name": "eartest",
+      "runtimeExecutable": "../venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5180"
+      ],
+      "cwd": "backend/eartest",
+      "port": 5180
+    },
+    {
+      "name": "backend-style",
+      "runtimeExecutable": "venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ['ARRANGEMENT_PIANO_MODE']='spectral'; os.environ['ARRANGEMENT_PIANO_ONLY']='1'; os.environ['ARRANGEMENT_SONG_ARRANGER']='app/ml/spectral/checkpoints/style_k4/best.pt'; os.environ.setdefault('ARRANGEMENT_SONG_LEVEL','2'); os.environ.setdefault('ARRANGEMENT_SPECTRAL_ONSET_THR','0.85'); os.environ.setdefault('ARRANGEMENT_STYLE_CODE','0'); import uvicorn; uvicorn.run('app.main:app', port=8000)"
+      ],
+      "cwd": "backend",
+      "port": 8000
+    }
+  ]
+}

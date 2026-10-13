@@ -151,6 +151,40 @@ class StyleV1(nn.Module):
             ons.append(y[0]); frs.append(y[1])
         return torch.stack(ons), torch.stack(frs)
 
+    def one(self, x, cond, k: int):
+        """App inference: onset, frame, velocity logits (B, T, 88) for one style code."""
+        m = self.v1
+        B, _, Fb, T = x.shape
+        s = m.stem(x)
+        Tp = math.ceil(T / PATCH_W) * PATCH_W
+        z = m.patch(F.pad(s, (0, Tp - T, 0, F_PAD - Fb))).permute(0, 2, 3, 1) + m.pitch_emb
+        if m.cond_emb is not None and cond is not None:
+            z = z + m.cond_emb(cond.long())[:, None, None, :]
+        for blk in m.blocks[:-self.sb]:
+            z = blk(z)
+        h = z + self.style[k]
+        for blk in m.blocks[-self.sb:]:
+            h = blk(h)
+        h = m.norm(h).permute(0, 3, 1, 2)
+        u = m.unpatch(h)[:, :, :Fb, :T]
+        y = m.head(m.fuse(torch.cat([u, s], dim=1))).permute(1, 0, 3, 2)
+        return y[0], y[1], y[2]
+
+
+def load_for_app(ck: dict, code: int):
+    """A style checkpoint as a v1-shaped module: forward(x, cond) -> (onset, frame, velocity)."""
+    from .model import SpectralTranscriber
+    net = StyleV1(SpectralTranscriber(**ck["v1_arch"]), ck["K"], ck["style_blocks"], ck["lora"])
+    net.load_state_dict(ck["model"])
+
+    class _One(nn.Module):
+        def __init__(self):
+            super().__init__(); self.net = net
+
+        def forward(self, x, cond=None):
+            return self.net.one(x, cond, code)
+    return _One()
+
 
 def main():
     ap = argparse.ArgumentParser()

@@ -71,7 +71,13 @@ def _load():
     from app.ml.spectral.model import from_checkpoint
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
-    net = from_checkpoint(ck).to(dev).eval()
+    if "K" in ck:                       # style-code model (app/ml/spectral/style_train.py)
+        from app.ml.spectral.style_train import load_for_app
+        code = int(os.environ.get("ARRANGEMENT_STYLE_CODE", "0"))
+        net = load_for_app(ck, code).to(dev).eval()
+        print(f"[spectral] style model: code {code} of {ck['K']}")
+    else:
+        net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()
     fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
     _cache[CKPT] = (net, fe, dev)
