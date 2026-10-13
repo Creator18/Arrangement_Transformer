@@ -171,6 +171,27 @@ class SpectralTranscriber(nn.Module):
         r = self.role_head(h).permute(1, 0, 3, 2)                      # (2, B, T, 88)
         return y[0], y[1], y[2], r[0], r[1]
 
+    @torch.no_grad()
+    def features(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """The trunk's final patch tokens, for a downstream model to listen to.
+
+        (B, 7, 264, T) -> (B, N, ROWS // 2 * d): one vector per 32 ms time patch;
+        the 14 pitch rows are averaged in adjacent pairs (7 register bands), so
+        the features keep WHERE in the register something sounds, compactly.
+        """
+        B, _, Fb, T = x.shape
+        s = self.stem(x)
+        Tp = math.ceil(T / PATCH_W) * PATCH_W
+        z = self.patch(F.pad(s, (0, Tp - T, 0, F_PAD - Fb))).permute(0, 2, 3, 1) + self.pitch_emb
+        if self.cond_emb is not None and cond is not None:
+            z = z + self.cond_emb(cond.long())[:, None, None, :]
+        for blk in self.blocks:
+            z = blk(z)
+        z = self.norm(z)                                               # (B, R, N, d)
+        R = z.shape[1] // 2 * 2
+        z = z[:, :R].reshape(B, R // 2, 2, z.shape[2], z.shape[3]).mean(2)   # (B, R/2, N, d)
+        return z.permute(0, 2, 1, 3).reshape(B, z.shape[2], -1)        # (B, N, R/2 * d)
+
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
 

@@ -17,11 +17,11 @@ from . import tokens as T
 
 class GrammarModel(nn.Module):
     def __init__(self, d: int = 384, enc_layers: int = 4, dec_layers: int = 6, heads: int = 6,
-                 max_len: int = 1024, dropout: float = 0.1):
+                 max_len: int = 1024, dropout: float = 0.1, vocab: int = T.VOCAB):
         super().__init__()
         self.arch = dict(d=d, enc_layers=enc_layers, dec_layers=dec_layers, heads=heads,
-                         max_len=max_len, dropout=dropout)
-        self.emb = nn.Embedding(T.VOCAB, d, padding_idx=T.PAD)
+                         max_len=max_len, dropout=dropout, vocab=vocab)
+        self.emb = nn.Embedding(vocab, d, padding_idx=T.PAD)
         self.pos = nn.Embedding(max_len, d)
         mk = lambda: dict(d_model=d, nhead=heads, dim_feedforward=4 * d, dropout=dropout,
                           batch_first=True, norm_first=True)
@@ -29,7 +29,7 @@ class GrammarModel(nn.Module):
                                              enable_nested_tensor=False)
         self.decoder = nn.TransformerDecoder(nn.TransformerDecoderLayer(**mk()), dec_layers)
         self.norm = nn.LayerNorm(d)
-        self.out = nn.Linear(d, T.VOCAB)
+        self.out = nn.Linear(d, vocab)
 
     def embed(self, x):
         return self.emb(x) + self.pos(torch.arange(x.shape[1], device=x.device))[None]
