@@ -139,13 +139,21 @@ function bottomRoundedPath(x, w, h, r) {
   ].join(' ')
 }
 
+// A pressed key takes the colour of the note landing on it (the roll colours
+// notes by register), with a soft glow in that colour.  Glow and the black
+// keys' cast shadow are CSS drop-shadows, not SVG filters: measured with the
+// roll fps rig, CSS drop-shadow composites cheaply where an SVG filter re-runs
+// every frame.
+const keyGlow = (pitch) => REG_COLOR[classify(pitch)]
+
 function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown }) {
   const pitchRange = midiHi - midiLo + 1
   const totalW     = TIMELINE_W + pitchRange * noteW
-  const WHITE_H    = KEY_H - 1
-  const BLACK_H    = Math.round(KEY_H * 0.6)          // h-3/5
+  const WHITE_H    = KEY_H - 2
+  const BLACK_H    = Math.round(KEY_H * 0.6)          // three-fifths of the height
   const wkw        = (noteW * 12) / 7
-  const radius     = Math.min(6, wkw * 0.25)          // rounded-b-md, scaled for narrow keys
+  const GAP        = Math.max(1, Math.min(2, wkw * 0.08))   // separate keys, as on the reference
+  const radius     = Math.min(6, wkw * 0.22)          // rounded bottoms, scaled for narrow keys
   const labelSize  = Math.max(6, Math.min(10, wkw * 0.42))
   const pressable  = (pitch) => interactive
     ? { onMouseDown: (e) => { e.stopPropagation(); onKeyDown?.(pitch) },
@@ -168,15 +176,17 @@ function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown
         const pitch = midiLo + i
         if (isBlack(pitch)) return null
         const pos    = pitchPos(pitch, midiLo, noteW)
-        const x      = TIMELINE_W + pos.x + 0.5            // half-pixel: crisp 1px border
-        const w      = pos.w - 1
+        const x      = TIMELINE_W + pos.x + GAP / 2 + 0.5     // half-pixel: crisp 1px border
+        const w      = pos.w - GAP - 1
         const active = activeKeys.has(pitch)
         const d      = bottomRoundedPath(x, w, WHITE_H, radius)
+        const g      = keyGlow(pitch)
         return (
           <g key={pitch} {...pressable(pitch)}>
             <path d={d}
-              fill={active ? KEY_COLORS.whitePressed : KEY_COLORS.white}
-              stroke={KEY_COLORS.whiteBorder} strokeWidth={1} />
+              fill={active ? g.fill : KEY_COLORS.white}
+              stroke={active ? g.fill : KEY_COLORS.whiteBorder} strokeWidth={1}
+              style={active ? { filter: `drop-shadow(0 0 6px ${g.glow})` } : undefined} />
             {/* Re-strike flash: keyed on the ONSET so a repeated note mounts a
                 new element and the CSS keyframe restarts. */}
             {active && (
@@ -194,25 +204,42 @@ function KeyboardSVG({ midiLo, midiHi, activeKeys, noteW, interactive, onKeyDown
         )
       })}
 
-      {/* ── Black keys (top layer), three-fifths of the height ── */}
+      {/* ── Black keys (top layer), three-fifths of the height, casting a
+           shadow onto the white keys.  One filter on the whole group, so the
+           shadow costs one composite rather than one per key. ── */}
+      <g style={{ filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.55))' }}>
       {Array.from({ length: pitchRange }, (_, i) => {
         const pitch = midiLo + i
         if (!isBlack(pitch)) return null
         const pos    = pitchPos(pitch, midiLo, noteW)
-        const x      = TIMELINE_W + pos.x
+        const bw     = pos.w * 0.9                        // a touch narrower, as on the reference
+        const x      = TIMELINE_W + pos.x + (pos.w - bw) / 2
         const active = activeKeys.has(pitch)
-        const d      = bottomRoundedPath(x, pos.w, BLACK_H, Math.min(radius, pos.w * 0.3))
+        const d      = bottomRoundedPath(x, bw, BLACK_H, Math.min(radius, bw * 0.35))
+        const g      = keyGlow(pitch)
         return (
           <g key={pitch} {...pressable(pitch)}>
             <path d={d}
-              fill={active ? KEY_COLORS.blackPressed : KEY_COLORS.black}
-              stroke={KEY_COLORS.blackBorder} strokeWidth={1} />
+              fill={active ? g.fill : KEY_COLORS.black}
+              stroke={active ? g.fill : KEY_COLORS.blackBorder} strokeWidth={1}
+              style={active ? { filter: `drop-shadow(0 0 7px ${g.glow})` } : undefined} />
             {active && (
               <path key={activeKeys.get(pitch)} className="key-strike" d={d} fill="#ffffff" />
             )}
           </g>
         )
       })}
+      </g>
+
+      {/* Soft shadow under the keyboard's top edge: the keys sit below the roll */}
+      <rect x={TIMELINE_W} y={0} width={pitchRange * noteW} height={6}
+        fill="url(#key-top-shade)" style={{ pointerEvents: 'none' }} />
+      <defs>
+        <linearGradient id="key-top-shade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#000" stopOpacity="0.45" />
+          <stop offset="100%" stopColor="#000" stopOpacity="0" />
+        </linearGradient>
+      </defs>
 
       {/* ── Middle-C dashed divider ── */}
       {midiLo <= 60 && 60 <= midiHi && (() => {
