@@ -55,15 +55,18 @@ class Pairs(Dataset):
         z = np.load(self.paths[i])
         ys = z["y"].astype(np.float32) / 32767; yp = z["yp"].astype(np.float32) / 32767
         on, fr = z["on"].astype(np.float32), z["fr"].astype(np.float32)
+        ep = self.paths[i].with_suffix(".ears.npy")
+        A = (np.unpackbits(np.load(ep), axis=1)[:, :on.shape[1]].astype(np.float32)
+             if ep.exists() else np.zeros_like(fr) - 1)                # -1: not cached
         if self.n and len(ys) > self.n:
             T = on.shape[1]; nT = S.n_frames(self.n)
             f0 = random.randrange(0, T - nT) if self.random_crop else 0
             a = int(round(f0 / S.FPS * S.SR))
             ys, yp = ys[a:a + self.n], yp[a:a + self.n]
             ys = np.pad(ys, (0, self.n - len(ys))); yp = np.pad(yp, (0, self.n - len(yp)))
-            on, fr = on[:, f0:f0 + nT], fr[:, f0:f0 + nT]
+            on, fr, A = on[:, f0:f0 + nT], fr[:, f0:f0 + nT], A[:, f0:f0 + nT]
         return (torch.from_numpy(ys), torch.from_numpy(yp), torch.from_numpy(on),
-                torch.from_numpy(fr), torch.tensor(int(z["difficulty"])))
+                torch.from_numpy(fr), torch.tensor(int(z["difficulty"])), torch.from_numpy(A))
 
 
 class LoRALinear(nn.Module):
@@ -135,6 +138,7 @@ def main():
     ap.add_argument("--lora", type=int, default=8, help="LoRA rank on frozen v1; 0 = full fine-tune")
     ap.add_argument("--w-feat", type=float, default=0.1); ap.add_argument("--w-notes", type=float, default=1.0)
     ap.add_argument("--w-kda", type=float, default=0.5)
+    ap.add_argument("--init-imaginer", default="", help="stage 2: start from a stage-1 best.pt")
     ap.add_argument("--workers", type=int, default=6); ap.add_argument("--max-minutes", type=float, default=460)
     ap.add_argument("--limit-train", type=int, default=0)
     a = ap.parse_args()
@@ -177,6 +181,10 @@ def main():
         ck = torch.load(last, map_location=dev, weights_only=False)
         net.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
         step, best = ck["step"], ck["best"]; say(f"resumed at step {step}")
+    elif a.init_imaginer:                                    # stage 2 starts from stage 1's best
+        net.load_state_dict(torch.load(os.path.expanduser(a.init_imaginer), map_location=dev,
+                                       weights_only=False)["model"])
+        say(f"initialised from {a.init_imaginer}")
     pw_on, pw_fr = torch.tensor(30.0, device=dev), torch.tensor(2.0, device=dev)
 
     def save(path):
@@ -191,7 +199,7 @@ def main():
         R = {k: ([], []) for k in ("imagined", "v1", "oracle", "song_ears")}
         G = ([], [])
         with torch.no_grad():
-            for ys, yp, on, fr, d in va_dl:
+            for ys, yp, on, fr, d, _ in va_dl:
                 xs, xp = fe(ys.to(dev)), fe(yp.to(dev)); d = d.to(dev)
                 with torch.autocast("cuda", dtype=amp):
                     xh, _ = net(xs, d)
@@ -207,21 +215,25 @@ def main():
 
     net.train(); t_log, acc = time.time(), np.zeros(4); n = 0
     while step < a.total_steps:
-        for ys, yp, on, fr, d in tr_dl:
+        for ys, yp, on, fr, d, Ac in tr_dl:
             with torch.no_grad():
                 xs, xp = fe(ys.to(dev, non_blocking=True)), fe(yp.to(dev, non_blocking=True))
                 onT = on.to(dev).transpose(1, 2); frT = fr.to(dev).transpose(1, 2)
-                with torch.autocast("cuda", dtype=amp):
-                    A = torch.sigmoid(ears(xs)[1].float()) > 0.5          # what the ears hear in the song
+                if bool((Ac[:, 0, 0] >= 0).all()):                        # stage 0 cache
+                    A = Ac.to(dev).transpose(1, 2) > 0.5
+                else:
+                    with torch.autocast("cuda", dtype=amp):
+                        A = torch.sigmoid(ears(xs)[1].float()) > 0.5      # what the ears hear in the song
                 B = frT > 0.5
                 kda_t = torch.stack([A & B, A & ~B, B & ~A]).float()
             d = d.to(dev)
             with torch.autocast("cuda", dtype=amp):
                 xh, kz = net(xs, d)
-                o = ears(xh)
+                o = ears(xh) if a.w_notes else None                      # stage 1: ears out of the loop
             l_feat = F.l1_loss(xh.float(), xp)
-            l_notes = (F.binary_cross_entropy_with_logits(o[0].float(), onT, pos_weight=pw_on)
-                       + F.binary_cross_entropy_with_logits(o[1].float(), frT, pos_weight=pw_fr))
+            l_notes = ((F.binary_cross_entropy_with_logits(o[0].float(), onT, pos_weight=pw_on)
+                        + F.binary_cross_entropy_with_logits(o[1].float(), frT, pos_weight=pw_fr))
+                       if o is not None else torch.zeros((), device=dev))
             l_kda = F.binary_cross_entropy_with_logits(kz.float(), kda_t, pos_weight=pw_fr)
             loss = a.w_feat * l_feat + a.w_notes * l_notes + a.w_kda * l_kda
             opt.zero_grad(set_to_none=True)
