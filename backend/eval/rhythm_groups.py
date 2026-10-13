@@ -354,7 +354,7 @@ def stage_cluster(args):
             if v.sum() == 0:
                 continue                                     # silent accompaniment: no rhythm to group
             by_meter.setdefault(MERGE.get(r["meter"], r["meter"]), []).append((r["source"], r["id"], t, v))
-    report, labels = [], {}
+    report, labels, centroids = [], {}, {}
     for meter, items in sorted(by_meter.items(), key=lambda x: -len(x[1])):
         bpb = items[0][3].shape[0] // (2 * SLOTS)
         X = np.stack([canonical(v, bpb) for *_, v in items]); X /= np.linalg.norm(X, axis=1, keepdims=True)
@@ -388,11 +388,15 @@ def stage_cluster(args):
             report.append(picture(km.cluster_centers_[g] / km.cluster_centers_[g].max(), bpb))
             ex = np.random.default_rng(int(g)).choice(inside, min(3, len(inside)), replace=False)
             report.append("      e.g. " + "; ".join(f"{items[i][0]} {items[i][1]} @ {items[i][2]:.1f}s" for i in ex))
+        for g in range(chosen):
+            centroids[name[g]] = {"meter": meter, "bpb": bpb, "threshold": thr[g],
+                                  "centroid": C[g].tolist()}
         for i, (src, pid, t, _) in enumerate(items):
             labels.setdefault(f"{src}:{pid}", []).append(
                 (t, name[km.labels_[i]] if sim[i] >= thr[km.labels_[i]] else None))
     (out / "groups_report.txt").write_text("\n".join(report))
     (out / "group_labels.json").write_text(json.dumps(labels))
+    (out / "group_centroids.json").write_text(json.dumps(centroids))
     print("\n".join(report))
 
 
