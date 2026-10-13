@@ -178,11 +178,12 @@ def load_for_app(ck: dict, code: int):
     net.load_state_dict(ck["model"])
 
     class _One(nn.Module):
+        """`code` is set per SONG by the caller (one flavour for the whole song)."""
         def __init__(self):
-            super().__init__(); self.net = net
+            super().__init__(); self.net = net; self.code = code; self.K = ck["K"]
 
         def forward(self, x, cond=None):
-            return self.net.one(x, cond, code)
+            return self.net.one(x, cond, self.code)
     return _One()
 
 

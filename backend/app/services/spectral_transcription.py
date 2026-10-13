@@ -73,9 +73,9 @@ def _load():
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
     if "K" in ck:                       # style-code model (app/ml/spectral/style_train.py)
         from app.ml.spectral.style_train import load_for_app
-        code = int(os.environ.get("ARRANGEMENT_STYLE_CODE", "0"))
-        net = load_for_app(ck, code).to(dev).eval()
-        print(f"[spectral] style model: code {code} of {ck['K']}")
+        net = load_for_app(ck, 0).to(dev).eval()
+        print(f"[spectral] style model: {ck['K']} codes, ARRANGEMENT_STYLE_CODE="
+              f"{os.environ.get('ARRANGEMENT_STYLE_CODE', '0')}")
     else:
         net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()
@@ -97,6 +97,14 @@ def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
     from app.ml.spectral import frontend as S
 
     net, fe, dev = _load()
+    if hasattr(net, "code"):            # style model: ONE code for the whole song
+        want = os.environ.get("ARRANGEMENT_STYLE_CODE", "0")
+        if want == "random":
+            import random
+            net.code = random.randrange(net.K)
+        else:
+            net.code = int(want)
+        print(f"[spectral] style code {net.code} of {net.K} for this song")
     y, _ = librosa.load(str(audio_path), sr=S.SR, mono=True)
     if y.size == 0:
         return None
