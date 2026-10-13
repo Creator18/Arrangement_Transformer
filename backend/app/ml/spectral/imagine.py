@@ -14,8 +14,10 @@ piano transcriber (spectral_real, F1 0.955 on real piano) to become notes.
 Losses
   feat   L1(x_hat, x_piano)                    imagine the piano's sound
   notes  BCE(piano_ears(x_hat), arrangement)   ... well enough to be heard right
-  kda    per key and frame, from A = what the piano ears hear in the SONG and
-         B = the arrangement:  kept A&B,  dropped A-B,  added B-A
+  kda    the remainders against v1, per key and frame, from A = v1's notes on the
+         song (eval/cache_song_ears.py) and B = the human arrangement:
+         kept A&B,  v1-human A-B (should drop),  human-v1 B-A (should add).
+         Predicted, never given: no human arrangement exists at test time
 Validation reports note F1 of the imagined piano against the human
 arrangement next to v1 alone (same clips) and the oracle (the real rendered
 arrangement through the piano ears: the ceiling of this design).
