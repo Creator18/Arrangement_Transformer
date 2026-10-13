@@ -2,7 +2,6 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import SonicWaveform from '../components/SonicWaveform'
-import WarpField from '../components/WarpField'
 import BubbleCluster from '../components/BubbleCluster'
 import { DEFAULTS as TONE_DEFAULTS } from '../utils/tonechain'
 
@@ -319,9 +318,7 @@ export default function ResultsPage() {
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex',
                   background: 'var(--ct-ink)', paddingTop: 56 }}>
-      {/* The loading screen keeps the soundwave; the roll gets a warp tunnel lit
-          in the notes' register colours, so the room frames the music. */}
-      <WarpField />
+      <SonicWaveform accent="#a78bfa" progressRef={SCENE_POS} />
 
       {/* ── Sidebar: everything you can switch, nothing you can read ──────
           The old page put the view tabs across the top of a 4xl column and
