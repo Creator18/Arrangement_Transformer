@@ -974,7 +974,10 @@ def _transcribe_fullmix_of(
                 from app.services import spectral_transcription
                 global _last_pedal, _last_source
                 content = (meta or {}).get("content") or {}
-                if SONG_ARRANGER and content.get("piano_only") is False:
+                # ARRANGEMENT_FORCE_SONG=1: every upload is a song (the solo-piano
+                # detector misreads piano-heavy songs — flatness 0.0025 on one)
+                force_song = _os.environ.get("ARRANGEMENT_FORCE_SONG") == "1"
+                if SONG_ARRANGER and (force_song or content.get("piano_only") is False):
                     # Tagged spectral too: the corrector's duration head was
                     # trained on ByteDance output and, untagged, shortened
                     # every arranged note (2,356 of 2,356 on the first song).
