@@ -48,8 +48,8 @@ def load(corpus, split):
 
 
 class Windows(IterableDataset):
-    def __init__(self, songs, seed=0, bars=(4, 12)):
-        self.songs, self.seed, self.bars = songs, seed, bars
+    def __init__(self, songs, seed=0, bars=(4, 12), grid_src=False):
+        self.songs, self.seed, self.bars, self.grid_src = songs, seed, bars, grid_src
 
     def sample(self, rng):
         tok, beats, grid = self.songs[rng.integers(len(self.songs))]
@@ -74,9 +74,12 @@ class Windows(IterableDataset):
         notes, _, _ = T2.decode(clean, beats, list(grid[g0:]))
         if len(notes) == 0:
             return None
+        noisy = T.corrupt(notes.copy(), rng)
+        nb_w = sum(1 for t in clean if t == T2.BAR)
+        if self.grid_src:          # encoder reads the corrupted notes ON the beat grid
+            return T2.encode_plain(noisy, beats, list(grid[g0:g0 + nb_w + 1]))[:MAX_SRC], clean
         t0 = notes[:, 0].min()
-        noisy = notes.copy(); noisy[:, :2] -= t0
-        noisy = T.corrupt(noisy, rng)
+        noisy[:, :2] -= t0
         return T.encode(noisy)[:MAX_SRC], clean
 
     def __iter__(self):
@@ -128,6 +131,7 @@ def main():
     ap.add_argument("--val-every", type=int, default=2500)
     ap.add_argument("--max-minutes", type=float, default=170)
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--grid-src", action="store_true", help="encoder input on the beat grid (tokens2.encode_plain)")
     args = ap.parse_args()
     dev = torch.device("cuda")
     ckdir = pathlib.Path(args.ckpt_dir); ckdir.mkdir(parents=True, exist_ok=True)
@@ -155,9 +159,9 @@ def main():
         net.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
         step, best = ck["step"], ck["best"]; say(f"resumed at step {step}")
     rng = np.random.default_rng(11)
-    vds = Windows(va, seed=5)
+    vds = Windows(va, seed=5, grid_src=args.grid_src)
     va_fixed = [s for s in (vds.sample(rng) for _ in range(700)) if s is not None][:384]
-    dl = DataLoader(Windows(tr), batch_size=args.batch, collate_fn=collate, num_workers=args.workers)
+    dl = DataLoader(Windows(tr, grid_src=args.grid_src), batch_size=args.batch, collate_fn=collate, num_workers=args.workers)
     kinds = {"note": (T.PITCH0, T.DUR0), "chord": (T2.CHORD0, T2.CHORD_NONE + 1), "role": (T2.ROLE0, T2.VOCAB),
              "group": (T2.GROUP0, T2.POS0), "pos": (T2.POS0, T2.CHORD0), "key": (T2.KEY0, T2.SEC0)}
 

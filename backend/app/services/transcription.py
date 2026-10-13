@@ -982,10 +982,15 @@ def _transcribe_fullmix_of(
                     # A song, heard by the song-to-piano arranger at the
                     # requested difficulty (0 beginner, 1 intermediate,
                     # 2 advanced).  Solo piano stays on the transcriber.
-                    notes = spectral_transcription.transcribe(
-                        audio_path, onset_thr=SONG_ARRANGER_THR,
-                        ckpt=SONG_ARRANGER, cond=SONG_ARRANGER_LEVEL,
-                        frame_thr=SONG_ARRANGER_FRAME_THR)
+                    if _os.environ.get("ARRANGEMENT_SONG_ARRANGER_KIND") == "audio_arranger":
+                        # structure-aware: frozen v1 ears + grammar decoder
+                        from app.services import audio_arranger_service
+                        notes = audio_arranger_service.transcribe(audio_path, level=SONG_ARRANGER_LEVEL)
+                    else:
+                        notes = spectral_transcription.transcribe(
+                            audio_path, onset_thr=SONG_ARRANGER_THR,
+                            ckpt=SONG_ARRANGER, cond=SONG_ARRANGER_LEVEL,
+                            frame_thr=SONG_ARRANGER_FRAME_THR)
                     print(f"[transcription] song-to-piano arranger "
                           f"(level {SONG_ARRANGER_LEVEL}, thr {SONG_ARRANGER_THR})")
                 elif spectral_transcription.available():

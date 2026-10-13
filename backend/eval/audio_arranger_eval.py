@@ -39,10 +39,12 @@ def main():
     ap.add_argument("--label", default="aa")
     ap.add_argument("--batch", type=int, default=24)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--grid-src", action="store_true", help="model trained with beat-grid input")
     args = ap.parse_args()
     import torch
     from app.ml.grammar import tokens as T, tokens2 as T2, structure as STc
     from app.ml.grammar.audio_arranger import AudioArranger, LEVEL0, PATCH_S, MAX_AUDIO, MAX_SRC, collate
+    from app.ml.grammar import constrained as CD
 
     dev = torch.device("cuda")
     net = AudioArranger()
@@ -68,11 +70,15 @@ def main():
             t_a, t_b = beats[min(grid[b0], len(beats) - 1)], beats[min(grid[b1], len(beats) - 1)]
             t_b = min(t_b, t_a + MAX_AUDIO * PATCH_S)
             feat = z["feat"][int(t_a / PATCH_S):int(t_b / PATCH_S) + 1][:MAX_AUDIO].astype(np.float32)
-            n = v1[(v1[:, 0] >= t_a) & (v1[:, 0] < t_b)].copy(); n[:, :2] -= t_a
-            src = T.encode(n)[:MAX_SRC] if len(n) else []
+            if args.grid_src:
+                src = T2.encode_plain(v1, beats, list(grid[b0:b1 + 1]))[:MAX_SRC]
+            else:
+                n = v1[(v1[:, 0] >= t_a) & (v1[:, 0] < t_b)].copy(); n[:, :2] -= t_a
+                src = T.encode(n)[:MAX_SRC] if len(n) else []
             if len(feat) == 0:
                 continue
-            jobs.append((sid, w, src, feat, [LEVEL0 + LEVELS.index(sp["difficulty"][sid])], beats, list(grid[b0:])))
+            jobs.append((sid, w, src, feat, [LEVEL0 + LEVELS.index(sp["difficulty"][sid])], beats, list(grid[b0:]),
+                         CD.bar_lengths(grid[b0:], b1 - b0)))
         print(f"  {sid}: {len(grid) - 1} bars from v1's notes ({st.meter}), "
               f"{sum(1 for j in jobs if j[0] == sid)} windows", flush=True)
 
@@ -85,11 +91,13 @@ def main():
         src, aud, alen, _, _ = collate(batch)
         prefix = torch.tensor([[T.BOS] + jobs[i][4] for i in idx], device=dev)
         with torch.autocast("cuda", dtype=torch.float16):
-            gen = net.generate(src.to(dev), aud.to(dev), alen.to(dev), prefix).cpu().numpy()
-        for i, g in zip(idx, gen):
-            toks = [int(x) for x in g if x not in (T.PAD,)]
-            toks = toks[:toks.index(T.EOS)] if T.EOS in toks else toks
-            sid, w, _, _, _, beats, gslice = jobs[i]
+            # bar-constrained: the bar skeleton comes from the beat grid, the
+            # model fills each bar (app/ml/grammar/constrained.py)
+            mem, pad = net.memory(src.to(dev), aud.to(dev), alen.to(dev))
+            step = lambda y: net.grammar.decode(y, mem, pad)[:, -1]
+            gen = CD.generate(step, prefix, [jobs[i][7] for i in idx])
+        for i, toks in zip(idx, gen):
+            sid, w, _, _, _, beats, gslice, _ = jobs[i]
             notes, _, _ = T2.decode(toks, beats, gslice)
             res.setdefault(sid, []).append(notes)
         print(f"   {min(k + args.batch, len(order))}/{len(order)}", flush=True)

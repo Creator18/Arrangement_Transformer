@@ -47,6 +47,7 @@ PATCH_S = 0.032
 FEAT = 1792
 MAX_SRC, MAX_AUDIO, MAX_TGT = 1000, 1000, 950
 LEVELS = ["beginner", "intermediate", "advanced"]
+GRID_SRC = False                    # set by --grid-src
 
 
 class AudioArranger(nn.Module):
@@ -129,10 +130,14 @@ def window(song, rng, bars=(4, 12)):
     z = np.load(song["cache"])
     f0, f1 = int(t_a / PATCH_S), int(t_b / PATCH_S) + 1
     feat = z["feat"][f0:f1][:MAX_AUDIO].astype(np.float32)
-    n = z["notes"]
-    n = n[(n[:, 0] >= t_a) & (n[:, 0] < t_b)].astype(np.float64).copy()
-    n[:, :2] -= t_a
-    src = T.encode(n)[:MAX_SRC] if len(n) else []
+    n = z["notes"].astype(np.float64)
+    nb_w = sum(1 for t in clean if t == T2.BAR)
+    if GRID_SRC:                    # v1's notes on the same bar/beat grid as the target
+        src = T2.encode_plain(n, beats, list(grid[b0:b0 + nb_w + 1]))[:MAX_SRC]
+    else:
+        n = n[(n[:, 0] >= t_a) & (n[:, 0] < t_b)].copy()
+        n[:, :2] -= t_a
+        src = T.encode(n)[:MAX_SRC] if len(n) else []
     return src, feat, [LEVEL0 + song["level"]] + clean
 
 
@@ -182,7 +187,10 @@ def main():
     ap.add_argument("--val-every", type=int, default=2500)
     ap.add_argument("--max-minutes", type=float, default=170)
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--grid-src", action="store_true", help="v1 notes on the beat grid (tokens2.encode_plain)")
     args = ap.parse_args()
+    global GRID_SRC
+    GRID_SRC = args.grid_src
     dev = torch.device("cuda")
     ckdir = pathlib.Path(args.ckpt_dir); ckdir.mkdir(parents=True, exist_ok=True)
     log = open(ckdir / "train.log", "a")

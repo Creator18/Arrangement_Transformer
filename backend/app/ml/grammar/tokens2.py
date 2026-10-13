@@ -140,3 +140,38 @@ def decode(tokens: Sequence[int], beats: np.ndarray, bar_starts: Sequence[int]):
             i += 3; continue
         i += 1
     return np.array(notes, float).reshape(-1, 4), np.array(roles, int), chords
+
+
+def encode_plain(notes: np.ndarray, beats: np.ndarray, bar_starts: Sequence[int]) -> List[int]:
+    """Notes on the bar/beat grid with NO structure: BAR, POS, PITCH, DUR, VEL only.
+
+    The encoder's input.  The generation check showed the decoder losing notes
+    to beat placement (POP909 per-bar pitch F1 0.870 -> 0.893, yet timed F1
+    0.857 -> 0.804) because plain-seconds input made it GUESS the beat grid.
+    Given the grid here, it only decides what to play at each position.
+    `bar_starts`: beat index of each bar start, one more than the bars to encode.
+    """
+    out = []
+    on = notes[:, 0] if len(notes) else np.zeros(0)
+    for b in range(len(bar_starts) - 1):
+        i0, i1 = int(bar_starts[b]), int(bar_starts[b + 1])
+        if i1 >= len(beats):
+            break
+        out.append(BAR)
+        t0, t1 = beats[i0], beats[i1]
+        sel = np.flatnonzero((on >= t0) & (on < t1))
+        ev = []
+        for k in sel:
+            j = min(int(np.searchsorted(beats, on[k], "right")) - 1, i1 - 1)
+            frac = (on[k] - beats[j]) / max(1e-3, beats[j + 1] - beats[j])
+            pos = min((j - i0) * GRID + min(GRID - 1, int(round(frac * GRID))), GRID * MAX_BEATS - 1)
+            s, e, p, v = notes[k]
+            if 21 <= p <= 108:
+                ev.append((pos, int(p), [T.PITCH0 + int(p) - 21, T.DUR0 + T.dur_bin(max(e - s, T.STEP)),
+                                         T.VEL0 + int(np.clip(v, 1, 127)) * T.N_VEL // 128]))
+        last = None
+        for pos, _, toks in sorted(ev, key=lambda x: (x[0], x[1])):
+            if pos != last:
+                out.append(POS0 + pos); last = pos
+            out += toks
+    return out
