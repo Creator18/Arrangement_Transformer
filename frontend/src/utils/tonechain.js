@@ -50,6 +50,7 @@ const RT60 = 2.4
 
 let ctx = null
 const chains = new WeakMap()   // <audio> -> nodes
+const live = new Set()         // every chain, so the visualiser can find the one playing
 
 function makeIR(ac, seconds = RT60) {
   const sr = ac.sampleRate
@@ -108,8 +109,17 @@ export function attach(el) {
     high.connect(dry); dry.connect(ctx.destination)
     high.connect(conv); conv.connect(wet); wet.connect(ctx.destination)
 
-    const chain = { ctx, low, high, wet, dry }
+    // A listening tap for the music-reactive backdrop: it reads the signal and
+    // passes nothing on, so playback is untouched.  After the tone shelves, so
+    // the visuals follow what the listener actually hears.
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 1024
+    analyser.smoothingTimeConstant = 0.75
+    high.connect(analyser)
+
+    const chain = { ctx, low, high, wet, dry, analyser, el, bins: new Uint8Array(analyser.frequencyBinCount) }
     chains.set(el, chain)
+    live.add(chain)
     return chain
   } catch (e) {
     // Leave the element alone; it will play through the default path.
@@ -136,4 +146,26 @@ export function setTone(el, { bassDb, trebleDb, room }) {
 
 export function isAttached(el) {
   return chains.has(el)
+}
+
+
+/**
+ * Bass / mid / treble energy (0..1) of whichever track is playing now, or
+ * null when nothing plays.  Bands: bass < 250 Hz, mid 250-2000 Hz, treble
+ * 2-8 kHz — cheap to compute every animation frame from the analyser's FFT.
+ */
+export function getLevels() {
+  for (const c of live) {
+    if (c.el.paused || c.el.ended) continue
+    c.analyser.getByteFrequencyData(c.bins)
+    const hz = c.ctx.sampleRate / 2 / c.bins.length
+    const band = (lo, hi) => {
+      const a = Math.max(1, Math.floor(lo / hz)), b = Math.min(c.bins.length, Math.ceil(hi / hz))
+      let sum = 0
+      for (let i = a; i < b; i++) sum += c.bins[i]
+      return b > a ? sum / ((b - a) * 255) : 0
+    }
+    return { bass: band(20, 250), mid: band(250, 2000), treble: band(2000, 8000) }
+  }
+  return null
 }
