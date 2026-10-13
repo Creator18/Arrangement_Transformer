@@ -998,6 +998,10 @@ def _transcribe_fullmix_of(
                           f"(level {SONG_ARRANGER_LEVEL}, thr {SONG_ARRANGER_THR})")
                 elif spectral_transcription.available():
                     notes = spectral_transcription.transcribe(audio_path)
+                    if _os.environ.get("ARRANGEMENT_SCALE_FILL") == "1" and notes:
+                        # hold + sliding-window key drop + forward fill (app/services/scale_fill.py)
+                        from app.services import scale_fill as _sf
+                        notes = _sf.apply_to_file(notes, audio_path)
                     _last_pedal = []        # no pedal head: notes end at key-up
                     _last_source = "spectral"
                     print(f"[transcription] spectral: {len(notes)} notes")
