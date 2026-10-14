@@ -4,9 +4,10 @@ Both sides are hums (eval/make_pair_hums.py), so the difference between them
 is arranging, not timbre.
 
 Model
-  trunk    a copy of stage 1 (frozen solo-piano transcriber + its hum LoRA),
-           frozen, with NEW LoRA adapters (--lora) on every block and K style
-           codes added before the last --style-blocks blocks
+  trunk    a copy of stage 1 (hum_s1_scratch: trained from scratch on piano
+           hums), every layer fine-tuned (--lora 0, default; --lora r instead
+           freezes it and adds adapters), K style codes (K=1: the overall
+           version, no styles) added before the last --style-blocks blocks
   edit     x_hat = x_song_hum + edit(h), edit zero-initialised: at step 0 the
            song hum passes through unchanged — everything learned is what to
            keep, drop or add
@@ -55,7 +56,11 @@ RMAX = 4
 
 
 def load_stage1(ck):
-    net = SpectralTranscriber(**ck["arch"]); add_lora(net, ck["lora"]); net.load_state_dict(ck["model"])
+    """Stage-1 model from its checkpoint: from scratch (hum_s1_scratch) or the older LoRA version."""
+    net = SpectralTranscriber(**ck["arch"])
+    if ck.get("lora"):
+        add_lora(net, ck["lora"])
+    net.load_state_dict(ck["model"])
     return net
 
 
@@ -108,7 +113,11 @@ class Units(Dataset):
 class Stage2(nn.Module):
     def __init__(self, trunk, K=4, style_blocks=2, lora_r=8, style_std=0.5):
         super().__init__()
-        add_lora(trunk, lora_r)                                   # freezes stage 1 (+ its LoRA), adds new adapters
+        if lora_r:
+            add_lora(trunk, lora_r)                               # frozen stage 1 + new adapters
+        else:
+            for p in trunk.parameters():                          # full fine-tune: every layer learns
+                p.requires_grad_(True)
         self.t, self.K, self.sb = trunk, K, style_blocks
         d, c = trunk.arch["d"], trunk.arch.get("stem", 32)
         self.style = nn.Parameter(torch.randn(K, d) * style_std)
@@ -155,7 +164,7 @@ def main():
     ap.add_argument("--hums", required=True); ap.add_argument("--units", required=True)
     ap.add_argument("--stage1", required=True); ap.add_argument("--ckpt-dir", required=True)
     ap.add_argument("--K", type=int, default=4); ap.add_argument("--style-blocks", type=int, default=2)
-    ap.add_argument("--lora", type=int, default=8); ap.add_argument("--eps", type=float, default=0.05)
+    ap.add_argument("--lora", type=int, default=0, help="0 = full fine-tune of the stage-1 trunk"); ap.add_argument("--eps", type=float, default=0.05)
     ap.add_argument("--thr", type=float, default=0.8)
     ap.add_argument("--w-feat", type=float, default=0.1); ap.add_argument("--w-kda", type=float, default=0.5)
     ap.add_argument("--units-per-batch", type=int, default=4); ap.add_argument("--crops", type=int, default=1)
@@ -177,7 +186,7 @@ def main():
     for p in reader.parameters():
         p.requires_grad_(False)
     params = [p for p in net.parameters() if p.requires_grad]
-    say(f"stage 2: frozen stage 1 + LoRA r={a.lora}, K={a.K} codes on last {a.style_blocks} blocks, "
+    say(f"stage 2: stage-1 trunk {'+ LoRA r=' + str(a.lora) if a.lora else 'fully fine-tuned'}, K={a.K} codes on last {a.style_blocks} blocks, "
         f"reader thr {a.thr}; trainable {sum(p.numel() for p in params) / 1e3:.0f}k")
 
     U = json.loads(pathlib.Path(a.units).read_text())
@@ -226,7 +235,7 @@ def main():
     def save(path):
         tmp = path.with_suffix(".tmp")
         torch.save({"model": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(), "step": step,
-                    "best": best, "stage1_arch": ck1["arch"], "stage1_lora": ck1["lora"], "K": a.K,
+                    "best": best, "stage1_arch": ck1["arch"], "stage1_lora": ck1.get("lora", 0), "K": a.K,
                     "style_blocks": a.style_blocks, "lora": a.lora, "thr": a.thr,
                     "fe_mu": fe.mu.cpu(), "fe_sd": fe.sd.cpu(), "args": vars(a)}, tmp)
         tmp.replace(path)
