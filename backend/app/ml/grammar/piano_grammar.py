@@ -1,6 +1,10 @@
 """Piano grammar three ways: from the NOTES, from the SOUND, and the two joined by cross-attention.
 
-The user's experiment.  On rendered POP909 piano (eval/render_pop909.py, labels
+The user's experiment, in OVERLAPPING OCTAVE WINDOWS: every token is one octave
+(12 keys / 36 pitch bins) x 64 ms, windows sliding by half an octave — 14 across
+the keyboard, exactly the solo-piano transcriber's pitch patches — so notes,
+sound and labels all sit on the same small bands and stay consistent.
+On rendered POP909 piano (eval/render_pop909.py, labels
 exact; human chord/melody/key labels from eval/pop909_labels.py):
 
   notes grammar   a transformer reads the piano roll (onset + frame, 88 keys) in
@@ -63,58 +67,86 @@ class Clips(Dataset):
         return torch.from_numpy(y), torch.from_numpy(roll)
 
 
-def tokens_notes(roll):                      # (B, 2, 88, T) -> (B, N, 2*88*TOK)
+BANDS = 14              # octave windows: keys 6r .. 6r+11 (last one 76..87), bins 18r .. 18r+35
+KEY0 = [min(6 * r, 76) for r in range(BANDS)]
+DN = 2 * 12 * TOK       # notes token: onset + frame, 12 keys, 4 frames
+DS = (len(S.HARMONICS) + 1) * 36 * TOK      # sound token: 7 channels, 36 bins, 4 frames
+
+
+def tokens_notes(roll):                      # (B, 2, 88, T) -> (B, BANDS, N, DN)
     B, C, K, T = roll.shape
-    return roll.reshape(B, C, K, T // TOK, TOK).permute(0, 3, 1, 2, 4).reshape(B, T // TOK, -1)
+    t = torch.stack([roll[:, :, k:k + 12] for k in KEY0], 1)                    # (B, R, 2, 12, T)
+    return t.reshape(B, BANDS, C, 12, T // TOK, TOK).permute(0, 1, 4, 2, 3, 5).reshape(B, BANDS, T // TOK, -1)
 
 
-def tokens_sound(feat):                      # (B, 7, 264, T) -> (B, N, 7*264*TOK)
+def tokens_sound(feat):                      # (B, 7, 264, T) -> (B, BANDS, N, DS)
     B, C, K, T = feat.shape
     T = T // TOK * TOK
-    return feat[..., :T].reshape(B, C, K, T // TOK, TOK).permute(0, 3, 1, 2, 4).reshape(B, T // TOK, -1)
+    f = F.pad(feat[..., :T], (0, 0, 0, 3 * KEY0[-1] + 36 - K))
+    t = torch.stack([f[:, :, 3 * k:3 * k + 36] for k in KEY0], 1)               # (B, R, 7, 36, T)
+    return t.reshape(B, BANDS, C, 36, T // TOK, TOK).permute(0, 1, 4, 2, 3, 5).reshape(B, BANDS, T // TOK, -1)
+
+
+from app.ml.spectral.model import Block as _Block, ROWS as _ROWS  # noqa: E402
+assert _ROWS == BANDS
 
 
 class Encoder(nn.Module):
-    """Token embedding + transformer; masked tokens are replaced by a learned [MASK]."""
+    """Octave-window tokens -> time attention within each window, then attention across windows
+    (the transcriber's Block).  Masked cells are replaced by a learned [MASK]."""
 
-    def __init__(self, din, d=256, depth=6, heads=4, n=CROP // TOK):
+    def __init__(self, din, d=256, depth=6, heads=4):
         super().__init__()
         self.inp = nn.Sequential(nn.Linear(din, d), nn.GELU(), nn.Linear(d, d))
-        self.mask = nn.Parameter(torch.zeros(d)); self.pos = nn.Parameter(torch.randn(1, n, d) * 0.02)
-        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True)
-        self.tf = nn.TransformerEncoder(layer, depth); self.norm = nn.LayerNorm(d)
+        self.mask = nn.Parameter(torch.zeros(d)); self.band = nn.Parameter(torch.randn(1, BANDS, 1, d) * 0.02)
+        self.blocks = nn.ModuleList(_Block(d, heads) for _ in range(depth)); self.norm = nn.LayerNorm(d)
 
-    def forward(self, x, m=None):            # x (B, N, din), m (B, N) bool = masked
+    def forward(self, x, m=None):            # x (B, R, N, din), m (B, R, N) bool = masked
         h = self.inp(x)
         if m is not None:
             h = torch.where(m[..., None], self.mask.to(h.dtype), h)
-        return self.norm(self.tf(h + self.pos[:, : h.shape[1]]))
+        h = h + self.band
+        for b in self.blocks:
+            h = b(h)
+        return self.norm(h)
 
 
 class Cross(nn.Module):
-    """Decoder layers whose queries are one modality (fully masked) and keys/values the other's encoding."""
+    """Translate one modality into the other: query cells (no input) attend, per octave window,
+    to the other modality's encoding of that window and its two neighbours, then self-attend."""
 
-    def __init__(self, d=256, depth=3, heads=4, dout=1, n=CROP // TOK):
+    def __init__(self, d=256, depth=3, heads=4, dout=1):
         super().__init__()
-        self.q = nn.Parameter(torch.zeros(1, n, d)); nn.init.normal_(self.q, std=0.02)
-        layer = nn.TransformerDecoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True)
-        self.dec = nn.TransformerDecoder(layer, depth); self.head = nn.Linear(d, dout)
+        self.q = nn.Parameter(torch.randn(1, BANDS, 1, d) * 0.02); self.t = nn.Parameter(torch.randn(1, 1, 512, d) * 0.02)
+        self.att = nn.ModuleList(nn.MultiheadAttention(d, heads, batch_first=True) for _ in range(depth))
+        self.n1 = nn.ModuleList(nn.LayerNorm(d) for _ in range(depth))
+        self.blocks = nn.ModuleList(_Block(d, heads) for _ in range(depth)); self.head = nn.Linear(d, dout)
 
-    def forward(self, memory):
-        return self.head(self.dec(self.q.expand(memory.shape[0], -1, -1), memory))
+    def forward(self, mem):                  # mem (B, R, N, d) -> (B, R, N, dout)
+        B, R, N, d = mem.shape
+        h = (self.q + self.t[:, :, :N]).expand(B, R, N, d)
+        pad = F.pad(mem, (0, 0, 0, 0, 1, 1))                                     # neighbours of each window
+        kv = torch.cat([pad[:, :-2], pad[:, 1:-1], pad[:, 2:]], 2).reshape(B * R, 3 * N, d)
+        for att, n1, blk in zip(self.att, self.n1, self.blocks):
+            q = n1(h).reshape(B * R, N, d)
+            h = h + att(q, kv, kv, need_weights=False)[0].view(B, R, N, d)
+            h = blk(h)
+        return self.head(h)
 
 
-def span_mask(B, N, frac=0.3, span=4, dev="cuda"):
-    m = torch.zeros(B, N, dtype=torch.bool, device=dev)
-    k = max(1, int(N * frac / span))
+def span_mask(B, R, N, frac=0.3, span=4, dev="cuda"):
+    """Mask ~frac of the octave-window x time cells, in runs of `span` tokens within a window."""
+    m = torch.zeros(B, R, N, dtype=torch.bool, device=dev)
+    k = max(1, int(R * N * frac / span))
     for b in range(B):
-        for s in random.sample(range(0, N - span), k):
-            m[b, s:s + span] = True
+        rs = np.random.randint(0, R, k); ts = np.random.randint(0, N - span, k)
+        for r, t in zip(rs, ts):
+            m[b, r, t:t + span] = True
     return m
 
 
 def notes_loss(pred, roll_tok, m=None):      # BCE on the roll tokens (onsets weighted, they are rare)
-    w = torch.ones_like(roll_tok); w[..., : 88 * TOK] = 10.0
+    w = torch.ones_like(roll_tok); w[..., : 12 * TOK] = 10.0
     l = F.binary_cross_entropy_with_logits(pred, roll_tok, weight=w, reduction="none").mean(-1)
     return (l * m).sum() / m.sum().clamp(min=1) if m is not None else l.mean()
 
@@ -125,7 +157,7 @@ def sound_loss(pred, feat_tok, m=None):
 
 
 def frame_f1(pred_logit, roll_tok):
-    p = torch.sigmoid(pred_logit[..., 88 * TOK:]) > 0.5; g = roll_tok[..., 88 * TOK:] > 0.5
+    p = torch.sigmoid(pred_logit[..., 12 * TOK:]) > 0.5; g = roll_tok[..., 12 * TOK:] > 0.5
     tp = (p & g).sum().item(); return 2 * tp / max(1, p.sum().item() + g.sum().item())
 
 
@@ -145,11 +177,10 @@ def main():
     fe = S.SpectralFrontend().to(dev).eval(); fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
     clip = lambda s: sorted(p for p in (pathlib.Path(a.clips) / s).glob("pop*_[0-9][0-9][0-9].npz"))
     tr, va = clip("train")[: a.limit or None], clip("validation")[: 300 if not a.limit else 8]
-    say(f"piano grammar: {len(tr)} train / {len(va)} validation POP909 clips (8 s crops, 64 ms tokens)")
+    say(f"piano grammar: {len(tr)} train / {len(va)} validation POP909 clips (8 s crops; tokens = octave window x 64 ms, {BANDS} windows)")
     dl = DataLoader(Clips(tr), batch_size=a.batch, shuffle=True, drop_last=True, num_workers=a.workers,
                     persistent_workers=a.workers > 0)
     vdl = DataLoader(Clips(va, train=False), batch_size=a.batch, num_workers=a.workers)
-    DN, DS = 2 * 88 * TOK, (len(S.HARMONICS) + 1) * S.N_BINS * TOK
 
     def batches():
         while True:
@@ -181,7 +212,7 @@ def main():
         sc = sched(opt, a.grammar_steps); curve = []
         for step in range(1, a.grammar_steps + 1):
             tn, ts = prep(*next(gen)); x = tn if kind == "notes" else ts
-            m = span_mask(*x.shape[:2], dev=dev)
+            m = span_mask(*x.shape[:3], dev=dev)
             with torch.autocast("cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                 pred = head(enc(x, m))
             loss = notes_loss(pred.float(), x, m) if kind == "notes" else sound_loss(pred.float(), x, m)
@@ -192,8 +223,8 @@ def main():
                 with torch.no_grad():
                     for y, roll in vdl:
                         tn, ts = prep(y.to(dev), roll.to(dev)); x = tn if kind == "notes" else ts
-                        g = torch.Generator(device="cpu").manual_seed(1); random.seed(1)
-                        m = span_mask(*x.shape[:2], dev=dev); p = head(enc(x, m)).float()
+                        np.random.seed(1)
+                        m = span_mask(*x.shape[:3], dev=dev); p = head(enc(x, m)).float()
                         vl.append(float(notes_loss(p, x, m) if kind == "notes" else sound_loss(p, x, m)))
                 enc.train(); curve.append((step, float(np.mean(vl))))
                 say(f"  {kind} grammar step {step}: masked fill-in loss (val) {np.mean(vl):.4f}")
