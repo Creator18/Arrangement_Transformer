@@ -79,6 +79,8 @@ class LoRALinear(nn.Module):
         self.base = base
         for p in base.parameters():
             p.requires_grad_(False)
+        # stackable: a LoRALinear can wrap another (stage 2 adapts stage 1, itself adapted)
+        self.in_features, self.out_features = base.in_features, base.out_features
         self.A = nn.Parameter(torch.randn(r, base.in_features) / math.sqrt(base.in_features))
         self.B = nn.Parameter(torch.zeros(base.out_features, r))
         self.scale = alpha / r
