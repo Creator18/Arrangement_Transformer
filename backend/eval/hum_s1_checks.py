@@ -82,10 +82,10 @@ def score(a):
     z = np.load(pathlib.Path(a.out) / "rolls.npz")
     names = list(z["names"]) if "names" in z.files else []
     groups = {"all": np.arange(len(z["gt_on"]))}
-    for tag in ("mae", "m2m"):
+    for tag, label in (("mae", "classical"), ("m2m", "pop arrangements"), ("pop", "POP909")):
         g = np.array([i for i, n in enumerate(names) if str(n).startswith(tag + "_")])
         if len(g):
-            groups[{"mae": "classical", "m2m": "pop arrangements"}[tag]] = g
+            groups[label] = g
     for gname, gi in groups.items():
         print(f"===== {gname}: {len(gi)} clips =====")
         _score(z, gi, a)
