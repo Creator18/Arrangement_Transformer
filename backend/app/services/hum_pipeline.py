@@ -13,6 +13,8 @@
 Nothing is snapped or cleaned between the steps.  The hums are saved in the
 session folder (song_hum.wav, piano_hum.wav) so they can be heard.
 
+ARRANGEMENT_HUM_DIRECT=1 skips steps 2-4: the reader turns the song hum itself into notes.
+
 Selected by ARRANGEMENT_SONG_ARRANGER_KIND=hum; checkpoints from
 ARRANGEMENT_HUM2HUM (stage 2) and ARRANGEMENT_HUM_READER (stage 1), reader
 onset threshold ARRANGEMENT_HUM_READER_THR (0.8: where stage 1 reports about
@@ -32,6 +34,9 @@ CK = ROOT / "app" / "ml" / "spectral" / "checkpoints"
 HUM2HUM = pathlib.Path(os.environ.get("ARRANGEMENT_HUM2HUM", CK / "hum2hum" / "best.pt"))
 READER = pathlib.Path(os.environ.get("ARRANGEMENT_HUM_READER", CK / "hum_s1_scratch" / "best.pt"))
 READER_THR = float(os.environ.get("ARRANGEMENT_HUM_READER_THR", "0.8"))
+# ARRANGEMENT_HUM_DIRECT=1: skip stage 2 — the reader turns the SONG hum straight into notes
+DIRECT = os.environ.get("ARRANGEMENT_HUM_DIRECT") == "1"
+SEG_S = 20.0                    # hums are built per 20 s window, normalised per window, as in training
 WIN = 1723                      # frames per stage-2 window: 20 s at 22.05 kHz / 256, as trained
 
 _cache: Dict[str, Any] = {}
@@ -69,10 +74,22 @@ def transcribe(audio_path: pathlib.Path) -> List[Dict[str, Any]]:
     tmp = out / "_hum_in.wav"; sf.write(tmp, y22, 22050)
     sal = inference.run_inference(tmp, inference.Model(ICASSP_2022_MODEL_PATH))["contour"]
     tmp.unlink(missing_ok=True)
-    n24 = int(round(len(y22) * S.SR / 22050))
-    song_hum = hum_audio(y22, sal, S.SR, n24)                                   # 1. song hum (24 kHz)
+    # 1. song hum (24 kHz), window by window exactly as the training hums were made: each
+    #    20 s window's loudness and peak are normalised on their own (a whole-song hum
+    #    stretches the scale over minutes and quiet sections fall below anything trained on)
+    fps = 22050 / 256
+    parts = []
+    for i0 in range(0, len(y22), int(SEG_S * 22050)):
+        seg = y22[i0:i0 + int(SEG_S * 22050)]
+        f0, f1 = int(round(i0 / 256)), int(round((i0 + len(seg)) / 256)) + 1
+        parts.append(hum_audio(seg, sal[f0:f1], S.SR, int(round(len(seg) * S.SR / 22050))))
+    song_hum = np.concatenate(parts)
     sf.write(out / "song_hum.wav", song_hum, S.SR)
-    A = hum_map(song_hum)                                                       # 2. (264, T)
+    if DIRECT:                                                                  # song hum -> reader -> notes
+        notes = ST.transcribe(out / "song_hum.wav", onset_thr=READER_THR, ckpt=READER, frame_thr=0.5)
+        print(f"[hum] DIRECT: song -> song hum -> {len(notes)} notes (reader thr {READER_THR}, no stage 2)")
+        return notes
+    A = np.concatenate([hum_map(p) for p in parts], axis=1)                     # 2. (264, T), per window
     s1, s2, dev = _stage2()
     P = np.zeros_like(A, dtype=np.float32)
     with torch.no_grad():                                                       # 3. stage 2, 20 s windows
