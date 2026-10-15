@@ -4,7 +4,10 @@
 cd ~/arrangement_transformer/backend
 module load miniconda3/25.9.1; source activate ~/envs/arr
 S=/scratch/basu.ang; C=~/arrangement_transformer/checkpoints; L=~/arrangement_transformer/logs
-while squeue -u $USER -h -n ft-vocal,ft-vocal-fast | grep -q .; do sleep 120; done
+# wait while the vocal fine-tune is running anywhere or waiting for any GPU; its leftover
+# faster-GPU requests (still queued after it finishes) are cancelled rather than waited on
+while squeue -u $USER -h -n ft-vocal,ft-vocal-fast -t R | grep -q . || squeue -u $USER -h -n ft-vocal -t PD | grep -q .; do sleep 120; done
+for j in $(squeue -u $USER -h -n ft-vocal-fast -t PD -o %i); do scancel $j; done
 python -u eval/prep_ft_mix.py --new $S/arr_tone,$S/arr_vocal --old $S/arr_render --out $S/ft_tone --old-frac 0.33
 for m in lora_stem full; do
   bash eval/gpu_train.sh launch ft-$m $C/arr_tone_$m $L python -u -m app.ml.spectral.ft_aux --data $S/ft_tone \
