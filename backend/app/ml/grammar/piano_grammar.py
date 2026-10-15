@@ -145,9 +145,12 @@ def span_mask(B, R, N, frac=0.3, span=4, dev="cuda"):
     return m
 
 
-def notes_loss(pred, roll_tok, m=None):      # BCE on the roll tokens (onsets weighted, they are rare)
-    w = torch.ones_like(roll_tok); w[..., : 12 * TOK] = 10.0
-    l = F.binary_cross_entropy_with_logits(pred, roll_tok, weight=w, reduction="none").mean(-1)
+def notes_loss(pred, roll_tok, m=None):
+    """BCE on the roll tokens.  Piano rolls are mostly empty, so plain BCE is minimised by
+    predicting nothing (the first cross run did: sound->notes frame F1 ~0.10 for every
+    variant).  Sounding keys weigh 5x, onsets 20x."""
+    pw = torch.ones_like(roll_tok[0, 0, 0]); pw[: 12 * TOK] = 20.0; pw[12 * TOK:] = 5.0
+    l = F.binary_cross_entropy_with_logits(pred, roll_tok, pos_weight=pw, reduction="none").mean(-1)
     return (l * m).sum() / m.sum().clamp(min=1) if m is not None else l.mean()
 
 
@@ -156,16 +159,22 @@ def sound_loss(pred, feat_tok, m=None):
     return (l * m).sum() / m.sum().clamp(min=1) if m is not None else l.mean()
 
 
-def frame_f1(pred_logit, roll_tok):
-    p = torch.sigmoid(pred_logit[..., 12 * TOK:]) > 0.5; g = roll_tok[..., 12 * TOK:] > 0.5
-    tp = (p & g).sum().item(); return 2 * tp / max(1, p.sum().item() + g.sum().item())
+def frame_counts(pred_logit, roll_tok, thrs=(0.3, 0.5, 0.7, 0.8, 0.9)):
+    """(tp, n_pred, n_true) of sounding keys at each threshold — F1 is reported at the best one."""
+    p = torch.sigmoid(pred_logit[..., 12 * TOK:]); g = roll_tok[..., 12 * TOK:] > 0.5
+    return np.array([[((p > t) & g).sum().item(), (p > t).sum().item(), g.sum().item()] for t in thrs])
+
+
+def best_f1(c, thrs=(0.3, 0.5, 0.7, 0.8, 0.9)):
+    f = 2 * c[:, 0] / np.maximum(1, c[:, 1] + c[:, 2])
+    return float(f.max()), thrs[int(f.argmax())]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clips", required=True); ap.add_argument("--fe", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--grammar-steps", type=int, default=8000); ap.add_argument("--cross-steps", type=int, default=4000)
+    ap.add_argument("--grammar-steps", type=int, default=8000); ap.add_argument("--cross-steps", type=int, default=3000)
     ap.add_argument("--batch", type=int, default=32); ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--eval-every", type=int, default=500); ap.add_argument("--workers", type=int, default=7)
     ap.add_argument("--limit", type=int, default=0)
@@ -255,15 +264,16 @@ def main():
             if step % a.eval_every == 0:
                 for mdl in (en, es, s2n, n2s):
                     mdl.eval()
-                f1s, sl = [], []
+                cnt, sl = 0, []
                 with torch.no_grad():
                     for y, roll in vdl:
                         tn, ts = prep(y.to(dev), roll.to(dev))
-                        f1s.append(frame_f1(s2n(es(ts)).float(), tn)); sl.append(float(sound_loss(n2s(en(tn)).float(), ts)))
+                        cnt = cnt + frame_counts(s2n(es(ts)).float(), tn); sl.append(float(sound_loss(n2s(en(tn)).float(), ts)))
+                f1, thr = best_f1(cnt); f1s = [f1]
                 for mdl in (en, es, s2n, n2s):
                     mdl.train(not frozen if mdl in (en, es) else True)
                 curve.append((step, float(np.mean(f1s)), float(np.mean(sl))))
-                say(f"  cross {variant} step {step}: sound->notes frame F1 {np.mean(f1s):.3f}  notes->sound L1 {np.mean(sl):.4f}")
+                say(f"  cross {variant} step {step}: sound->notes frame F1 {f1:.3f} (thr {thr})  notes->sound L1 {np.mean(sl):.4f}")
         results[f"cross_{variant}"] = curve; save_results()
     say("done: " + json.dumps({k: (v[-1] if isinstance(v, list) and v else v) for k, v in results.items()}))
 
