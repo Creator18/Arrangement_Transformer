@@ -425,6 +425,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--vocal-p", type=float, default=0.0, help="share of multi renders whose melody is sung")
     ap.add_argument("--multi-only", action="store_true", help="no piano renders (a fine-tuning batch)")
+    ap.add_argument("--reverse", action="store_true", help="walk the shard from its end (a helper job meets the main one midway)")
     ap.add_argument("--tag", default="r", help="render-name prefix, so a new batch never overwrites the old")
     a = ap.parse_args()
     import pretty_midi
@@ -440,7 +441,8 @@ def main():
     si, sn = (int(v) for v in a.shard.split("/"))
     T = S.n_frames(int(SECONDS * S.SR))
     done = 0
-    for jx, (src, sid, split, path) in list(enumerate(jobs))[si::sn][: a.limit or None]:
+    mine = list(enumerate(jobs))[si::sn][: a.limit or None]
+    for jx, (src, sid, split, path) in (mine[::-1] if a.reverse else mine):
         out = pathlib.Path(a.out) / split; out.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(abs(hash((src, sid))) % 2 ** 32)
         notes, roles, beats, flags = load_pop909(path) if src == "pop" else load_m2m(path)
