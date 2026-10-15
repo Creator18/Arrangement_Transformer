@@ -178,6 +178,7 @@ def main():
     ap.add_argument("--batch", type=int, default=32); ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--eval-every", type=int, default=500); ap.add_argument("--workers", type=int, default=7)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--grammars-only", action="store_true", help="train the two grammars, skip cross-attention")
     a = ap.parse_args()
     out = pathlib.Path(a.out); out.mkdir(parents=True, exist_ok=True)
     from app.ml.spectral.train import log_to
@@ -240,6 +241,8 @@ def main():
         torch.save({"enc": enc.state_dict(), "head": head.state_dict(), "din": DN if kind == "notes" else DS}, path)
         results[f"{kind}_grammar_curve"] = curve; save_results()
 
+    if a.grammars_only:
+        say("grammars only: done"); return
     # ---- 3: cross-attention translation, three variants ----
     for variant in ("pretrained", "random", "scratch"):
         if f"cross_{variant}" in results:
