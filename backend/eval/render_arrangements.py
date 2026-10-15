@@ -6,22 +6,23 @@ Music2MIDI human arrangements), rendered whole and cut into 20 s windows:
   >= 2 pure PIANO renders     each through a different sampled piano (SFZ, as the MAESTRO set)
   N  MULTI-INSTRUMENT renders  General MIDI soundfont through FluidSynth, each with random settings:
 
-    instruments    1-2 up to a full band (--max-inst)
-    swap rate      never / per section (8 bars) / every 2-4 bars
-    articulation   per voice and passage, from the piano's own playing: notes with clear
-                   gaps -> plucked / staccato instruments (guitar chugs, pizzicato, keys),
-                   kept short; connected, legato notes -> continuous instruments (strings,
-                   voice, pads, winds, organ) flowing note to note, sometimes with slides
-                   and vibrato
-    layering       level 0 none .. 3 heavy, each consistent (fixed for the section) or random
-                   (toggling bar to bar):
-                     chord split   notes of one chord on different instruments
-                     unison        the same note on 2+ instruments, each its own volume and
-                                   brightness (bass/treble shaping)
-                     extra parts   NOT in the target: melody octave doubling, a pad holding
-                                   the chord, chord arpeggios / strums, a line under the melody
-    drums          sometimes, from the beat grid (kick, backbeat snare, 8th / 16th hats, fills)
-    mix            per-instrument volume, pan, reverb
+    COVERAGE       every combination of the settings below (252) is used in turn across the
+                   dataset (a fixed shuffled order) — none is left to chance
+    instruments    1 .. 6, chosen freely (any instrument for any role; bass from bass-range voices)
+    swap rate      never / per 8-bar phrase / every 2-4 bars, aligned to downbeats
+    articulation   only when the chosen instrument suits the passage: a continuous instrument
+                   (strings, voice, pad, winds, organ) on connected notes lets them flow; a plucked
+                   or staccato one (guitar, keys, mallets, pizzicato) on gapped notes keeps them
+                   short; any other pairing plays the notes as written
+    pitch          never altered: no pitch bend and no vibrato (modulation held at 0)
+    layering       level 0 none .. 3 heavy, consistent or random (toggling bar to bar):
+                     chord split   the notes of one chord on different instruments (any role)
+                     unison        the same note on 2+ instruments
+                     extra parts   NOT in the target: melody octave doubling, an in-chord line
+                                   under the melody, a pad holding the chord, arpeggios / strums
+    stems          every instrument renders as its own stem with its own volume and bass /
+                   treble EQ (shelving +-9 dB at 200 Hz / 3 kHz), then they are mixed
+    drums          on or off by the combination, from the beat grid (kick, backbeat, hats, fills)
 
 The label of every render is only the arrangement's notes (onset / frame rolls,
 velocity), so audio of any orchestration points at one answer.
@@ -75,8 +76,9 @@ def load_pop909(d: pathlib.Path):
     notes, roles = np.array(rows, float), np.array(roles)
     o = np.argsort(notes[:, 0], kind="stable"); notes, roles = notes[o], roles[o]
     roles = mark_bass(notes, roles)
-    beats = np.array([float(l.split()[0]) for l in (d / "beat_midi.txt").read_text().splitlines() if l.strip()])
-    return notes, roles, beats
+    rows = [l.split() for l in (d / "beat_midi.txt").read_text().splitlines() if l.strip()]
+    beats = np.array([float(r[0]) for r in rows]); flags = np.array([float(r[2]) if len(r) > 2 else 0 for r in rows])
+    return notes, roles, beats, flags
 
 
 def mark_bass(notes, roles):
@@ -102,7 +104,7 @@ def load_m2m(path: pathlib.Path):
             roles[j] = 0
     roles = mark_bass(notes, roles)
     beats = estimate_beats(notes)
-    return notes, roles, beats
+    return notes, roles, beats, None
 
 
 def estimate_beats(notes):
@@ -132,175 +134,201 @@ def rolls(notes, t0, T, fps):
     return on, fr, vel
 
 
-# ---------------------------------------------------------------- multi-instrument plan
+# ---------------------------------------------------------------- multi-instrument renders
+CONT_PROGS = {p for v in CONTINUOUS.values() for p in v} | set(BASS_CONT)
+PLUCK_PROGS = {p for v in PLUCKED.values() for p in v} | set(BASS_PLUCK)
+
+
+def combos():
+    """Every combination of the render settings, in a fixed shuffled order.  Renders take them in
+    turn across the whole dataset, so every combination is used evenly — nothing is left to chance."""
+    out = []
+    for n in range(1, 7):
+        for swap in ("never", "section", "bars"):
+            for layer in range(4):
+                for style in (("consistent",) if layer == 0 else ("consistent", "random")):
+                    for drums in (False, True):
+                        out.append(dict(instruments=n, swap=swap, layering=layer, layering_style=style, drums=drums))
+    random.Random(0).shuffle(out)
+    return out
+
+
+COMBOS = combos()
+
+
 def articulation(notes, roles):
-    """Per note: True = connected / legato (next note of the same voice starts as this one ends)."""
+    """Per note: True = connected / legato (the next note of the same voice starts as this one ends)."""
     leg = np.zeros(len(notes), bool)
     for r in (0, 1, 2):
         ix = np.flatnonzero(roles == r)
-        for a, b in zip(ix[:-1], ix[1:]):
-            ioi = notes[b, 0] - notes[a, 0]
-            if ioi <= 0.03:
-                continue
-            gap = notes[b, 0] - notes[a, 1]
-            leg[a] = gap / ioi < 0.2
+        for x, y in zip(ix[:-1], ix[1:]):
+            ioi = notes[y, 0] - notes[x, 0]
+            if ioi > 0.03:
+                leg[x] = (notes[y, 0] - notes[x, 1]) / ioi < 0.2
     return leg
 
 
-def plan_render(notes, roles, beats, rng):
-    """Random settings for one multi-instrument render -> list of (channel events) and its description."""
-    n_inst = int(rng.choice([1, 2, 3, 4, 5, 6], p=[.12, .2, .22, .2, .14, .12]))
-    swap = rng.choice(["never", "section", "bars"], p=[.35, .4, .25])
-    layer = int(rng.choice([0, 1, 2, 3], p=[.25, .3, .25, .2])); layer_random = bool(rng.random() < .5)
-    drums = bool(rng.random() < .6)
-    bar = 4 * float(np.median(np.diff(beats))) if len(beats) > 4 else 2.0
-    seg_len = {"never": 1e9, "section": 8 * bar, "bars": float(rng.integers(2, 5)) * bar}[swap]
-    leg = articulation(notes, roles)
-    desc = dict(instruments=n_inst, swap=str(swap), layering=layer, layering_random=layer_random, drums=drums)
-    return dict(n_inst=n_inst, seg_len=seg_len, layer=layer, layer_random=layer_random, drums=drums, bar=bar, leg=leg), desc
+def downbeats(beats, flags=None):
+    if flags is not None and len(flags) == len(beats) and flags.sum() > 2:
+        return beats[flags > 0]
+    return beats[::4]
 
 
-def pick_program(role, legato, rng):
-    if role == 1:
-        return int(rng.choice(BASS_CONT if legato else BASS_PLUCK))
-    fam = CONTINUOUS if legato else PLUCKED
-    if role == 0 and legato:
-        fam = {k: fam[k] for k in ("voice", "strings", "winds", "brass", "lead", "organ")}
-    return int(rng.choice(fam[rng.choice(list(fam))]))
+def shelf(y, f0, gain_db, high):
+    """RBJ shelving EQ (S = 1): a bass (low shelf) or treble (high shelf) boost or cut."""
+    from scipy.signal import lfilter
+    A = 10 ** (gain_db / 40); w = 2 * np.pi * f0 / SR; c, sn = np.cos(w), np.sin(w); al = sn / 2 * np.sqrt(2)
+    sq = 2 * np.sqrt(A) * al
+    if high:
+        bb = [A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sq)]
+        aa = [(A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq]
+    else:
+        bb = [A * ((A + 1) - (A - 1) * c + sq), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sq)]
+        aa = [(A + 1) + (A - 1) * c + sq, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sq]
+    return lfilter(np.array(bb) / aa[0], np.array(aa) / aa[0], y)
 
 
-def render_multi(notes, roles, beats, sf2, rng):
-    """FluidSynth render of one random orchestration of the whole arrangement -> mono float32 at SR."""
+def synth_stem(events, sf2, end, drum=False):
+    """One instrument on its own FluidSynth: events (t, kind, a, b) -> mono stem.  The vibrato
+    (modulation) control is held at 0 and no pitch bend is ever sent: no note's pitch moves."""
     import fluidsynth
-    P = plan_render(notes, roles, beats, rng); plan, desc = P
+    fs = fluidsynth.Synth(samplerate=float(SR), gain=0.3); sfid = fs.sfload(str(sf2)); ch = 9 if drum else 0
+    fs.cc(ch, 1, 0)
+    out, t_now = [], 0.0
+    for t, kind, x, y in sorted(events, key=lambda e: (e[0], e[1] not in ("prog", "kit", "cc"))):
+        n = int(round((t - t_now) * SR))
+        if n > 0:
+            out.append(np.asarray(fs.get_samples(n), np.float32)[::2]); t_now += n / SR
+        if kind == "prog":
+            fs.program_select(ch, sfid, 0, x); fs.cc(ch, 1, 0)
+        elif kind == "kit":
+            fs.program_select(ch, sfid, 128, x)
+        elif kind == "cc" and x != 1:
+            fs.cc(ch, x, y)
+        elif kind == "on":
+            fs.noteon(ch, x, y)
+        elif kind == "off":
+            fs.noteoff(ch, x)
+    n = int(round((end - t_now) * SR))
+    if n > 0:
+        out.append(np.asarray(fs.get_samples(n), np.float32)[::2])
+    fs.delete()
+    return np.concatenate(out).astype(np.float64) / 32768.0 if out else np.zeros(1)
+
+
+def render_multi(notes, roles, beats, flags, sf2, combo, rng):
+    """One orchestration of the whole arrangement.  Each instrument renders as its own stem with its
+    own volume and bass/treble EQ, then the stems are mixed.  No pitch bend, no vibrato."""
+    n_inst, layer, random_layer = combo["instruments"], combo["layering"], combo["layering_style"] == "random"
     end = float(notes[:, 1].max()) + 2.0
-    fs = fluidsynth.Synth(samplerate=float(SR), gain=0.25)
-    sfid = fs.sfload(str(sf2))
-    ev = []                                                                 # (time, kind, ch, a, b)
-    n_seg = int(math.ceil(end / plan["seg_len"])) if plan["seg_len"] < 1e8 else 1
-    chans = [c for c in range(16) if c != 9]
-    # per segment: an instrument for each role; the extra instruments are layers
-    seg_prog = []
-    for s in range(n_seg):
-        progs = {r: [] for r in (0, 1, 2)}
-        for i in range(plan["n_inst"]):
-            r = (0, 1, 2)[i] if i < 3 else int(rng.integers(0, 3))
-            progs[r].append(i)
-        seg_prog.append(progs)
-    # an instrument slot = a channel; its program may change per segment
-    slot_prog = {}
-    for s in range(n_seg):
-        for r in (0, 1, 2):
-            for i in seg_prog[s][r]:
-                legish = rng.random() < .5
-                slot_prog[(s, i)] = pick_program(r, legish, rng)
-    for i in range(plan["n_inst"]):
-        ch = chans[i]
-        ev.append((0.0, "cc", ch, 7, int(rng.integers(70, 120)))); ev.append((0.0, "cc", ch, 10, int(rng.integers(20, 108))))
-        ev.append((0.0, "cc", ch, 91, int(rng.integers(0, 80)))); ev.append((0.0, "cc", ch, 74, int(rng.integers(30, 127))))
-    for s in range(n_seg):
-        for i in range(plan["n_inst"]):
-            ev.append((s * min(plan["seg_len"], 1e8), "prog", chans[i], slot_prog[(s, i)], 0))
-    seg_of = lambda t: min(n_seg - 1, int(t // plan["seg_len"])) if n_seg > 1 else 0
-    bar_of = lambda t: int(t // plan["bar"])
-    layer_on = {}                                                           # (bar, kind) -> bool
-    def active(t, kind, level_needed):
-        if plan["layer"] < level_needed:
+    db = downbeats(beats, flags) if len(beats) > 8 else np.arange(0, end, 2.0)
+    bar = float(np.median(np.diff(db))) if len(db) > 2 else 2.0
+    if combo["swap"] == "never":
+        bounds = [0.0]
+    else:
+        step = 8 if combo["swap"] == "section" else int(rng.integers(2, 5))
+        bounds = [0.0] + [float(x) for x in db[step::step]]
+    seg_of = lambda t: int(np.searchsorted(bounds, t, side="right") - 1)
+    roles_of_slot = [(0, 1, 2)[i] if i < 3 else int(rng.integers(0, 3)) for i in range(n_inst)]
+    slots_of = {r: [i for i in range(n_inst) if roles_of_slot[i] == r] for r in (0, 1, 2)}
+    for r in (0, 1, 2):                                                    # a role with no instrument borrows one
+        if not slots_of[r]:
+            slots_of[r] = [int(rng.integers(0, n_inst))]
+
+    def pool(r):
+        if r == 1:
+            return BASS_CONT + BASS_PLUCK + [42, 43, 32]
+        return sorted((CONT_PROGS | PLUCK_PROGS) - set(BASS_CONT) - set(BASS_PLUCK))
+    prog = {(sg, i): int(rng.choice(pool(roles_of_slot[i]))) for sg in range(len(bounds)) for i in range(n_inst)}
+    stems = {i: [] for i in range(n_inst)}
+    for sg, t0 in enumerate(bounds):
+        for i in range(n_inst):
+            stems[i].append((t0, "prog", prog[(sg, i)], 0))
+    for i in range(n_inst):
+        stems[i].append((0.0, "cc", 91, int(rng.integers(0, 70))))
+    on_layer = {}
+
+    def active(t, kind, need):
+        if layer < need:
             return False
-        if not plan["layer_random"]:
+        if not random_layer:
             return True
-        k = (bar_of(t), kind)
-        if k not in layer_on:
-            layer_on[k] = rng.random() < .55
-        return layer_on[k]
-    ev_ix = np.concatenate([[0], np.cumsum(np.diff(notes[:, 0]) > 0.03)])
+        k = (int(t // bar), kind)
+        if k not in on_layer:
+            on_layer[k] = rng.random() < .55
+        return on_layer[k]
+    leg = articulation(notes, roles)
+    ev = np.concatenate([[0], np.cumsum(np.diff(notes[:, 0]) > 0.03)])
     for j, (s, e, p, v) in enumerate(notes):
-        r = int(roles[j]); sg = seg_of(s); slots = seg_prog[sg][r] or [0]
-        legato = plan["leg"][j]
-        if legato:                                                          # continuous: flow into the next note
-            nxt = notes[j + 1:, 0][(roles[j + 1:] == r)]
-            e = max(e, float(nxt[0]) - 0.005) if len(nxt) and nxt[0] - e < 0.25 else e
-        else:                                                               # detached: keep (or make) it short
-            e = s + min(e - s, max(0.06, (e - s) * float(rng.uniform(.5, 1.0))))
-        # chord split: one instrument per chord note, else the role's first instrument
-        group = np.flatnonzero(ev_ix == ev_ix[j])
-        if r == 2 and len(slots) > 1 and active(s, "split", 1) and len(group) > 1:
-            targets = [slots[int(np.searchsorted(group, j)) % len(slots)]]
+        r = int(roles[j]); slots = slots_of[r]; sg = seg_of(s)
+        group = [x for x in np.flatnonzero(ev == ev[j]) if roles[x] == r]
+        if len(slots) > 1 and len(group) > 1 and active(s, "split", 1):     # chord split, any role
+            targets = [slots[group.index(j) % len(slots)]]
         else:
             targets = [slots[0]]
-        if len(slots) > 1 and active(s, "unison", 1) and rng.random() < .6:     # unison doubling
-            targets.append(slots[int(rng.integers(1, len(slots)))])
-        for k, slot in enumerate(dict.fromkeys(targets)):
+        if n_inst > 1 and active(s, "unison", 1) and rng.random() < .6:      # the same note on another instrument
+            targets.append(int(rng.choice([i for i in range(n_inst) if i != targets[0]])))
+        for k, i in enumerate(dict.fromkeys(targets)):
+            pr = prog[(sg, i)]; ee = e
+            if leg[j] and pr in CONT_PROGS:                                  # continuous instrument + connected passage: flow
+                nxt = notes[j + 1:, 0][roles[j + 1:] == r]
+                if len(nxt) and nxt[0] - e < 0.25:
+                    ee = max(e, float(nxt[0]) - 0.005)
+            elif not leg[j] and pr in PLUCK_PROGS:                           # plucked instrument + gapped passage: short
+                ee = s + max(0.05, (e - s) * float(rng.uniform(.4, .9)))
             vv = int(np.clip(v * (1.0 if k == 0 else rng.uniform(.3, .9)), 1, 127))
-            ev.append((s, "on", chans[slot], int(p), vv)); ev.append((e, "off", chans[slot], int(p), 0))
-        # extra parts, NOT in the target
-        if r == 0 and active(s, "octave", 2) and rng.random() < .7:
-            q = int(p) + (12 if p < 72 else -12)
-            ev.append((s, "on", chans[slots[0]], q, int(v * .6))); ev.append((e, "off", chans[slots[0]], q, 0))
-        if r == 0 and active(s, "under", 3) and rng.random() < .5:
-            ev.append((s, "on", chans[slots[-1]], int(p) - 4, int(v * .5))); ev.append((e, "off", chans[slots[-1]], int(p) - 4, 0))
-    if plan["layer"] >= 2:                                                  # a pad holding each bar's chord
-        pad_ch = chans[min(plan["n_inst"], 14)]
-        ev.append((0.0, "prog", pad_ch, int(rng.choice(CONTINUOUS["pad"] + CONTINUOUS["strings"])), 0))
-        ev.append((0.0, "cc", pad_ch, 7, int(rng.integers(40, 80))))
-        for b0 in np.arange(0, end, plan["bar"]):
-            if not active(b0, "pad", 2):
-                continue
-            pcs = notes[(notes[:, 0] < b0 + plan["bar"]) & (notes[:, 1] > b0) & (roles == 2), 2]
-            for q in sorted({int(x) % 12 for x in pcs})[:4]:
-                ev.append((b0, "on", pad_ch, 48 + q, 50)); ev.append((b0 + plan["bar"] * .98, "off", pad_ch, 48 + q, 0))
-    if plan["layer"] >= 3:                                                  # arpeggiate / strum the chords
-        arp_ch = chans[min(plan["n_inst"] + 1, 14)]
-        ev.append((0.0, "prog", arp_ch, int(rng.choice(PLUCKED["guitar"] + PLUCKED["mallet"])), 0))
-        step = plan["bar"] / rng.choice([8, 16])
-        for b0 in np.arange(0, end, plan["bar"]):
-            if not active(b0, "arp", 3):
-                continue
-            pcs = sorted({int(x) for x in notes[(notes[:, 0] < b0 + plan["bar"]) & (notes[:, 1] > b0) & (roles == 2), 2]})
-            if not pcs:
-                continue
-            for k, t in enumerate(np.arange(b0, b0 + plan["bar"], step)):
-                q = pcs[k % len(pcs)]
-                ev.append((t, "on", arp_ch, q, int(rng.integers(45, 80)))); ev.append((t + step * .9, "off", arp_ch, q, 0))
-    if plan["drums"] and len(beats) > 4:                                    # drums on the beat grid
-        ev.append((0.0, "drumkit", 9, int(rng.choice(DRUM_KITS)), 0)); ev.append((0.0, "cc", 9, 7, int(rng.integers(60, 110))))
-        sub = int(rng.choice([2, 4])); bd = np.diff(beats).mean()
-        for i, b in enumerate(beats):
+            stems[i] += [(s, "on", int(p), vv), (ee, "off", int(p), 0)]
+        if r == 0 and active(s, "octave", 2) and rng.random() < .7:          # extra parts, NOT in the target
+            q = int(p) + (12 if p < 72 else -12); i = int(rng.choice(slots))
+            stems[i] += [(s, "on", q, int(v * .6)), (e, "off", q, 0)]
+        if r == 0 and active(s, "under", 3) and rng.random() < .5:           # an in-chord tone under the melody
+            snd = {int(x) % 12 for x in notes[(notes[:, 0] <= s) & (notes[:, 1] > s) & (roles == 2), 2]}
+            cand = [int(p) - d for d in range(3, 10) if (int(p) - d) % 12 in snd]
+            if cand:
+                i = int(rng.choice(slots_of[2])); stems[i] += [(s, "on", cand[0], int(v * .5)), (e, "off", cand[0], 0)]
+    extra = {}
+    if layer >= 2:                                                           # a pad holding each bar's chord
+        pad = [(0.0, "prog", int(rng.choice(CONTINUOUS["pad"] + CONTINUOUS["strings"])), 0)]
+        for b0 in np.concatenate([[0.0], db]):
+            if active(b0, "pad", 2):
+                pcs = sorted({int(x) % 12 for x in notes[(notes[:, 0] < b0 + bar) & (notes[:, 1] > b0) & (roles == 2), 2]})[:4]
+                pad += [x for q in pcs for x in ((b0, "on", 48 + q, 50), (b0 + bar * .98, "off", 48 + q, 0))]
+        extra["pad"] = pad
+    if layer >= 3:                                                           # arpeggiate / strum the chords
+        arp = [(0.0, "prog", int(rng.choice(PLUCKED["guitar"] + PLUCKED["mallet"])), 0)]; div = int(rng.choice([8, 16]))
+        for b0 in np.concatenate([[0.0], db]):
+            if active(b0, "arp", 3):
+                pcs = sorted({int(x) for x in notes[(notes[:, 0] < b0 + bar) & (notes[:, 1] > b0) & (roles == 2), 2]})
+                for k, t in enumerate(np.arange(b0, b0 + bar, bar / div)):
+                    if pcs:
+                        q = pcs[k % len(pcs)]; arp += [(t, "on", q, int(rng.integers(45, 80))), (t + bar / div * .9, "off", q, 0)]
+        extra["arp"] = arp
+    drums = []
+    if combo["drums"] and len(beats) > 4:
+        drums = [(0.0, "kit", int(rng.choice(DRUM_KITS)), 0)]; sub = int(rng.choice([2, 4])); bd = float(np.median(np.diff(beats)))
+        for i, t in enumerate(beats):
             if i % 2 == 0 or rng.random() < .1:
-                ev.append((b, "on", 9, 36, int(rng.integers(80, 120))))
+                drums += [(t, "on", 36, int(rng.integers(80, 120))), (t + .1, "off", 36, 0)]
             if i % 2 == 1:
-                ev.append((b, "on", 9, 38, int(rng.integers(80, 120))))
+                drums += [(t, "on", 38, int(rng.integers(80, 120))), (t + .1, "off", 38, 0)]
             for h in range(sub):
-                ev.append((b + h * bd / sub, "on", 9, 42 if rng.random() < .9 else 46, int(rng.integers(40, 90))))
-            if i % 16 == 15 and rng.random() < .5:                         # fill into the next section
+                q = 42 if rng.random() < .9 else 46
+                drums += [(t + h * bd / sub, "on", q, int(rng.integers(40, 90))), (t + h * bd / sub + .05, "off", q, 0)]
+            if i % 16 == 15 and rng.random() < .5:
                 for h in range(4):
-                    ev.append((b + h * bd / 4, "on", 9, int(rng.choice([45, 47, 48, 50])), 100))
-    # slides / vibrato on continuous melody instruments
-    if rng.random() < .4:
-        for i in seg_prog[0][0][:1]:
-            ev.append((0.0, "cc", chans[i], 1, int(rng.integers(0, 60))))
-    ev.sort(key=lambda x: (x[0], x[1] != "prog"))
-    out, t_now = [], 0.0
-    for t, kind, ch, a, b in ev:
-        if t > t_now:
-            n = int(round((t - t_now) * SR))
-            if n > 0:
-                out.append(np.asarray(fs.get_samples(n), np.float32)[::2]); t_now += n / SR
-        if kind == "prog":
-            fs.program_select(ch, sfid, 0, a)
-        elif kind == "drumkit":
-            fs.program_select(ch, sfid, 128, a)
-        elif kind == "cc":
-            fs.cc(ch, a, b)
-        elif kind == "on":
-            fs.noteon(ch, a, b)
-        elif kind == "off":
-            fs.noteoff(ch, a)
-    out.append(np.asarray(fs.get_samples(int(2 * SR)), np.float32)[::2])
-    fs.delete()
-    y = np.concatenate(out) / 32768.0
-    pk = np.abs(y).max()
-    return (y / pk * 0.9 if pk > 0 else y), desc
+                    q = int(rng.choice([45, 47, 48, 50])); drums += [(t + h * bd / 4, "on", q, 100), (t + h * bd / 4 + .1, "off", q, 0)]
+    mix = np.zeros(int(end * SR) + SR); eq = []
+    layers = [(f"inst{i}", stems[i]) for i in range(n_inst)] + list(extra.items()) + ([("drums", drums)] if drums else [])
+    for key, events in layers:
+        y = synth_stem(events, sf2, end, drum=key == "drums")
+        lo, hi = float(rng.uniform(-9, 9)), float(rng.uniform(-9, 9))
+        y = shelf(shelf(y, 200.0, lo, high=False), 3000.0, hi, high=True)    # this layer's own bass / treble
+        g = float(rng.uniform(.4, 1.0)) * (.6 if key in ("pad", "arp") else 1.0)
+        n = min(len(y), len(mix)); mix[:n] += g * y[:n]; eq.append([key, round(lo, 1), round(hi, 1), round(g, 2)])
+    pk = np.abs(mix).max()
+    desc = dict(combo, programs={f"inst{i}": sorted({prog[(sg, i)] for sg in range(len(bounds))}) for i in range(n_inst)},
+                layers_bass_treble_gain=eq)
+    return (mix / pk * 0.9 if pk > 0 else mix).astype(np.float32), desc
 
 
 # ---------------------------------------------------------------- main
@@ -327,10 +355,10 @@ def main():
     si, sn = (int(v) for v in a.shard.split("/"))
     T = S.n_frames(int(SECONDS * S.SR))
     done = 0
-    for src, sid, split, path in jobs[si::sn][: a.limit or None]:
+    for jx, (src, sid, split, path) in list(enumerate(jobs))[si::sn][: a.limit or None]:
         out = pathlib.Path(a.out) / split; out.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(abs(hash((src, sid))) % 2 ** 32)
-        notes, roles, beats = load_pop909(path) if src == "pop" else load_m2m(path)
+        notes, roles, beats, flags = load_pop909(path) if src == "pop" else load_m2m(path)
         if len(notes) < 10:
             continue
         n_win = max(1, int(math.ceil(notes[:, 1].max() / SECONDS)))
@@ -344,7 +372,7 @@ def main():
         renders = [("piano", p) for p in pianos] + [("multi", k) for k in range(a.multi)]
         for k, (kind, arg) in enumerate(renders):
             if kind == "multi":
-                y, desc = render_multi(notes, roles, beats, a.sf2, rng)
+                y, desc = render_multi(notes, roles, beats, flags, a.sf2, COMBOS[(jx * a.multi + arg) % len(COMBOS)], rng)
             for w in range(n_win):
                 dst = out / f"{src}{sid}_r{k}_{w:03d}.npz"
                 if dst.exists():
