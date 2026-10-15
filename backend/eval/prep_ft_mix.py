@@ -1,7 +1,7 @@
 """Fine-tuning set: a NEW render batch + a share of the original renders, so adapters learn the new
 material without the model forgetting the old (symlinks only).
 
-    python eval/prep_ft_mix.py --new /scratch/.../arr_vocal --old /scratch/.../arr_render --out <dir> [--old-frac 0.33]
+    python eval/prep_ft_mix.py --new /scratch/.../arr_tone,/scratch/.../arr_vocal --old /scratch/.../arr_render --out <dir> [--old-frac 0.33]
 <out>/train: every new train clip + old train clips equal to --old-frac of the new count
 <out>/validation: --n-val new + --n-val old validation clips (prefixes new_ / old_)
 """
@@ -15,14 +15,14 @@ def link(p, dst):
         if src.exists() and not d.exists():
             os.symlink(src, d)
 tr = pathlib.Path(a.out) / "train"; va = pathlib.Path(a.out) / "validation"; tr.mkdir(parents=True, exist_ok=True); va.mkdir(parents=True, exist_ok=True)
-new = clips(pathlib.Path(a.new) / "train")
+new = [p for d in a.new.split(",") for p in clips(pathlib.Path(d) / "train")]
 for p in new:
-    link(p, tr / f"new_{p.name}")
+    link(p, tr / f"new_{p.parent.parent.name}_{p.name}")
 old = clips(pathlib.Path(a.old) / "train")
 for p in rng.sample(old, min(len(old), int(len(new) * a.old_frac))):
     link(p, tr / f"old_{p.name}")
-for tag, root in (("new", a.new), ("old", a.old)):
+for tag, root in [("new", d) for d in a.new.split(",")] + [("old", a.old)]:
     v = clips(pathlib.Path(root) / "validation")
     for p in rng.sample(v, min(a.n_val, len(v))):
-        link(p, va / f"{tag}_{p.name}")
+        link(p, va / f"{tag}_{pathlib.Path(root).name}_{p.name}")
 print(len(list(tr.glob("*.npz"))), "train,", len(list(va.glob("*.npz"))), "validation")
