@@ -76,6 +76,11 @@ def _load():
         net = load_for_app(ck, 0).to(dev).eval()
         print(f"[spectral] style model: {ck['K']} codes, ARRANGEMENT_STYLE_CODE="
               f"{os.environ.get('ARRANGEMENT_STYLE_CODE', '0')}")
+    elif ck.get("lora"):                # frozen base + LoRA adapters (app/ml/spectral/hum_train.py)
+        from app.ml.spectral.model import SpectralTranscriber
+        from app.ml.spectral.imagine import add_lora
+        net = SpectralTranscriber(**ck["arch"]); add_lora(net, ck["lora"]); net.load_state_dict(ck["model"])
+        net = net.to(dev).eval()
     else:
         net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()

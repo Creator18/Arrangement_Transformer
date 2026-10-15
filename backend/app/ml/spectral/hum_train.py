@@ -139,11 +139,14 @@ def main():
                 save(last)
                 say(f"VAL step {step}: note F1 {r[0]['conp_f1']:.3f} (P {r[0]['conp_p']:.3f} "
                     f"R {r[0]['conp_r']:.3f})  frame F1 {r[1]:.3f}")
+            if step % 50 == 0 and (ckdir / "HANDOVER").exists():       # a faster GPU freed up (eval/gpu_train.sh)
+                save(last); say(f"handing over at step {step}: saved last.pt for the faster GPU"); return
             if (time.time() - t0) / 60 > a.max_minutes:
                 save(last); say("time limit: saved last.pt, resubmit to resume"); return
             if step >= a.total_steps:
                 break
-    say(f"done, best note F1 {best:.3f}")
+    save(last)
+    say(f"stopping at step {step} (finished); best note F1 {best:.3f}")
 
 
 if __name__ == "__main__":

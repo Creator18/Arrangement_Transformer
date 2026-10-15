@@ -188,23 +188,54 @@ def shelf(y, f0, gain_db, high):
     return lfilter(np.array(bb) / aa[0], np.array(aa) / aa[0], y)
 
 
-def synth_stem(events, sf2, end, drum=False):
-    """One instrument on its own FluidSynth: events (t, kind, a, b) -> mono stem.  The vibrato
-    (modulation) control is held at 0 and no pitch bend is ever sent: no note's pitch moves."""
+def _gen_api():
+    import ctypes
+    import fluidsynth
+    L = fluidsynth._fl
+    L.fluid_synth_set_gen.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float]
+    return L
+
+
+def synth_stem(events, sf2, end, drum=False, tone=None):
+    """One instrument on its own FluidSynth: events (t, kind, a, b) -> mono stem.
+    tone (optional): release / decay offsets (timecents), sustain offset (cB), reverb room and
+    chorus.  The vibrato control is held at 0.  "bend" events (value in semitones, range +-12)
+    exist ONLY for slides between two written notes of a legato line: they land exactly on the
+    next written pitch at its written time; no pitch outside the arrangement is ever held."""
     import fluidsynth
     fs = fluidsynth.Synth(samplerate=float(SR), gain=0.3); sfid = fs.sfload(str(sf2)); ch = 9 if drum else 0
-    fs.cc(ch, 1, 0)
+    tone = tone or {}
+    if "reverb" in tone:
+        fs.set_reverb(*tone["reverb"])
+    if "chorus" in tone:
+        fs.set_chorus(*tone["chorus"])
+    L = _gen_api()
+
+    def apply_gens():
+        fs.cc(ch, 1, 0)
+        for gen, key in ((38, "release_tc"), (36, "decay_tc"), (37, "sustain_cb")):
+            if key in tone:
+                L.fluid_synth_set_gen(fs.synth, ch, gen, float(tone[key]))
+        if not drum:                                                     # pitch-bend range +-12 (RPN 0)
+            for c, v in ((101, 0), (100, 0), (6, 12), (38, 0)):
+                fs.cc(ch, c, v)
+        if "chorus_send" in tone:
+            fs.cc(ch, 93, int(tone["chorus_send"]))
+    apply_gens()
     out, t_now = [], 0.0
-    for t, kind, x, y in sorted(events, key=lambda e: (e[0], e[1] not in ("prog", "kit", "cc"))):
+    order = {"prog": 0, "kit": 0, "cc": 1, "off": 2, "bend": 3, "on": 4}
+    for t, kind, x, y in sorted(events, key=lambda e: (e[0], order.get(e[1], 5))):
         n = int(round((t - t_now) * SR))
         if n > 0:
             out.append(np.asarray(fs.get_samples(n), np.float32)[::2]); t_now += n / SR
         if kind == "prog":
-            fs.program_select(ch, sfid, 0, x); fs.cc(ch, 1, 0)
+            fs.program_select(ch, sfid, 0, x); apply_gens()
         elif kind == "kit":
             fs.program_select(ch, sfid, 128, x)
         elif kind == "cc" and x != 1:
             fs.cc(ch, x, y)
+        elif kind == "bend":
+            fs.pitch_bend(ch, int(np.clip(x / 12.0 * 8191, -8192, 8191)))
         elif kind == "on":
             fs.noteon(ch, x, y)
         elif kind == "off":
@@ -214,6 +245,88 @@ def synth_stem(events, sf2, end, drum=False):
         out.append(np.asarray(fs.get_samples(n), np.float32)[::2])
     fs.delete()
     return np.concatenate(out).astype(np.float64) / 32768.0 if out else np.zeros(1)
+
+
+def attack_shape(y, onsets, attack_s, floor):
+    """A slow attack AFTER rendering (sampled sustains ignore the attack generator): at each note
+    start the stem fades in from `floor` over attack_s seconds.  Pitch untouched."""
+    if attack_s <= 0.005 or not len(onsets):
+        return y
+    g = np.ones(len(y)); n = int(attack_s * SR); ramp = floor + (1 - floor) * np.linspace(0, 1, n) ** 1.5
+    for t in onsets:
+        a = int(t * SR)
+        if 0 <= a < len(y):
+            b = min(len(y), a + n); g[a:b] = np.minimum(g[a:b], ramp[:b - a])
+    return y * g
+
+
+def tone_for_stem(rng, level):
+    """Random tone for one instrument; level 0 = defaults .. 3 = heavy.  Returns (tone, label)."""
+    if level == 0:
+        return {}, dict(attack_s=0.0, release_tc=0.0, decay_tc=0.0, sustain_cb=0.0, lowpass=0, highpass=0, chorus=0)
+    k = level / 3.0
+    t = dict(release_tc=float(rng.uniform(-1200, 4800 * k)), decay_tc=float(rng.uniform(-1200 * k, 2400 * k)),
+             sustain_cb=float(rng.uniform(0, 300 * k)))
+    if rng.random() < .4 * k + .1:
+        t["chorus_send"] = int(rng.integers(20, 110))
+    lab = dict(attack_s=float(rng.choice([0, 0, .02, .05, .1, .2, .35]) * (1 if rng.random() < .3 + .5 * k else 0)),
+               release_tc=t["release_tc"], decay_tc=t["decay_tc"], sustain_cb=t["sustain_cb"],
+               lowpass=int(rng.choice([0, 0, 2500, 4000, 7000]) if rng.random() < .5 * k else 0),
+               highpass=int(rng.choice([0, 80, 150, 300]) if rng.random() < .4 * k else 0),
+               chorus=int(t.get("chorus_send", 0)))
+    return t, lab
+
+
+def filt(y, lowpass, highpass):
+    from scipy.signal import butter, lfilter
+    if lowpass:
+        b, a = butter(2, lowpass / (SR / 2)); y = lfilter(b, a, y)
+    if highpass:
+        b, a = butter(2, highpass / (SR / 2), btype="high"); y = lfilter(b, a, y)
+    return y
+
+
+def master(y, rng, level):
+    """Production on the whole mix: compression, saturation, tilt EQ, noise, sometimes lo-fi.
+    Returns (audio, label)."""
+    from scipy.signal import butter, lfilter
+    lab = dict(comp_ratio=1.0, comp_thresh_db=0.0, drive=1.0, tilt_db=0.0, noise_db=-120.0, lofi=0)
+    if level == 0:
+        return y, lab
+    k = level / 3.0
+    pk = np.abs(y).max() or 1.0; y = y / pk
+    if rng.random() < .3 + .6 * k:                                       # RMS compressor
+        ratio, thr = float(rng.uniform(2, 2 + 8 * k)), float(rng.uniform(-30, -10))
+        env = np.sqrt(np.convolve(y ** 2, np.ones(int(.01 * SR)) / int(.01 * SR), "same")) + 1e-9
+        lvl = 20 * np.log10(env); over = np.maximum(0, lvl - thr)
+        gain_db = -over * (1 - 1 / ratio)
+        gain_db = np.convolve(gain_db, np.ones(int(.03 * SR)) / int(.03 * SR), "same")
+        y = y * 10 ** (gain_db / 20); lab.update(comp_ratio=ratio, comp_thresh_db=thr)
+    if rng.random() < .2 + .5 * k:                                       # saturation
+        d = float(rng.uniform(1, 1 + 4 * k)); y = np.tanh(d * y) / np.tanh(d); lab["drive"] = d
+    if rng.random() < .5:                                                # tilt
+        tl = float(rng.uniform(-4, 4)); y = shelf(y, 1000.0, tl, high=True); lab["tilt_db"] = tl
+    if rng.random() < .25 * k + .05:                                     # noise floor (hiss / room)
+        ndb = float(rng.uniform(-55, -32)); nz = rng.standard_normal(len(y))
+        b, a = butter(1, float(rng.uniform(800, 8000)) / (SR / 2)); nz = lfilter(b, a, nz); nz /= np.abs(nz).max() + 1e-9
+        y = y + nz * 10 ** (ndb / 20); lab["noise_db"] = ndb
+    if rng.random() < .08 * k:                                           # phone / lo-fi recording
+        b, a = butter(2, [300 / (SR / 2), 3400 / (SR / 2)], btype="band"); y = lfilter(b, a, y); lab["lofi"] = 1
+    return y, lab
+
+
+def slides_for(notes_idx, notes, prog_of, rng, slide_p):
+    """Which consecutive notes of a legato line become a slide on a CONTINUOUS instrument:
+    the next note is close (<= 2 semitones, sometimes <= 4) and starts as the previous ends.
+    Returns {j: True} for every note j REACHED by a slide (labels unchanged: still its own note)."""
+    out = {}
+    for a, b in zip(notes_idx[:-1], notes_idx[1:]):
+        if prog_of(a) not in CONT_PROGS or prog_of(b) != prog_of(a):
+            continue
+        gap, iv = notes[b, 0] - notes[a, 1], abs(notes[b, 2] - notes[a, 2])
+        if gap < 0.04 and 0 < iv <= (4 if rng.random() < .2 else 2) and rng.random() < slide_p:
+            out[b] = True
+    return out
 
 
 
@@ -242,38 +355,59 @@ def consonant(kind, f0, sr, rng):
     return lfilter(b, a, x) * env * float(rng.uniform(.15, .3)), dur
 
 
-def vocal_stem(mel, sf2, end, rng):
+def vocal_stem(mel, sf2, end, rng, slide_p=0.0):
     """The melody SUNG: random syllable chains per phrase.  Each syllable = a made consonant
-    attack + a soundfont vowel at the exact written pitch (no vibrato, no bend).  Phrases split
-    at rests; within a phrase a syllable sometimes carries over several notes (melisma) with no
-    new consonant.  The vowel changes syllable to syllable among the vocal patches."""
+    attack + a soundfont vowel at the exact written pitch (no vibrato).  Phrases split at rests;
+    within a phrase a syllable sometimes carries over several notes (melisma) with no new
+    consonant — and with slide_p, a close melisma step (<= 2 semitones, sometimes 4) is SUNG as a
+    slide: the voice glides onto the next written pitch, landing exactly at its written time.
+    Returns (audio, lyric, set of note indices reached by a slide)."""
     import fluidsynth
     fs = fluidsynth.Synth(samplerate=float(SR), gain=0.3); sfid = fs.sfload(str(sf2))
     progs = list(rng.choice(VOWEL_PROGS, size=int(rng.integers(2, 5)), replace=False))
     for c, pr in enumerate(progs):
         fs.program_select(c, sfid, 0, int(pr)); fs.cc(c, 1, 0); fs.cc(c, 91, int(rng.integers(10, 60)))
-    ev, cons, syl = [], [], []
+        for cc, v in ((101, 0), (100, 0), (6, 12), (38, 0)):            # pitch-bend range +-12
+            fs.cc(c, cc, v)
+    ev, cons, syl, slid = [], [], [], set()
     prev_end, ch, k = -9.0, 0, ""
+    base = None                                                           # (index, pitch) of the held note in a slide chain
     for j, (s, e, p, v) in enumerate(mel):
         new_phrase = s - prev_end > 0.3
         melisma = (not new_phrase) and s - prev_end < 0.06 and rng.random() < .3
+        lim = 4 if rng.random() < .2 else 2
+        slide = (melisma and base is not None and 0 < abs(p - mel[j - 1, 2]) <= lim
+                 and abs(p - base[1]) <= 12 and rng.random() < slide_p)
         if not melisma:                                                   # a new syllable
             ch = int(rng.integers(0, len(progs))); k = str(rng.choice(CONSONANTS))
             syl.append(k + ["a", "oo", "u", "o"][VOWEL_PROGS.index(progs[ch]) % 4])
             if k:
                 cons.append((s, k, 440.0 * 2 ** ((p - 69) / 12)))
-        ee = e if not melisma else e
         nxt = mel[j + 1, 0] if j + 1 < len(mel) else None
-        if nxt is not None and nxt - e < 0.25:                            # a voice flows into its next note
-            ee = max(e, float(nxt) - 0.01)
-        ev += [(s, "on", ch, int(p), int(v)), (ee, "off", ch, int(p), 0)]
+        ee = max(e, float(nxt) - 0.01) if nxt is not None and nxt - e < 0.25 else e
+        if slide:                                                         # hold the base note, glide onto p
+            slid.add(j)
+            ev = [x for x in ev if not (x[1] == "off" and x[2] == ch and x[3] == base[1] and x[0] >= mel[j - 1, 0])]
+            g = float(rng.uniform(.04, .15)); t0 = max(mel[j - 1, 0], s - g)
+            st, en = mel[j - 1, 2] - base[1], p - base[1]
+            ev += [(t0 + q * (s - t0), "bend", ch, float(st + q * (en - st)), 0) for q in np.linspace(0, 1, 8)]
+            ev += [(ee, "off", ch, int(base[1]), 0), (ee + .001, "bend", ch, 0.0, 0)]
+        else:
+            ev += [(s, "bend", ch, 0.0, 0), (s, "on", ch, int(p), int(v)), (ee, "off", ch, int(p), 0)]
+            base = (j, int(p))
         prev_end = e
     out, t_now = [], 0.0
-    for t, kind, c, x, y in sorted(ev, key=lambda z: (z[0], z[1] != "off")):
+    order = {"off": 0, "bend": 1, "on": 2}
+    for t, kind, c, x, y in sorted(ev, key=lambda z: (z[0], order[z[1]])):
         n = int(round((t - t_now) * SR))
         if n > 0:
             out.append(np.asarray(fs.get_samples(n), np.float32)[::2]); t_now += n / SR
-        fs.noteon(c, x, y) if kind == "on" else fs.noteoff(c, x)
+        if kind == "on":
+            fs.noteon(c, x, y)
+        elif kind == "off":
+            fs.noteoff(c, x)
+        else:
+            fs.pitch_bend(c, int(np.clip(x / 12.0 * 8191, -8192, 8191)))
     n = int(round((end - t_now) * SR))
     if n > 0:
         out.append(np.asarray(fs.get_samples(n), np.float32)[::2])
@@ -284,10 +418,11 @@ def vocal_stem(mel, sf2, end, rng):
         x, dur = consonant(kind, f0, SR, rng)
         a = max(0, int((t - (dur if kind in ("n", "m", "l") else 0.0)) * SR))
         b = min(len(y), a + len(x)); y[a:b] += x[:b - a] * peak
-    return y, " ".join(syl[:24])
+    return y, " ".join(syl[:24]), slid
 
 
-def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
+
+def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0, tone_level=None, slide_p=0.0):
     """One orchestration of the whole arrangement.  Each instrument renders as its own stem with its
     own volume and bass/treble EQ, then the stems are mixed.  No pitch bend, no vibrato."""
     n_inst, layer, random_layer = combo["instruments"], combo["layering"], combo["layering_style"] == "random"
@@ -331,6 +466,12 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
     leg = articulation(notes, roles)
     ev = np.concatenate([[0], np.cumsum(np.diff(notes[:, 0]) > 0.03)])
     sung = bool(rng.random() < vocal_p)                                   # the melody is SUNG in this render
+    tl = int(rng.integers(0, 4)) if tone_level is None else int(tone_level)   # tone variation level 0..3
+    slide_on = bool(slide_p > 0 and rng.random() < .6)
+    note_slot = np.full(len(notes), -1)                                   # which instrument plays each note
+    mel_idx = np.flatnonzero(roles == 0)
+    slid = slides_for(list(mel_idx), notes, lambda j: prog[(seg_of(notes[j, 0]), slots_of[0][0])], rng,
+                      slide_p) if (slide_on and not sung) else {}
     for j, (s, e, p, v) in enumerate(notes):
         r = int(roles[j]); slots = slots_of[r]; sg = seg_of(s)
         group = [x for x in np.flatnonzero(ev == ev[j]) if roles[x] == r]
@@ -353,7 +494,12 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
             elif not leg[j] and pr in PLUCK_PROGS:                           # plucked instrument + gapped passage: short
                 ee = s + max(0.05, (e - s) * float(rng.uniform(.4, .9)))
             vv = int(np.clip(v * (1.0 if k == 0 else rng.uniform(.3, .9)), 1, 127))
-            stems[i] += [(s, "on", int(p), vv), (ee, "off", int(p), 0)]
+            if k == 0:
+                note_slot[j] = i
+            if k == 0 and r == 0 and j in slid and i == slots_of[0][0]:
+                pass                                                      # reached by a slide: see below
+            else:
+                stems[i] += [(s, "on", int(p), vv), (ee, "off", int(p), 0)]
         if r == 0 and active(s, "octave", 2) and rng.random() < .7:          # extra parts, NOT in the target
             q = int(p) + (12 if p < 72 else -12); i = int(rng.choice(slots))
             stems[i] += [(s, "on", q, int(v * .6)), (e, "off", q, 0)]
@@ -362,6 +508,26 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
             cand = [int(p) - d for d in range(3, 10) if (int(p) - d) % 12 in snd]
             if cand:
                 i = int(rng.choice(slots_of[2])); stems[i] += [(s, "on", cand[0], int(v * .5)), (e, "off", cand[0], 0)]
+    if slid:                                                              # slides: hold the earlier note, bend onto the next
+        i0 = slots_of[0][0]; ev0 = stems[i0]
+        chain_base, prev = None, None
+        for j in mel_idx:
+            if j in slid and prev is not None:
+                base = chain_base if chain_base is not None else prev
+                semis = notes[j, 2] - notes[base, 2]
+                if abs(semis) <= 12:
+                    chain_base = base
+                    # extend the sounding base note to this note's end; glide lands on time
+                    ev0[:] = [e for e in ev0 if not (e[1] == "off" and e[2] == int(notes[base, 2]) and abs(e[0] - notes[prev, 1]) < 0.3 and e[0] <= notes[j, 1])]
+                    g = float(rng.uniform(.04, .15)); t0 = max(notes[prev, 0], notes[j, 0] - g)
+                    start = notes[prev, 2] - notes[base, 2]
+                    for q in np.linspace(0, 1, 8):
+                        ev0.append((t0 + q * (notes[j, 0] - t0), "bend", float(start + q * (semis - start)), 0))
+                    ev0.append((notes[j, 1], "off", int(notes[base, 2]), 0))
+                    ev0.append((notes[j, 1] + .001, "bend", 0.0, 0))
+                    prev = j
+                    continue
+            chain_base, prev = None, j
     extra = {}
     if layer >= 2:                                                           # a pad holding each bar's chord
         pad = [(0.0, "prog", int(rng.choice(CONTINUOUS["pad"] + CONTINUOUS["strings"])), 0)]
@@ -396,21 +562,44 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
     mix = np.zeros(int(end * SR) + SR); eq = []
     lyric = ""
     if sung:
-        y, lyric = vocal_stem(notes[roles == 0], sf2, end, rng)
+        y, lyric, vslid = vocal_stem(notes[roles == 0], sf2, end, rng, slide_p if slide_on else 0.0)
+        mel_ix = np.flatnonzero(roles == 0)
+        slid = {int(mel_ix[q]): True for q in vslid}
         y = shelf(shelf(y, 200.0, float(rng.uniform(-6, 3)), high=False), 3000.0, float(rng.uniform(-3, 6)), high=True)
         g = float(rng.uniform(.7, 1.0)); n = min(len(y), len(mix)); mix[:n] += g * y[:n]
         eq.append(["voice", 0, 0, round(g, 2)])
     layers = [(f"inst{i}", stems[i]) for i in range(n_inst)] + list(extra.items()) + ([("drums", drums)] if drums else [])
+    room = None
+    if tl:
+        room = (float(rng.uniform(.1, .2 + .8 * tl / 3)), float(rng.uniform(0, 1)), float(rng.uniform(.3, 1)),
+                float(rng.uniform(.2, .5 + .5 * tl / 3)))
+    stem_tone = {}
     for key, events in layers:
-        y = synth_stem(events, sf2, end, drum=key == "drums")
+        tone, tlab = tone_for_stem(rng, tl if key != "drums" else min(tl, 1))
+        if room:
+            tone["reverb"] = room
+        if tone.get("chorus_send"):
+            tone["chorus"] = (int(rng.integers(2, 6)), float(rng.uniform(1, 4)), float(rng.uniform(.2, 2)), float(rng.uniform(2, 12)), 0)
+        y = synth_stem(events, sf2, end, drum=key == "drums", tone=tone)
+        ons = sorted({round(e[0], 3) for e in events if e[1] == "on"})
+        y = attack_shape(y, ons, tlab["attack_s"], float(rng.uniform(.1, .5)))
+        y = filt(y, tlab["lowpass"], tlab["highpass"]); stem_tone[key] = tlab
         lo, hi = float(rng.uniform(-9, 9)), float(rng.uniform(-9, 9))
         y = shelf(shelf(y, 200.0, lo, high=False), 3000.0, hi, high=True)    # this layer's own bass / treble
         g = float(rng.uniform(.4, 1.0)) * (.6 if key in ("pad", "arp") else 1.0)
         n = min(len(y), len(mix)); mix[:n] += g * y[:n]; eq.append([key, round(lo, 1), round(hi, 1), round(g, 2)])
+    mix, mlab = master(mix, rng, tl)
     pk = np.abs(mix).max()
-    desc = dict(combo, sung=sung, lyric=lyric, programs={f"inst{i}": sorted({prog[(sg, i)] for sg in range(len(bounds))}) for i in range(n_inst)},
+    # per-note labels: how each written note was SOUNDED (aux targets / diagnostics)
+    meta = np.zeros((len(notes), 7), np.float32)                          # attack_s, release_tc, decay_tc, sustain_cb, slid, legato, sung
+    for j in range(len(notes)):
+        lab = stem_tone.get(f"inst{note_slot[j]}") if note_slot[j] >= 0 else None
+        if lab:
+            meta[j, :4] = [lab["attack_s"], lab["release_tc"], lab["decay_tc"], lab["sustain_cb"]]
+        meta[j, 4] = 1.0 if j in slid else 0.0; meta[j, 5] = float(leg[j]); meta[j, 6] = 1.0 if (sung and roles[j] == 0) else 0.0
+    desc = dict(combo, tone_level=tl, slides=len(slid), reverb_room=room, master=mlab, sung=sung, lyric=lyric, programs={f"inst{i}": sorted({prog[(sg, i)] for sg in range(len(bounds))}) for i in range(n_inst)},
                 layers_bass_treble_gain=eq)
-    return (mix / pk * 0.9 if pk > 0 else mix).astype(np.float32), desc
+    return (mix / pk * 0.9 if pk > 0 else mix).astype(np.float32), desc, meta
 
 
 # ---------------------------------------------------------------- main
@@ -425,6 +614,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--vocal-p", type=float, default=0.0, help="share of multi renders whose melody is sung")
     ap.add_argument("--multi-only", action="store_true", help="no piano renders (a fine-tuning batch)")
+    ap.add_argument("--tone", default="random", help="tone variation level 0-3, or random per render")
+    ap.add_argument("--slide-p", type=float, default=0.0, help="chance an eligible legato step becomes a slide")
     ap.add_argument("--reverse", action="store_true", help="walk the shard from its end (a helper job meets the main one midway)")
     ap.add_argument("--tag", default="r", help="render-name prefix, so a new batch never overwrites the old")
     a = ap.parse_args()
@@ -459,8 +650,9 @@ def main():
         renders = [("piano", p) for p in pianos] + [("multi", k) for k in range(a.multi)]
         for k, (kind, arg) in enumerate(renders):
             if kind == "multi":
-                y, desc = render_multi(notes, roles, beats, flags, a.sf2, COMBOS[(jx * a.multi + arg) % len(COMBOS)], rng,
-                                       vocal_p=a.vocal_p)
+                y, desc, meta = render_multi(notes, roles, beats, flags, a.sf2, COMBOS[(jx * a.multi + arg) % len(COMBOS)], rng,
+                                             vocal_p=a.vocal_p, tone_level=None if a.tone == "random" else int(a.tone),
+                                             slide_p=a.slide_p)
             for w in range(n_win):
                 dst = out / f"{src}{sid}_{a.tag}{k}_{w:03d}.npz"
                 if dst.exists():
@@ -474,8 +666,13 @@ def main():
                     yy = np.pad(seg, (0, int(SECONDS * SR) - len(seg)))
                     on, fr, vel = rolls(notes, t0, T, S.FPS); desc_k = desc
                 tmp = dst.with_name(dst.stem + ".tmp.npz")
+                sel = (notes[:, 1] > t0) & (notes[:, 0] < t0 + SECONDS)
+                nm = np.zeros((0, 9), np.float32)
+                if kind == "multi":                                       # onset (window s), pitch, then the 7 sound labels
+                    nm = np.concatenate([np.c_[notes[sel, 0] - t0, notes[sel, 2]].astype(np.float32), meta[sel]], 1)
                 np.savez_compressed(tmp, y=(np.clip(yy, -1, 1) * 32767).astype(np.int16), on=on, fr=fr,
-                                    piano=str(arg) if kind == "piano" else "multi", render=json.dumps(desc_k))
+                                    piano=str(arg) if kind == "piano" else "multi", render=json.dumps(desc_k, default=float),
+                                    note_meta=nm)
                 tmp.replace(dst)
                 vt = dst.with_name(dst.stem + ".vel.tmp.npy"); np.save(vt, vel); vt.replace(dst.with_name(dst.stem + ".vel.npy"))
                 done += 1
