@@ -20,11 +20,11 @@ import {
 
 const STEPS = [
   { key: 'upload',     label: 'Upload',     detail: 'Audio received and converted to WAV',                     sym: '▲', color: '#f59e0b' },
-  { key: 'separate',   label: 'Analyse',    detail: 'NMF decomposing audio into pattern and melody components…', sym: '⬡', color: '#06b6d4' },
-  { key: 'transcribe', label: 'Transcribe', detail: 'Transcribing each component with pYIN and Basic Pitch…',   sym: '◈', color: '#a78bfa' },
-  { key: 'segment',    label: 'Chords',     detail: 'Detecting chord progression from audio chroma…',           sym: '▪', color: '#34d399' },
-  { key: 'transform',  label: 'Arrange',    detail: 'Pattern extraction, range compression, voice leading…',    sym: '▶', color: '#f87171' },
-  { key: 'previews',   label: 'Previews',   detail: 'Rendering original + transformed audio through Salamander…', sym: '♫', color: '#fbbf24' },
+  { key: 'separate',   label: 'Analyse',    detail: 'Checking whether this is solo piano or a full song…', sym: '⬡', color: '#06b6d4' },
+  { key: 'transcribe', label: 'Transcribe', detail: 'Hearing the notes with our spectral transformer…',   sym: '◈', color: '#a78bfa' },
+  { key: 'segment',    label: 'Chords',     detail: 'Finding the beat grid and chords…',           sym: '▪', color: '#34d399' },
+  { key: 'transform',  label: 'Arrange',    detail: 'Fitting the arrangement to your keyboard and hands…',    sym: '▶', color: '#f87171' },
+  { key: 'previews',   label: 'Previews',   detail: 'Rendering original + arranged audio on a sampled grand…', sym: '♫', color: '#fbbf24' },
   { key: 'score',      label: 'Score',      detail: 'Comparing spectrograms for fidelity…',                     sym: '◉', color: '#e879f9' },
 ]
 

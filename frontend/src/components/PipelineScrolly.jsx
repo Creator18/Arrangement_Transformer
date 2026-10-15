@@ -27,14 +27,14 @@ import { getLenis } from '../utils/smoothscroll'
 const STAGES = [
   { key: 'audio',      label: 'AUDIO IN',    color: '#f59e0b',
     blurb: 'A recording arrives as one dense stream — everything at once.' },
-  { key: 'separate',   label: 'SEPARATE',    color: '#3b82f6',
-    blurb: 'Demucs pulls the mix apart into sources, so the piano can be heard alone.' },
-  { key: 'transcribe', label: 'TRANSCRIBE',  color: '#06b6d4',
-    blurb: 'Onsets & Frames reads the audio as discrete notes — pitch, time, velocity.' },
+  { key: 'separate',   label: 'LISTEN',      color: '#3b82f6',
+    blurb: 'The whole mix becomes a pitch picture — no splitting into separate stems first.' },
+  { key: 'transcribe', label: 'HEAR NOTES',  color: '#06b6d4',
+    blurb: 'Our own transformer reads that picture as notes: pitch, onset, length, velocity.' },
   { key: 'arrange',    label: 'ARRANGE',     color: '#a78bfa',
-    blurb: 'Notes are split between two hands and fitted to what a player can reach.' },
+    blurb: 'For a song, it keeps what a pianist would play — at the difficulty you choose.' },
   { key: 'render',     label: 'RENDER',      color: '#34d399',
-    blurb: 'The result is played back on a sampled grand, and written out as MIDI.' },
+    blurb: 'The result is fitted to your keyboard, played back on a sampled grand, and written out as MIDI.' },
 ]
 
 const N = 260

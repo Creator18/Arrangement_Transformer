@@ -512,13 +512,12 @@ export default function ResultsPage() {
                       color: 'rgba(255,255,255,0.5)',
                       lineHeight: 1.5,
                     }}>
-                      Each layer below is the slice of the 88-key transcription routed
-                      to it by the pipeline.  REPET-SIM runs independently on bass.wav
-                      and upper.wav, producing four layers: <em>bass pattern</em>,
-                      <em> bass melody</em>, <em>pattern</em>, <em>melody</em>.  Pattern
-                      layers are further broken into <em>Pattern 1…N</em> by agglomerative
-                      clustering on chroma + onset-shape per bar — each is a distinct
-                      recurring figure detected by the separator.
+                      These layers come from the earlier stem-separation pipeline
+                      (REPET-SIM on bass and upper stems: <em>bass pattern</em>,
+                      <em> bass melody</em>, <em>pattern</em>, <em>melody</em>, with
+                      recurring figures clustered into <em>Pattern 1…N</em>).  The current
+                      transformer pipeline hears the whole mix at once and does not
+                      produce them, so they are empty for new uploads.
                     </p>
                     {LAYER_VIEWS.map((lv, i) => {
                       const layerNotes = originalNotes.filter(n => n.layer === lv.key)

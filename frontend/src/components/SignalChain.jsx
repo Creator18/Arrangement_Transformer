@@ -18,21 +18,21 @@ const MODULES = [
     color: '#f59e0b',
     sym: '▲',
     title: 'Upload',
-    desc: 'Drop any piano recording in any format. We convert, normalise and store it automatically.',
+    desc: 'Drop a piano recording or a full song, in any format. We convert and normalise it automatically.',
   },
   {
     num: '02',
     color: '#a78bfa',
     sym: '◈',
-    title: 'Analyse',
-    desc: 'Demucs isolates the piano. REPET-SIM splits pattern from melody. pYIN and Basic Pitch transcribe every note; madmom locks the beat grid.',
+    title: 'Hear',
+    desc: 'A pitch-aligned spectral transformer, trained by us, hears the notes. Solo piano is transcribed directly (≈0.955 note F1 on real recordings); a song goes to the same model fine-tuned on human piano covers, which keeps what a pianist would play.',
   },
   {
     num: '03',
     color: '#06b6d4',
     sym: '▶',
-    title: 'Transform',
-    desc: 'The 88→61 model compresses range to your preset. Hand rules, voice leading and scale snapping shape a playable arrangement.',
+    title: 'Fit',
+    desc: 'The arrangement is fitted to your keyboard preset and split between two hands. Next: a model trained on thousands of arrangements rendered as solo piano and as full band mixes, so any song points to one clear piano part.',
   },
 ]
 

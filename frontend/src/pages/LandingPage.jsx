@@ -361,6 +361,11 @@ export default function LandingPage() {
             </div>
           ))}
         </div>
+        <p className="ct-mono" style={{ marginTop: 56, maxWidth: 620, lineHeight: 1.8, opacity: 0.75 }}>
+          Next — a model trained on thousands of piano arrangements, each rendered
+          as solo piano and as full multi-instrument mixes with drums, so that any
+          song, however it is orchestrated, points to one clear piano part.
+        </p>
       </Act>
     </div>
   )
