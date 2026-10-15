@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { Routes, Route, useLocation } from 'react-router-dom'
 import { AnimatePresence } from 'framer-motion'
 import Navbar from './components/Navbar'
-import CrtOverlay from './components/CrtOverlay'
 import LandingPage from './pages/LandingPage'
 import ProcessingPage from './pages/ProcessingPage'
 import ResultsPage from './pages/ResultsPage'
@@ -35,7 +34,6 @@ export default function App() {
           <Route path="/results/:sessionId" element={<ResultsPage />} />
         </Routes>
       </AnimatePresence>
-      <CrtOverlay />
     </div>
   )
 }
