@@ -216,7 +216,78 @@ def synth_stem(events, sf2, end, drum=False):
     return np.concatenate(out).astype(np.float64) / 32768.0 if out else np.zeros(1)
 
 
-def render_multi(notes, roles, beats, flags, sf2, combo, rng):
+
+# ---------------------------------------------------------------- sung melody
+VOWEL_PROGS = [52, 53, 54, 85]          # GM choir aahs, voice oohs, synth voice, voice lead
+CONSONANTS = ["", "", "d", "t", "n", "m", "l", "b", "p"]   # "" = a bare vowel onset
+
+
+def consonant(kind, f0, sr, rng):
+    """A short consonant attack made here (the vowel itself comes from the soundfont).
+    Plosives (d t b p): a filtered noise burst.  Nasals / liquids (n m l): a soft hum AT THE
+    NOTE'S OWN PITCH, so no pitch is ever added.  Returns (audio, its length in seconds)."""
+    from scipy.signal import butter, lfilter
+    if kind in ("d", "t", "b", "p"):
+        dur = {"t": .03, "p": .025, "d": .02, "b": .018}[kind] * float(rng.uniform(.8, 1.3))
+        n = int(dur * sr); x = rng.standard_normal(n)
+        lo, hi = {"t": (3000, 8000), "p": (500, 3000), "d": (1500, 5000), "b": (200, 1500)}[kind]
+        b, a = butter(2, [lo / (sr / 2), min(hi, sr / 2 - 100) / (sr / 2)], btype="band")
+        env = np.exp(-np.linspace(0, 6, n))
+        return lfilter(b, a, x) * env * float(rng.uniform(.15, .35)), dur
+    dur = {"n": .06, "m": .07, "l": .045}[kind] * float(rng.uniform(.8, 1.4))
+    n = int(dur * sr); t = np.arange(n) / sr
+    x = sum(np.sin(2 * np.pi * f0 * h * t) / h ** (2.2 if kind != "l" else 1.6) for h in range(1, 6))
+    b, a = butter(2, (900 if kind != "l" else 1800) / (sr / 2))
+    env = np.minimum(1, t / .01) * np.minimum(1, (dur - t) / .015)
+    return lfilter(b, a, x) * env * float(rng.uniform(.15, .3)), dur
+
+
+def vocal_stem(mel, sf2, end, rng):
+    """The melody SUNG: random syllable chains per phrase.  Each syllable = a made consonant
+    attack + a soundfont vowel at the exact written pitch (no vibrato, no bend).  Phrases split
+    at rests; within a phrase a syllable sometimes carries over several notes (melisma) with no
+    new consonant.  The vowel changes syllable to syllable among the vocal patches."""
+    import fluidsynth
+    fs = fluidsynth.Synth(samplerate=float(SR), gain=0.3); sfid = fs.sfload(str(sf2))
+    progs = list(rng.choice(VOWEL_PROGS, size=int(rng.integers(2, 5)), replace=False))
+    for c, pr in enumerate(progs):
+        fs.program_select(c, sfid, 0, int(pr)); fs.cc(c, 1, 0); fs.cc(c, 91, int(rng.integers(10, 60)))
+    ev, cons, syl = [], [], []
+    prev_end, ch, k = -9.0, 0, ""
+    for j, (s, e, p, v) in enumerate(mel):
+        new_phrase = s - prev_end > 0.3
+        melisma = (not new_phrase) and s - prev_end < 0.06 and rng.random() < .3
+        if not melisma:                                                   # a new syllable
+            ch = int(rng.integers(0, len(progs))); k = str(rng.choice(CONSONANTS))
+            syl.append(k + ["a", "oo", "u", "o"][VOWEL_PROGS.index(progs[ch]) % 4])
+            if k:
+                cons.append((s, k, 440.0 * 2 ** ((p - 69) / 12)))
+        ee = e if not melisma else e
+        nxt = mel[j + 1, 0] if j + 1 < len(mel) else None
+        if nxt is not None and nxt - e < 0.25:                            # a voice flows into its next note
+            ee = max(e, float(nxt) - 0.01)
+        ev += [(s, "on", ch, int(p), int(v)), (ee, "off", ch, int(p), 0)]
+        prev_end = e
+    out, t_now = [], 0.0
+    for t, kind, c, x, y in sorted(ev, key=lambda z: (z[0], z[1] != "off")):
+        n = int(round((t - t_now) * SR))
+        if n > 0:
+            out.append(np.asarray(fs.get_samples(n), np.float32)[::2]); t_now += n / SR
+        fs.noteon(c, x, y) if kind == "on" else fs.noteoff(c, x)
+    n = int(round((end - t_now) * SR))
+    if n > 0:
+        out.append(np.asarray(fs.get_samples(n), np.float32)[::2])
+    fs.delete()
+    y = np.concatenate(out).astype(np.float64) / 32768.0 if out else np.zeros(int(end * SR))
+    peak = np.abs(y).max() or 1.0
+    for t, kind, f0 in cons:                                              # consonant just before / at the vowel
+        x, dur = consonant(kind, f0, SR, rng)
+        a = max(0, int((t - (dur if kind in ("n", "m", "l") else 0.0)) * SR))
+        b = min(len(y), a + len(x)); y[a:b] += x[:b - a] * peak
+    return y, " ".join(syl[:24])
+
+
+def render_multi(notes, roles, beats, flags, sf2, combo, rng, vocal_p=0.0):
     """One orchestration of the whole arrangement.  Each instrument renders as its own stem with its
     own volume and bass/treble EQ, then the stems are mixed.  No pitch bend, no vibrato."""
     n_inst, layer, random_layer = combo["instruments"], combo["layering"], combo["layering_style"] == "random"
@@ -259,6 +330,7 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng):
         return on_layer[k]
     leg = articulation(notes, roles)
     ev = np.concatenate([[0], np.cumsum(np.diff(notes[:, 0]) > 0.03)])
+    sung = bool(rng.random() < vocal_p)                                   # the melody is SUNG in this render
     for j, (s, e, p, v) in enumerate(notes):
         r = int(roles[j]); slots = slots_of[r]; sg = seg_of(s)
         group = [x for x in np.flatnonzero(ev == ev[j]) if roles[x] == r]
@@ -266,8 +338,12 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng):
             targets = [slots[group.index(j) % len(slots)]]
         else:
             targets = [slots[0]]
-        if n_inst > 1 and active(s, "unison", 1) and rng.random() < .6:      # the same note on another instrument
+        if sung and r == 0:                                               # the singer has it; others only double it
+            targets = targets[1:] if len(targets) > 1 else []
+        if targets and n_inst > 1 and active(s, "unison", 1) and rng.random() < .6:   # the same note on another instrument
             targets.append(int(rng.choice([i for i in range(n_inst) if i != targets[0]])))
+        if sung and r == 0 and not targets and n_inst > 1 and active(s, "unison", 1) and rng.random() < .4:
+            targets = [int(rng.choice([i for i in range(n_inst) if i not in slots_of[0]] or [0]))]
         for k, i in enumerate(dict.fromkeys(targets)):
             pr = prog[(sg, i)]; ee = e
             if leg[j] and pr in CONT_PROGS:                                  # continuous instrument + connected passage: flow
@@ -318,6 +394,12 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng):
                 for h in range(4):
                     q = int(rng.choice([45, 47, 48, 50])); drums += [(t + h * bd / 4, "on", q, 100), (t + h * bd / 4 + .1, "off", q, 0)]
     mix = np.zeros(int(end * SR) + SR); eq = []
+    lyric = ""
+    if sung:
+        y, lyric = vocal_stem(notes[roles == 0], sf2, end, rng)
+        y = shelf(shelf(y, 200.0, float(rng.uniform(-6, 3)), high=False), 3000.0, float(rng.uniform(-3, 6)), high=True)
+        g = float(rng.uniform(.7, 1.0)); n = min(len(y), len(mix)); mix[:n] += g * y[:n]
+        eq.append(["voice", 0, 0, round(g, 2)])
     layers = [(f"inst{i}", stems[i]) for i in range(n_inst)] + list(extra.items()) + ([("drums", drums)] if drums else [])
     for key, events in layers:
         y = synth_stem(events, sf2, end, drum=key == "drums")
@@ -326,7 +408,7 @@ def render_multi(notes, roles, beats, flags, sf2, combo, rng):
         g = float(rng.uniform(.4, 1.0)) * (.6 if key in ("pad", "arp") else 1.0)
         n = min(len(y), len(mix)); mix[:n] += g * y[:n]; eq.append([key, round(lo, 1), round(hi, 1), round(g, 2)])
     pk = np.abs(mix).max()
-    desc = dict(combo, programs={f"inst{i}": sorted({prog[(sg, i)] for sg in range(len(bounds))}) for i in range(n_inst)},
+    desc = dict(combo, sung=sung, lyric=lyric, programs={f"inst{i}": sorted({prog[(sg, i)] for sg in range(len(bounds))}) for i in range(n_inst)},
                 layers_bass_treble_gain=eq)
     return (mix / pk * 0.9 if pk > 0 else mix).astype(np.float32), desc
 
@@ -341,6 +423,9 @@ def main():
     ap.add_argument("--extra-piano-p", type=float, default=0.3, help="chance of a 3rd piano render")
     ap.add_argument("--multi", type=int, default=4, help="multi-instrument renders per arrangement")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--vocal-p", type=float, default=0.0, help="share of multi renders whose melody is sung")
+    ap.add_argument("--multi-only", action="store_true", help="no piano renders (a fine-tuning batch)")
+    ap.add_argument("--tag", default="r", help="render-name prefix, so a new batch never overwrites the old")
     a = ap.parse_args()
     import pretty_midi
     import soundfile  # noqa: F401
@@ -362,19 +447,20 @@ def main():
         if len(notes) < 10:
             continue
         n_win = max(1, int(math.ceil(notes[:, 1].max() / SECONDS)))
-        if (out / f"{src}{sid}_r{a.pianos + a.multi - 1}_{n_win - 1:03d}.npz").exists():
+        if (out / f"{src}{sid}_{a.tag}{(0 if a.multi_only else a.pianos) + a.multi - 1}_{n_win - 1:03d}.npz").exists():
             continue
         pm = pretty_midi.PrettyMIDI(); inst = pretty_midi.Instrument(0)
         inst.notes = [pretty_midi.Note(int(np.clip(v, 1, 127)), int(p), float(s), float(e)) for s, e, p, v in notes]
         pm.instruments.append(inst)
-        n_piano = a.pianos + (1 if rng.random() < a.extra_piano_p else 0)
+        n_piano = 0 if a.multi_only else a.pianos + (1 if rng.random() < a.extra_piano_p else 0)
         pianos = list(rng.choice(piano_names, size=min(n_piano, len(piano_names)), replace=False))
         renders = [("piano", p) for p in pianos] + [("multi", k) for k in range(a.multi)]
         for k, (kind, arg) in enumerate(renders):
             if kind == "multi":
-                y, desc = render_multi(notes, roles, beats, flags, a.sf2, COMBOS[(jx * a.multi + arg) % len(COMBOS)], rng)
+                y, desc = render_multi(notes, roles, beats, flags, a.sf2, COMBOS[(jx * a.multi + arg) % len(COMBOS)], rng,
+                                       vocal_p=a.vocal_p)
             for w in range(n_win):
-                dst = out / f"{src}{sid}_r{k}_{w:03d}.npz"
+                dst = out / f"{src}{sid}_{a.tag}{k}_{w:03d}.npz"
                 if dst.exists():
                     continue
                 t0 = w * SECONDS
