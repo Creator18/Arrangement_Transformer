@@ -331,6 +331,13 @@ def main():
                     + f"{'  * best' if improved else ''}")
 
             minutes = (time.time() - t_start) / 60
+            # A faster GPU freed up: a waiting job wrote HANDOVER into the checkpoint
+            # folder.  Save exactly here and stop; that job resumes from last.pt.
+            if step % 50 == 0 and (ckdir / "HANDOVER").exists():
+                save(last)
+                say(f"handing over at step {step}: saved last.pt for the faster GPU")
+                done = True
+                break
             if step >= args.total_steps or minutes > args.max_minutes:
                 save(last)
                 say(f"stopping at step {step} after {minutes:.0f} min "
