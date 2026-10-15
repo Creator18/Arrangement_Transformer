@@ -628,21 +628,12 @@ aside[data-lenis-prevent]::after {
 }
 
 .crt-glass {
-  /* the curved tube: the page sits INSIDE a rounded screen.  A dark bezel fills
-     everything outside the rounded glass (the huge spread shadow), a bright rim
-     catches light along the glass edge, corners fall off, and a curved glare
-     sweeps the top — together they read as a convex CRT face. */
-  inset: calc(14px * var(--crt)) !important;
-  border-radius: calc(46px * var(--crt)) / calc(40px * var(--crt));
-  box-shadow:
-    0 0 0 calc(40px * var(--crt)) #050506,                                   /* bezel */
-    inset 0 0 0 1px rgba(255, 255, 255, calc(0.06 * var(--crt))),          /* glass rim */
-    inset 0 calc(2px * var(--crt)) calc(10px * var(--crt)) rgba(255, 255, 255, calc(0.05 * var(--crt))),
-    inset 0 0 calc(160px * var(--crt)) rgba(0, 0, 0, calc(0.7 * var(--crt)));   /* edge falloff */
+  /* curved tube: dark corners, a soft inner edge, a faint diagonal sheen */
   background:
-    radial-gradient(130% 95% at 50% 50%, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, calc(0.45 * var(--crt))) 100%),
-    radial-gradient(70% 22% at 50% -6%, rgba(255, 255, 255, calc(0.1 * var(--crt))) 0%, rgba(255, 255, 255, 0) 100%),
-    linear-gradient(135deg, rgba(255, 255, 255, calc(0.03 * var(--crt))) 0%, rgba(255, 255, 255, 0) 35%);
+    radial-gradient(ellipse at 50% 50%, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, calc(0.38 * var(--crt))) 100%),
+    linear-gradient(135deg, rgba(255, 255, 255, calc(0.025 * var(--crt))) 0%, rgba(255, 255, 255, 0) 38%);
+  box-shadow: inset 0 0 calc(80px * var(--crt)) rgba(0, 0, 0, calc(0.38 * var(--crt)));
+  border-radius: 18px;
 }
 
 @keyframes crtRoll {
