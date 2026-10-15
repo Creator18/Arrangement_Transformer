@@ -112,12 +112,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clips", required=True); ap.add_argument("--fe", required=True)
     ap.add_argument("--grammar", required=True); ap.add_argument("--n", type=int, default=150)
+    ap.add_argument("--joint", default="", help="joint_grammar.pt: test it with notes only / sound only / both")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     ck = torch.load(a.fe, map_location=dev, weights_only=False)
     fe = S.SpectralFrontend().to(dev).eval(); fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
     tx = from_checkpoint(ck).to(dev).eval()                                     # the solo-piano transcriber
     g = pathlib.Path(a.grammar); M = {}
+    J = None
+    if a.joint:
+        from app.ml.grammar.joint_grammar import JointEncoder
+        J = JointEncoder().to(dev).eval(); J.load_state_dict(torch.load(a.joint, map_location=dev, weights_only=False)["net"])
     for kind in ("notes", "sound"):
         c = torch.load(g / f"{kind}_grammar.pt", map_location=dev, weights_only=False)
         e = Encoder(c["din"]).to(dev).eval(); e.load_state_dict(c["enc"])
@@ -125,7 +130,9 @@ def main():
     clips = sorted(pathlib.Path(a.clips, "validation").glob("pop*_[0-9][0-9][0-9].npz"))[: a.n]
     prompts = ("random cells", "one band, 2 s", "gap, 0.5 s", "bass, 4 s")
     acc = {p: {k: Acc() for k in ("notes grammar", "sound grammar", "transcriber, blanks empty",
-                                   "agreement notes vs sound")} for p in prompts}
+                                   "agreement notes vs sound")
+                     + (tuple(f"joint, {inp}: {out}" for inp in ("notes only", "sound only", "both")
+                              for out in ("notes out", "sound out")) if J is not None else ())} for p in prompts}
     with torch.no_grad():
         for i, path in enumerate(clips):
             z = np.load(path)
@@ -150,15 +157,23 @@ def main():
                 A["sound grammar"].add(sf, so, g_fr, g_on, reg)
                 A["transcriber, blanks empty"].add(ef, eo, g_fr, g_on, reg)
                 A["agreement notes vs sound"].add(pn[1], pn[0], sf > 0.5, so > 0.5, reg)
+                if J is not None:
+                    allm = torch.ones_like(mt)
+                    for inp, (mn, ms) in (("notes only", (mt, allm)), ("sound only", (allm, mt)), ("both", (mt, mt))):
+                        jn, js = J(tn, ts, mn, ms)
+                        q = torch.sigmoid(untok_notes(jn[0]).float()).cpu().numpy()
+                        A[f"joint, {inp}: notes out"].add(q[1], q[0], g_fr, g_on, reg)
+                        jo, jf = read(torch.where(binreg, untok_sound(js[0]).float(), feat[0])[None])
+                        A[f"joint, {inp}: sound out"].add(jf, jo, g_fr, g_on, reg)
     res = {}
     print(f"{len(clips)} held-out POP909 clips (8 s); every prompt identical for both grammars; scored inside the blanks only\n")
     for p in prompts:
         print(f"== prompt: {p}")
-        print(f"   {'':<30}{'frame F1 (thr)':>18}{'onset F1 (thr)':>18}")
+        print(f"   {'':<36}{'frame F1 (thr)':>18}{'onset F1 (thr)':>18}")
         for k, A in acc[p].items():
             fb, ft = A.best(A.f); ob, ot = A.best(A.o)
             res.setdefault(p, {})[k] = dict(frame=fb, frame_thr=ft, onset=ob, onset_thr=ot)
-            print(f"   {k:<30}{fb:>12.3f} ({ft}){ob:>12.3f} ({ot})")
+            print(f"   {k:<36}{fb:>12.3f} ({ft}){ob:>12.3f} ({ot})")
         print()
     (g / "prompt_test.json").write_text(json.dumps(res, indent=1))
     print("agreement = the notes grammar's fill-in scored against the sound grammar's (via the transcriber, at 0.5)")
