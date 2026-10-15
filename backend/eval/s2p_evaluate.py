@@ -108,6 +108,9 @@ def main():
     ap.add_argument("--september", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--units", default="", help="m2m_units.json: use the BY-SONG split (no song audio on both sides)")
+    ap.add_argument("--exclude-old-train", action="store_true",
+                    help="drop test songs that were in the old (by-arrangement) TRAIN split, i.e. that v1 trained on")
     args = ap.parse_args()
     from app.services import spectral_transcription as ST
     from app.services import ml_transcription as MT
@@ -123,6 +126,14 @@ def main():
     m2m = pathlib.Path(args.m2m)
     npy = m2m / "midi_numpy" if (m2m / "midi_numpy").is_dir() else m2m / "music2midi-dataset" / "midi_numpy"
     sp = json.loads((m2m / "m2m_splits.json").read_text())
+    if args.units:
+        U = json.loads(pathlib.Path(args.units).read_text())
+        old_train = set(sp["train"])
+        sp = dict(U["splits"], difficulty=U["difficulty"])
+        if args.exclude_old_train:
+            n0 = len(sp["test"]); sp["test"] = [i for i in sp["test"] if i not in old_train]
+            sp["validation"] = [i for i in sp["validation"] if i not in old_train]
+            print(f"by-song split; {n0 - len(sp['test'])} test songs v1 trained on are excluded", flush=True)
     ranges = json.loads((ROOT / "app" / "ml" / "scorecard_ranges.json").read_text())
     level = sp["difficulty"]
 
