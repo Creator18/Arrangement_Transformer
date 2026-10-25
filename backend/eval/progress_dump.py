@@ -34,7 +34,7 @@ def sh(cmd):
 
 # render arrays whose output was thrown away (two copies collided on 2026-10-23): never counted
 IGNORE_ARRAYS = {"11330229", "11330334"}
-SONG_LINE = re.compile(r"^\s+(train|validation) pop\d+: (\d+) renders x (\d+) windows")
+SONG_LINE = re.compile(r"^\s+(train|validation) (?:pop|m2m)\d+: (\d+) renders x (\d+) windows")   # POP909 and Music2MIDI
 
 
 def secs(t):
@@ -505,7 +505,9 @@ def experiments():
             continue
         out[n] = {"label": label,
                   "train": {"last": tr["last"], "stopped": tr["stopped"], "checks": len(tr["vals"]),
-                            "best": max([v["f1"] for v in tr["vals"]], default=None)},
+                            "best": max([v["f1"] for v in tr["vals"]], default=None),
+                            "vals": [[v["step"], v["f1"], v["p"], v["r"]] for v in tr["vals"]],
+                            "trace": [[t[0], t[1], t[4]] for t in tr["trace"]]},             # step, loss, steps/s
                   "tests": render_tests(lambda k, V, n=n: f"{L}/winev_real_{n}.out" if k == "real" else f"{L}/winev_{k}_{n}_{V}.out")}
     return out
 

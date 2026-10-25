@@ -127,10 +127,11 @@ function Stat({ label, value, hint }: { label: string; value: React.ReactNode; h
   );
 }
 
-function LiveRun({ title, run, job }: { title: string; run: Run; job?: Job }) {
+function LiveRun({ title, run, job, total = TOTAL_STEPS, valEvery = 1000, note = "Stops early after 3 checks without a new best." }:
+  { title: string; run: Run; job?: Job; total?: number; valEvery?: number; note?: string }) {
   const last = run.last;
   const best = run.vals.reduce<Val | null>((b, v) => (!b || v.f1 > b.f1 ? v : b), null);
-  const etaMin = last && last.speed > 0 ? (TOTAL_STEPS - last.step) / last.speed / 60 : null;
+  const etaMin = last && last.speed > 0 ? (total - last.step) / last.speed / 60 : null;
   return (
     <div className="rounded-xl border border-border bg-white/[0.03] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
@@ -140,18 +141,18 @@ function LiveRun({ title, run, job }: { title: string; run: Run; job?: Job }) {
       </div>
       {last ? (
         <>
-          <Bar value={last.step} total={TOTAL_STEPS} />
+          <Bar value={last.step} total={total} />
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            <Stat label="step" value={`${last.step.toLocaleString()}`} hint={`of ${TOTAL_STEPS.toLocaleString()} max`} />
+            <Stat label="step" value={`${last.step.toLocaleString()}`} hint={`of ${total.toLocaleString()} max`} />
             <Stat label="loss" value={last.loss.toFixed(4)} />
-            <Stat label="speed" value={`${last.speed.toFixed(2)}/s`} hint={etaMin ? `≤ ${Math.round(etaMin)} min left` : undefined} />
+            <Stat label="speed" value={`${last.speed.toFixed(2)}/s`} hint={etaMin ? `≤ ${fmtMin(etaMin)} left` : undefined} />
             <Stat label="GPU" value={last.gpu === null ? "—" : `${last.gpu}%`} hint={last.gpu === null ? "node doesn't report it" : undefined} />
-            <Stat label="best val F1" value={best ? best.f1.toFixed(3) : "—"} hint={best ? `step ${best.step}` : "first check at 1000"} />
+            <Stat label="best val F1" value={best ? best.f1.toFixed(3) : "—"} hint={best ? `step ${best.step}` : `first check at ${valEvery.toLocaleString()}`} />
           </div>
           <div className="mt-3 flex flex-wrap items-end gap-4">
             <Sparkline vals={run.vals} />
             <div className="text-[11px] text-muted-foreground">
-              Stops early after 3 checks without a new best.<br />Last update {last.time}.
+              {note}<br />Last update {last.time}.
             </div>
           </div>
         </>
@@ -247,30 +248,33 @@ function deltaColor(d: number, span: number) {
 type Series = { name: string; color: string; pts: [number, number][] };
 
 /** A small multi-series line chart over training steps (same look as the health charts). */
-function MiniChart({ label, series, fmt, marks = [], lo, hi, height = 150 }: {
+function MiniChart({ label, series, fmt, marks = [], lo, hi, height = 150, skipStart = 0 }: {
   label: string; series: Series[]; fmt: (v: number) => string; marks?: number[]; lo?: number; hi?: number; height?: number;
+  skipStart?: number;   // scale the y axis without the first share of points (loss starts very high)
 }) {
   const all = series.flatMap((s_) => s_.pts);
   if (all.length < 2) return <div className="text-[11px] text-muted-foreground">{label}: not enough points yet</div>;
   const w = 420, h = height, padL = 40, padR = 8, padT = 22, padB = 16;
   const xs = all.map((p_) => p_[0]), ys = all.map((p_) => p_[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = lo ?? Math.min(...ys), y1 = hi ?? Math.max(...ys);
+  const scaleYs = skipStart ? series.flatMap((s_) => s_.pts.slice(Math.floor(s_.pts.length * skipStart)).map((p_) => p_[1])) : ys;
+  const y0 = lo ?? Math.min(...scaleYs), y1 = hi ?? Math.max(...scaleYs);
   const x = (v: number) => padL + ((v - x0) * (w - padL - padR)) / Math.max(1, x1 - x0);
   const y = (v: number) => padT + (1 - (v - y0) / Math.max(1e-12, y1 - y0)) * (h - padT - padB);
   return (
+    <div>
+    <div className="flex flex-wrap items-baseline gap-x-3 text-[11px]">
+      <span className="text-muted-foreground">{label}</span>
+      {series.length > 1 && series.map((s_) => <span key={s_.name} style={{ color: s_.color }}>● {s_.name}</span>)}
+    </div>
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full" role="img" aria-label={label}>
-      <text x={padL} y={12} fontSize={11} className="fill-muted-foreground">{label}</text>
-      {series.length > 1 && series.map((s_, i) => (
-        <text key={s_.name} x={w - padR - i * 100} y={12} textAnchor="end" fontSize={10} fill={s_.color}>● {s_.name}</text>
-      ))}
       <text x={padL - 4} y={y(y1)} dy="0.35em" textAnchor="end" fontSize={9} className="fill-muted-foreground">{fmt(y1)}</text>
       <text x={padL - 4} y={y(y0)} dy="0.35em" textAnchor="end" fontSize={9} className="fill-muted-foreground">{fmt(y0)}</text>
       <line x1={padL} x2={w - padR} y1={h - padB} y2={h - padB} stroke="currentColor" className="text-border" />
       {marks.map((m) => <line key={m} x1={x(m)} x2={x(m)} y1={padT} y2={h - padB} stroke="currentColor" strokeDasharray="2 3" className="text-border" />)}
       {series.map((s_) => (
         <g key={s_.name}>
-          <polyline fill="none" stroke={s_.color} strokeWidth={1.5} points={s_.pts.map((p_) => `${x(p_[0])},${y(p_[1])}`).join(" ")} />
+          <polyline fill="none" stroke={s_.color} strokeWidth={1.5} points={s_.pts.map((p_) => `${x(p_[0])},${y(Math.min(p_[1], y1))}`).join(" ")} />
           {s_.pts.length < 30 && s_.pts.map((p_) => (
             <circle key={p_[0]} cx={x(p_[0])} cy={y(p_[1])} r={2.5} fill={s_.color}><title>{`${s_.name} · step ${p_[0]}: ${fmt(p_[1])}`}</title></circle>
           ))}
@@ -278,6 +282,7 @@ function MiniChart({ label, series, fmt, marks = [], lo, hi, height = 150 }: {
       ))}
       <text x={w - padR} y={h - 3} textAnchor="end" fontSize={9} className="fill-muted-foreground">step {x1.toLocaleString()}</text>
     </svg>
+    </div>
   );
 }
 
@@ -730,7 +735,13 @@ type SetTest = Partial<{ recall: number; precision: number; f1: number; dbl: num
 type ModelTests = Partial<Record<"mod_plain" | "mod_combo" | "mod_fast", SetTest>> & {
   real?: { strict: number; precision: number; recall: number; tolerant: number; pc: number; notes_per_s: number };
 };
-type Experiment = { label: string; train: { last: Run["last"]; stopped: string | null; checks: number; best: number | null }; tests: ModelTests };
+type Experiment = {
+  label: string; tests: ModelTests;
+  train: { last: Run["last"]; stopped: string | null; checks: number; best: number | null;
+           vals?: [number, number, number, number][];      // step, F1, precision, recall
+           trace?: [number, number, number][] };            // step, loss, steps/s
+};
+const EXP_COLOR: Record<string, string> = { A_global: "#94a3b8", B_layers: "#fbbf24", C_soft: "oklch(0.6 0.2 250)", D_halfoct: "#b4fbde" };
 type NewBase = {
   run: string; base: Run | null; base_tests: ModelTests; families: string[];
   adapters: Record<string, Run | null>; adapter_tests: Record<string, ModelTests>;
@@ -764,7 +775,7 @@ function NewKpis({ s }: { s: Snapshot }) {
     { label: "stage", value: `${active}/5`, hint: NEW_STAGES[active - 1] },
     { label: "render shards", value: `${shards}/${shardsAll || "—"}`, hint: `${clips.toLocaleString()} clips written` },
     { label: "CPU shards running", value: (rb?.running ?? 0) + (rt?.running ?? 0), hint: rb?.eta_min ? `main pass ~${fmtMin(rb.eta_min)} left` : "1 core each" },
-    { label: "base", value: last ? `step ${last.step.toLocaleString()}` : "not started", hint: best ? `best val F1 ${best.toFixed(3)}` : "starts after the renders" },
+    { label: "base", value: last ? `step ${last.step.toLocaleString()}` : "not started", hint: best ? `best val F1 ${best.toFixed(3)}` : last ? "training, first check at 2,000" : "starts after the renders" },
     { label: "instrument adapters", value: `${adaptersDone}/${nb?.families.length ?? 14}`, hint: "tested" },
     { label: "GPU jobs running", value: gpu.length, hint: gpu.map((j) => `${j.name} (${j.gpu ?? j.partition})`).join(", ") || "none" },
     { label: "alerts", value: alerts, hint: alerts ? "see the red box" : "all clear", tone: alerts ? "text-rose-300" : "text-emerald-300" },
@@ -841,8 +852,10 @@ function BaseDetail({ s }: { s: Snapshot }) {
             <Stat label="best val F1" value={b.vals.length ? Math.max(...b.vals.map((v) => v.f1)).toFixed(3) : "—"} hint={`${b.vals.length} checks`} />
             <Stat label="C reached" value={ref?.train.best?.toFixed(3) ?? "—"} hint="on its (older) renders" />
           </div>
-          <div className="mt-4 grid gap-x-6 gap-y-2 md:grid-cols-2">
-            <MiniChart label="loss" marks={b.vals.map((v) => v.step)} fmt={(v) => v.toFixed(3)}
+          <div className="mt-4 grid gap-x-6 gap-y-2 md:grid-cols-2 2xl:grid-cols-3">
+            <MiniChart label="speed (steps/s)" lo={0} fmt={(v) => v.toFixed(1)}
+                       series={[{ name: "speed", color: "#c4b5fd", pts: b.trace.map((t) => [t[0], t[4]] as [number, number]) }]} />
+            <MiniChart label="loss" skipStart={0.05} marks={b.vals.map((v) => v.step)} fmt={(v) => v.toFixed(3)}
                        series={[{ name: "loss", color: "oklch(0.6 0.2 250)", pts: b.trace.map((t) => [t[0], t[1]] as [number, number]) }]} />
             <MiniChart label="validation" fmt={(v) => v.toFixed(3)} series={[
               { name: "note F1", color: "#b4fbde", pts: b.vals.map((v) => [v.step, v.f1] as [number, number]) },
@@ -876,6 +889,18 @@ function ExperimentsPanel({ s }: { s: Snapshot }) {
           const e = ex[n]; const st = e.train.stopped ? "trained" : e.train.last ? `training · step ${e.train.last.step.toLocaleString()}` : "queued";
           return <span key={n} className="rounded-md border border-border px-2 py-0.5 text-muted-foreground"><span className="text-white">{e.label}</span> · {st}{e.train.best ? ` · best val ${e.train.best.toFixed(3)}` : ""}</span>;
         })}
+      </div>
+      <div className="mb-4 grid gap-x-6 gap-y-2 md:grid-cols-2 2xl:grid-cols-4">
+        <MiniChart label="validation note F1" fmt={(v) => v.toFixed(3)}
+                   series={ids.map((n) => ({ name: n[0], color: EXP_COLOR[n] ?? "#fff", pts: (ex[n].train.vals ?? []).map((v) => [v[0], v[1]] as [number, number]) }))} />
+        <MiniChart label="validation recall / precision (D vs A)" fmt={(v) => v.toFixed(3)}
+                   series={[["D_halfoct", 3, "D recall"], ["A_global", 3, "A recall"], ["D_halfoct", 2, "D prec"], ["A_global", 2, "A prec"]]
+                     .filter(([n]) => ex[n as string]).map(([n, k, nm], i) => ({ name: nm as string, color: ["#b4fbde", "#94a3b8", "#34d399", "#64748b"][i],
+                       pts: (ex[n as string].train.vals ?? []).map((v) => [v[0], v[k as number]] as [number, number]) }))} />
+        <MiniChart label="training loss" skipStart={0.03} fmt={(v) => v.toFixed(3)}
+                   series={ids.map((n) => ({ name: n[0], color: EXP_COLOR[n] ?? "#fff", pts: (ex[n].train.trace ?? []).map((t) => [t[0], t[1]] as [number, number]) }))} />
+        <MiniChart label="speed (steps/s)" lo={0} fmt={(v) => v.toFixed(1)}
+                   series={ids.map((n) => ({ name: n[0], color: EXP_COLOR[n] ?? "#fff", pts: (ex[n].train.trace ?? []).map((t) => [t[0], t[2]] as [number, number]) }))} />
       </div>
       <TestTable rows={ids.map((n) => ({ name: ex[n].label, t: ex[n].tests }))} />
     </section>
@@ -1060,7 +1085,8 @@ export default function ProgressPage() {
             {snap.newbase?.base?.last && !snap.newbase.base.stopped && (
               <section className="mb-10">
                 <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Training now</h2>
-                <LiveRun title={`Base · ${snap.newbase.run}`} run={snap.newbase.base}
+                <LiveRun title={`Base · ${snap.newbase.run}`} run={snap.newbase.base} total={120000} valEvery={2000}
+                         note="Validates every 2,000 steps; keeps the best checkpoint; runs to 120,000."
                          job={snap.jobs.find((j) => j.name.startsWith("base") && j.name !== "basetempo" && j.state === "RUNNING")} />
               </section>
             )}
