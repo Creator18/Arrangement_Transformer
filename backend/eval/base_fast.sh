@@ -14,11 +14,11 @@ CK=$1; TEST=$2; shift 2
 CMD=("$@")
 echo "[fast] $(nvidia-smi --query-gpu=name --format=csv,noheader) on $(hostname)"
 if tail -3 "$CK/train.log" 2>/dev/null | grep -q "(finished)"; then echo "[fast] training already finished"; exit 0; fi
-for j in $(squeue -u "$USER" -h -n base-fast -o %i | grep -v "^${SLURM_JOB_ID}$"); do scancel "$j"; done
+for j in $(squeue -u "$USER" -h -t PD -n base-fast -o %i); do scancel "$j"; done   # only PENDING requests, never a running trainer
 for j in $(squeue -u "$USER" -h -t PD -o "%i %j" | awk '$2 ~ /^base-train-/ {print $1}' | sort -n | head -1); do
   scontrol update jobid="$j" Dependency="afterany:$SLURM_JOB_ID" && echo "[fast] spare $j now waits for job $SLURM_JOB_ID"
 done
-RUN=$(squeue -u "$USER" -h -t R -o "%i %j" | awk '$2 ~ /^base-train-/ {print $1}' | head -1)
+RUN=$(squeue -u "$USER" -h -t R -o "%i %j" | awk '$2 ~ /^base-(train-|fast)/ {print $1}' | grep -v "^${SLURM_JOB_ID}$" | head -1)
 if [ -n "$RUN" ]; then
   touch "$CK/HANDOVER"; echo "[fast] asking job $RUN to save and stop"
   while squeue -j "$RUN" -h 2>/dev/null | grep -q .; do sleep 15; done

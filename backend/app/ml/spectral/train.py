@@ -172,7 +172,9 @@ def main():
         ck = torch.load(last, map_location=dev, weights_only=False)
         net.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
-        if "scaler" in ck and not bf16:
+        # a save from a bfloat16 GPU (A100 / H200) has an EMPTY scaler state: resuming it on a float16 GPU (V100)
+        # starts a fresh scaler instead of crashing (2026-10-25: a V100 resume after an A100 handover died here)
+        if ck.get("scaler") and not bf16:
             scaler.load_state_dict(ck["scaler"])
         fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
         step, best = int(ck["step"]), float(ck["best"])
