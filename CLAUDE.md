@@ -29,6 +29,7 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
 | Job | ID | What |
 |---|---|---|
 | `base-train-1/2/3` | 11358316 / 11358317 / 11358318 | the new base; chained 8 h jobs, each resumes from `last.pt` (spare ones exit at once) |
+| `base-fast` | 11359313 (A100) / 11359314 (H200) | waiting for a faster GPU; when one starts it cancels the V100 spares, hands the run over (`HANDOVER` file) and resumes there (`backend/eval/base_fast.sh`) |
 | `basetest` | 11358319 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
 | `win-D_halfoct` / `winev-D_halfoct` | 11354453 / 11354489 | half-octave token test (D) and its tests. **If D's real-song / dense-mix tests are clearly worse than A, stop the base early and rethink** (the base was switched to half-octave tokens on D's validation lead alone). |
 | `progress-snap` | scrontab | 5-minute snapshot + email alerts (see below) |
@@ -69,6 +70,8 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
   (P100s + a T4). Don't run heavy Python on the login node (it gets killed); use `srun`/`sbatch`.
 - **Submit with `backend/eval/sbatch_once.sh -J <name> ...`, never a blind sbatch retry:** the controller often
   replies "Unexpected message received" yet accepts the job, and retries created duplicates that corrupted data.
+- **Faster GPU rule:** V100 minimum, but move to an A100 / H200 when one frees up. For train.py runs use
+  `eval/gpu_train.sh` (or `eval/base_fast.sh` for an already-running chain); the trainer saves and exits on a `HANDOVER` file.
 - Node `d0135` hung 31 render shards with no output (2026-10-24); exclude it if it misbehaves again.
 - Shell scripts must have LF line endings (CRLF broke them before).
 
