@@ -43,6 +43,18 @@ Same tone variation and mastering as the base.
 
 An attention layer over the adapters' outputs (AdapterFusion-style), trained on mixed renders with the adapters frozen. **No bundle adjustment.**
 
+## 4b. Learned note timing (after the base is ready)
+
+The app places each note start at the centroid of its onset bump (2.2 ms median error vs 4.5 ms for the old
+first-frame rule), but merged double strikes, flat-topped bumps and uneven bumps still misplace some notes. Plan:
+
+1. **Learned decoder first** (~4-6 h end to end, small GPU cost): a tiny network that reads each detected note's
+   onset / frame probability curves (+-4 frames, neighbouring keys) and a small audio patch, and outputs the exact
+   start time, whether it is one note or two merged strikes, and optionally a corrected end. Trained on renders
+   (true times known), works with any transcriber (the base, C). Judged with eval/timing_check.py and by ear.
+2. **Then inside the model:** a sub-frame timing output trained against the written times, added at the
+   instrument-adapter stage; keep the decoder only if it still adds something.
+
 ## 5. Checks at every stage
 
 - Held-out renders: recall / precision / F1, quick notes by gap, double presses, timing (centroid), per family.

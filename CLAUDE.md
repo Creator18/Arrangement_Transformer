@@ -114,4 +114,6 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
    `base-train-*` and decide with the user.
 2. Watch the base (`checkpoints/base20m/train.log`); when `basetest` finishes, copy `best.pt` to the laptop and
    host it beside C for the user (large files: copy in 5 MB pieces with `split` + checksum if scp drops).
-3. Then build the instrument-adapter renders and adapters (`NEW_BASE_PLAN.md` section 3), then the combining layer.
+3. Learned note timing (`NEW_BASE_PLAN.md` section 4b): once the base is ready, build the small learned decoder
+   (exact start times, merged double strikes), test it on the base and C, then put a timing output inside the model.
+4. Then build the instrument-adapter renders and adapters (`NEW_BASE_PLAN.md` section 3), then the combining layer.
