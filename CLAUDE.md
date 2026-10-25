@@ -79,10 +79,11 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
 | A global attention (`win_A_global`) | 0.813 | 0.785 | 121 | 0.248 | 0.234 / 0.279 | 9.1 |
 | B per-layer windows (`win_B_layers`) | 0.823 | 0.790 | 115 | 0.252 | 0.228 / 0.296 | 10.3 |
 | **C learned soft windows** (`win_C_soft`) | 0.832 | 0.793 | **102** | 0.245 | **0.241** / 0.265 | **8.3** |
-| D half-octave tokens (`win_D_halfoct`) | ~0.83 at 42k (led A by 4-6 pts at every check) | pending | | pending | | |
+| **D half-octave tokens** (`win_D_halfoct`) | **0.848** | **0.804** | 105 | 0.249 | 0.239 / 0.273 | 8.8 |
 
-- The user hears **C** as clearly best (alternating attention "improved a lot", vocals much better). C is hosted
-  locally from `backend/app/ml/spectral/checkpoints/win_C_soft/best.pt`.
+- By ear: **C** clearly beat A / arr_scratch (alternating attention "improved a lot", vocals much better), and
+  **D beat C** (2026-10-25). D is hosted locally from `backend/app/ml/spectral/checkpoints/win_D_halfoct/best.pt`;
+  D also leads on every render set (plain .953, fast .933, quick notes +3-5 pts).
 - Ruled out: time stretching dense passages (hurt everywhere, `eval/stretch_oracle.py`), finer time resolution,
   8 kHz band limit (no effect). Real songs sat ~0.8 spreads louder / 1.7x wider than old renders at the front end;
   the new renders' mastering closes most of that (`eval/fe_shift.py`).
