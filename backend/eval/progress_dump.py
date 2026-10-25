@@ -370,6 +370,14 @@ def alerts():
 NOTICE_HOURS = 6      # a finished stage stays on the page this long, unless already acknowledged (in sent.json)
 
 
+def resolved():
+    """Alerts already dealt with (keys in progress/resolved.json): off the page and never emailed."""
+    try:
+        return set(json.load(open(f"{OUT}/resolved.json")))
+    except (OSError, ValueError):
+        return set()
+
+
 def acked():
     """Stage-finished notices already sent: emailed once, then off the page (idle-GPU ones stay while true)."""
     try:
@@ -546,7 +554,7 @@ def main():
         "joint": joint(),
         "newbase": newbase(),
         "gate": {"classify": gate_phase("classify"), "e2e": gate_phase("e2e")},
-        "alerts": alerts(),
+        "alerts": [x for x in alerts() if x["key"] not in resolved()],
         "notices": [n for n in notices() if n["key"] not in acked()],
     }
     if "--write" in sys.argv:

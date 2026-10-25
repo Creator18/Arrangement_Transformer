@@ -53,7 +53,8 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
 - **Snapshot:** `backend/eval/progress_dump.py --write` runs every 5 min (scrontab, `eval/progress_scrontab.txt`)
   and writes `~/arrangement_transformer/progress/{latest.json,history.jsonl,sent.json}`. It emails new alerts
   (failed shards / jobs, stuck lanes, a stage finished, no GPU work queued) to the user via a 1-minute Slurm job.
-  Add a key to `sent.json` to silence a known alert.
+  Add a key to `sent.json` to stop an alert being emailed; add it to `resolved.json` once it has been dealt with
+  (it then leaves the page too).
 - **Progress page:** run the backend + frontend locally, open `http://localhost:5173/progress`. The backend's
   `/progress-data` reads `latest.json` over `ssh explorer` (`backend/app/routers/progress.py`).
 - **Test outputs per model:** `logs/<prefix>_ioi_<set>.out` (recall / precision / F1 / double presses at the
