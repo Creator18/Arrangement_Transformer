@@ -28,9 +28,9 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
 
 | Job | ID | What |
 |---|---|---|
-| `base-train-1/2/3` | 11363197 / 11363198 / 11363199 | the new base; chained 8 h jobs, each resumes from `last.pt` (spare ones exit at once) |
-| `base-fast` | 11363201 (A100) / 11363202 (H200) | waiting for a faster GPU; when one starts it cancels the V100 spares, hands the run over (`HANDOVER` file) and resumes there (`backend/eval/base_fast.sh`) |
-| `basetest` | 11363200 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
+| `base-fast` (A100) | 11363201 | **the base, training now** (resumed from step 26,000 at ~5.5 steps/s) |
+| `base-train-2/3` | 11363259 / 11363260 | V100+ spares: wait for the A100 job, resume from `last.pt` if it dies (exit at once if training is finished) |
+| `basetest` | 11363261 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
 | `win-D_halfoct` / `winev-D_halfoct` | 11354453 / 11354489 | half-octave token test (D) and its tests. **If D's real-song / dense-mix tests are clearly worse than A, stop the base early and rethink** (the base was switched to half-octave tokens on D's validation lead alone). |
 | `progress-snap` | scrontab | 5-minute snapshot + email alerts (see below) |
 
