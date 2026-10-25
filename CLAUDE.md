@@ -28,9 +28,9 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
 
 | Job | ID | What |
 |---|---|---|
-| `base-train-1/2/3` | 11358316 / 11358317 / 11358318 | the new base; chained 8 h jobs, each resumes from `last.pt` (spare ones exit at once) |
-| `base-fast` | 11359313 (A100) / 11359314 (H200) | waiting for a faster GPU; when one starts it cancels the V100 spares, hands the run over (`HANDOVER` file) and resumes there (`backend/eval/base_fast.sh`) |
-| `basetest` | 11358319 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
+| `base-train-1/2/3` | 11363197 / 11363198 / 11363199 | the new base; chained 8 h jobs, each resumes from `last.pt` (spare ones exit at once) |
+| `base-fast` | 11363201 (A100) / 11363202 (H200) | waiting for a faster GPU; when one starts it cancels the V100 spares, hands the run over (`HANDOVER` file) and resumes there (`backend/eval/base_fast.sh`) |
+| `basetest` | 11363200 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
 | `win-D_halfoct` / `winev-D_halfoct` | 11354453 / 11354489 | half-octave token test (D) and its tests. **If D's real-song / dense-mix tests are clearly worse than A, stop the base early and rethink** (the base was switched to half-octave tokens on D's validation lead alone). |
 | `progress-snap` | scrontab | 5-minute snapshot + email alerts (see below) |
 
@@ -72,6 +72,9 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
   replies "Unexpected message received" yet accepts the job, and retries created duplicates that corrupted data.
 - **Faster GPU rule:** V100 minimum, but move to an A100 / H200 when one frees up. For train.py runs use
   `eval/gpu_train.sh` (or `eval/base_fast.sh` for an already-running chain); the trainer saves and exits on a `HANDOVER` file.
+- 2026-10-25: an A100 job was killed (signal 9, 23.7 of 64 GB used, no error) 11 min after a handover; the old
+  handover had cancelled the V100 spares, so the run sat idle ~7 h. `base_fast.sh` now makes the spares wait for it
+  instead, and alerts cover base-/win-/inst jobs. Resumed from step 26,000.
 - Node `d0135` hung 31 render shards with no output (2026-10-24); exclude it if it misbehaves again.
 - Shell scripts must have LF line endings (CRLF broke them before).
 
