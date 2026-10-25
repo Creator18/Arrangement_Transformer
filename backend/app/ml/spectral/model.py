@@ -84,23 +84,42 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-    """Time attention per pitch row, then pitch attention per time column."""
+    """Time attention per pitch row, then pitch attention per time column.
 
-    def __init__(self, d: int, heads: int, ff: int = 4):
+    time_win sets how far along time a token may look (tokens are 32 ms): 0 = the whole window
+    (global), w > 0 = only +-w tokens (hard local window), -1 = a learned soft window per head (a
+    penalty growing with distance, its steepness learned).  Pitch attention is always full."""
+
+    def __init__(self, d: int, heads: int, ff: int = 4, time_win: int = 0, rows: int = ROWS):
         super().__init__()
+        self.time_win = time_win
+        if time_win == -1:
+            # start the heads at different widths (half-weight at ~2, 6, 12, 24 tokens), then learn them
+            half = torch.tensor([2.0, 6.0, 12.0, 24.0][:heads] + [24.0] * max(0, heads - 4))
+            slope = math.log(2.0) / half
+            self.time_slope = nn.Parameter(torch.log(torch.expm1(slope)))   # softplus^-1
         self.n1, self.time = nn.LayerNorm(d), Attention(d, heads)
         self.n2, self.pitch = nn.LayerNorm(d), Attention(d, heads)
         self.n3 = nn.LayerNorm(d)
         self.ff = nn.Sequential(nn.Linear(d, ff * d), nn.GELU(), nn.Linear(ff * d, d))
         # relative pitch bias: one learned value per (row distance, head)
-        self.rel = nn.Parameter(torch.zeros(heads, 2 * ROWS - 1))
-        idx = torch.arange(ROWS)
-        self.register_buffer("rel_idx", (idx[:, None] - idx[None] + ROWS - 1), persistent=False)
+        self.rel = nn.Parameter(torch.zeros(heads, 2 * rows - 1))
+        idx = torch.arange(rows)
+        self.register_buffer("rel_idx", (idx[:, None] - idx[None] + rows - 1), persistent=False)
+
+    def time_bias(self, N, device, dtype):
+        if self.time_win == 0:
+            return None
+        i = torch.arange(N, device=device)
+        dist = (i[:, None] - i[None]).abs()
+        if self.time_win > 0:
+            return dist <= self.time_win                                    # bool: True = may attend
+        return (-F.softplus(self.time_slope)[:, None, None] * dist.float()).unsqueeze(0).to(dtype)
 
     def forward(self, x):                                  # (B, R, N, D)
         B, R, N, D = x.shape
         t = x.reshape(B * R, N, D)
-        t = t + self.time(self.n1(t), rope=True)
+        t = t + self.time(self.n1(t), rope=True, bias=self.time_bias(N, x.device, x.dtype))
         x = t.view(B, R, N, D)
         p = x.transpose(1, 2).reshape(B * N, R, D)
         bias = self.rel[:, self.rel_idx].unsqueeze(0).to(p.dtype)     # (1, h, R, R)
@@ -111,20 +130,33 @@ class Block(nn.Module):
 
 class SpectralTranscriber(nn.Module):
     def __init__(self, d: int = 256, depth: int = 6, heads: int = 4, stem: int = 32,
-                 n_cond: int = 0, roles: bool = False):
+                 n_cond: int = 0, roles: bool = False, offset: bool = False,
+                 time_windows: Optional[list] = None, patch_h: int = PATCH_H):
         super().__init__()
+        # token height in pitch bins (3 per semitone): 36 = one octave (default), 18 = half an octave;
+        # rows overlap by half a token either way
+        self.patch_h, self.patch_step = patch_h, patch_h // 2
+        self.rows = math.ceil((S.N_BINS - patch_h) / self.patch_step) + 1
+        self.f_pad = (self.rows - 1) * self.patch_step + patch_h
         C = len(S.HARMONICS) + 1
         self.arch = {"d": d, "depth": depth, "heads": heads, "stem": stem}
+        if patch_h != PATCH_H:
+            self.arch["patch_h"] = patch_h
+        if time_windows:                                   # per-layer time attention span (Block.time_win)
+            assert len(time_windows) == depth, "one time window per layer"
+            self.arch["time_windows"] = list(time_windows)
         if n_cond:
             self.arch["n_cond"] = n_cond
         if roles:
             self.arch["roles"] = True
+        if offset:
+            self.arch["offset"] = True
         self.stem = nn.Sequential(
             nn.Conv2d(C, stem, 3, padding=1), nn.GELU(),
             nn.Conv2d(stem, stem, 3, padding=1), nn.GELU())
         # the learned patch projection: one matrix applied to every patch
-        self.patch = nn.Conv2d(stem, d, (PATCH_H, PATCH_W), stride=(PATCH_H_STEP, PATCH_W))
-        self.pitch_emb = nn.Parameter(torch.zeros(1, ROWS, 1, d))      # absolute register
+        self.patch = nn.Conv2d(stem, d, (patch_h, PATCH_W), stride=(self.patch_step, PATCH_W))
+        self.pitch_emb = nn.Parameter(torch.zeros(1, self.rows, 1, d))      # absolute register
         nn.init.normal_(self.pitch_emb, std=0.02)
         # Optional conditioning label (song-to-piano: arrangement difficulty),
         # added to every token.  Zero-initialised, so a model fine-tuned from a
@@ -132,11 +164,11 @@ class SpectralTranscriber(nn.Module):
         self.cond_emb = nn.Embedding(n_cond, d) if n_cond else None
         if n_cond:
             nn.init.zeros_(self.cond_emb.weight)
-        self.blocks = nn.ModuleList(Block(d, heads) for _ in range(depth))
+        self.blocks = nn.ModuleList(Block(d, heads, time_win=(time_windows or [0] * depth)[i], rows=self.rows) for i in range(depth))
         self.norm = nn.LayerNorm(d)
         # back to the full grid: overlapping rows sum, as patches overlapped
-        self.unpatch = nn.ConvTranspose2d(d, stem, (PATCH_H, PATCH_W),
-                                          stride=(PATCH_H_STEP, PATCH_W))
+        self.unpatch = nn.ConvTranspose2d(d, stem, (patch_h, PATCH_W),
+                                          stride=(self.patch_step, PATCH_W))
         self.fuse = nn.Sequential(nn.Conv2d(2 * stem, stem, 3, padding=1), nn.GELU())
         # 3 bins per key -> one value per key, three outputs (onset/frame/velocity)
         self.head = nn.Conv2d(stem, 3, (3, 1), stride=(3, 1))
@@ -147,6 +179,20 @@ class SpectralTranscriber(nn.Module):
         self.role_head = nn.Conv2d(stem, 2, (3, 1), stride=(3, 1)) if roles else None
         if roles:
             nn.init.zeros_(self.role_head.weight); nn.init.constant_(self.role_head.bias, -4.0)
+        # Optional NOTE-END output: "the key goes up here".  Without it a note ends where the
+        # frame confidence fades, which on decaying or ringing sounds is early or late.
+        self.offset_head = None
+        if offset:
+            self.add_offset_head()
+
+    def add_offset_head(self):
+        """A fresh note-end head (zero weights, "no end" everywhere at the start), so an existing
+        checkpoint gains the output without changing anything it already does."""
+        stem = self.arch.get("stem", 32)
+        self.offset_head = nn.Conv2d(stem, 1, (3, 1), stride=(3, 1))
+        nn.init.zeros_(self.offset_head.weight); nn.init.constant_(self.offset_head.bias, -4.0)
+        self.arch["offset"] = True
+        return self.offset_head
 
     def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None):
         """(B, 7, 264, T) features -> onset, frame, velocity logits, each (B, T, 88).
@@ -156,7 +202,7 @@ class SpectralTranscriber(nn.Module):
         B, _, Fb, T = x.shape
         s = self.stem(x)                                               # (B, c, 264, T)
         Tp = math.ceil(T / PATCH_W) * PATCH_W
-        z = self.patch(F.pad(s, (0, Tp - T, 0, F_PAD - Fb)))           # (B, d, R, N)
+        z = self.patch(F.pad(s, (0, Tp - T, 0, self.f_pad - Fb)))           # (B, d, R, N)
         z = z.permute(0, 2, 3, 1) + self.pitch_emb                     # (B, R, N, d)
         if self.cond_emb is not None and cond is not None:
             z = z + self.cond_emb(cond.long())[:, None, None, :]
@@ -166,10 +212,13 @@ class SpectralTranscriber(nn.Module):
         u = self.unpatch(z)[:, :, :Fb, :T]                             # (B, c, 264, T)
         h = self.fuse(torch.cat([u, s], dim=1))
         y = self.head(h).permute(1, 0, 3, 2)                           # (3, B, T, 88)
-        if self.role_head is None:
-            return y[0], y[1], y[2]
-        r = self.role_head(h).permute(1, 0, 3, 2)                      # (2, B, T, 88)
-        return y[0], y[1], y[2], r[0], r[1]
+        out = (y[0], y[1], y[2])
+        if self.role_head is not None:
+            r = self.role_head(h).permute(1, 0, 3, 2)                  # (2, B, T, 88)
+            out = out + (r[0], r[1])
+        if self.offset_head is not None:                               # note-end logits, LAST
+            out = out + (self.offset_head(h)[:, 0].permute(0, 2, 1),)  # (B, T, 88)
+        return out
 
     @torch.no_grad()
     def features(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -182,7 +231,7 @@ class SpectralTranscriber(nn.Module):
         B, _, Fb, T = x.shape
         s = self.stem(x)
         Tp = math.ceil(T / PATCH_W) * PATCH_W
-        z = self.patch(F.pad(s, (0, Tp - T, 0, F_PAD - Fb))).permute(0, 2, 3, 1) + self.pitch_emb
+        z = self.patch(F.pad(s, (0, Tp - T, 0, self.f_pad - Fb))).permute(0, 2, 3, 1) + self.pitch_emb
         if self.cond_emb is not None and cond is not None:
             z = z + self.cond_emb(cond.long())[:, None, None, :]
         for blk in self.blocks:

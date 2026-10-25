@@ -64,7 +64,11 @@ def f1s(ref, est):
 def _decode(kind, r, thr):
     from app.ml.transcriber.decode import decode_notes
     on, fr, vl = r
-    if kind == "spec":
+    if kind.startswith("ctx:"):                     # context-aware onset threshold (eval/context_decode.py)
+        from context_decode import context_decode
+        _, mode, low, win = kind.split(":")
+        ns = context_decode(on, fr, vl, thr, min(float(low), thr), int(win), mode)
+    elif kind == "spec":
         ns = decode_notes(on, fr, vl, thr, 0.5, min_frames=1, min_note_s=0.0, keep_restruck=True)
     else:
         ns = decode_notes(on, fr, vl, thr, 0.5)
@@ -106,6 +110,7 @@ def main():
                     help="s2p model: path, or label=path; repeat to compare versions")
     ap.add_argument("--piano", required=True)
     ap.add_argument("--september", default="")
+    ap.add_argument("--context", default="", help="context-decoding variants for the first --ckpt, e.g. same:0.6:9,any:0.7:9")
     ap.add_argument("--out", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--units", default="", help="m2m_units.json: use the BY-SONG split (no song audio on both sides)")
@@ -147,6 +152,10 @@ def main():
             ST.CKPT = pathlib.Path(path)
             out[label] = ("spec", ST.rolls(wav, cond=LEVELS.index(level[sid])))
             out[f"{label} adv"] = ("spec", ST.rolls(wav, cond=2))
+            if args.context and spec == args.ckpt[0]:     # the same rolls, decoded with the context rule
+                for v in args.context.split(","):
+                    mode, low, win = v.split(":")
+                    out[f"{label} {mode}{low}/{win}"] = (f"ctx:{mode}:{low}:{win}", out[label][1])
         if args.september:
             out["september"] = ("mel", MT.rolls(wav, ckpt=pathlib.Path(args.september)))
         return out

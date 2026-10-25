@@ -163,7 +163,9 @@ def correct_notes(
         out.append(m)
     n_grew = sum(1 for a, b in zip(notes, out)
                  if float(b["offset"]) > float(a.get("offset", 0)) + 1e-6)
-    print(f"[corrector] {len(out)} notes | durations lengthened {n_grew}, "
-          f"shortened {len(out)-n_grew} | mean confidence "
-          f"{float(np.mean(keep_p)):.3f}")
+    n_shrank = sum(1 for a, b in zip(notes, out)
+                   if float(b["offset"]) < float(a.get("offset", 0)) - 1e-6)
+    print(f"[corrector] {len(out)} notes | durations "
+          f"{'lengthened %d, shortened %d' % (n_grew, n_shrank) if apply_duration else 'untouched (duration head off)'}"
+          f" | hand labels {'on' if apply_hand else 'off'} | mean confidence {float(np.mean(keep_p)):.3f}")
     return out

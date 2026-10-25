@@ -1,0 +1,3 @@
+# Pipeline snapshot + failure alerts every 5 minutes (install: scrontab eval/progress_scrontab.txt)
+#SCRON -A cs7170.202710 -p courses -c 1 --mem=1G -t 00:04:00 -J progress-snap -o /dev/null
+*/5 * * * * cd ~/arrangement_transformer/backend && python3 eval/progress_dump.py --write

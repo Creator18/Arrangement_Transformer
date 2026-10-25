@@ -25,6 +25,7 @@ re-running /segment, which invalidates the original preview).
 from __future__ import annotations
 
 import json
+import shutil
 import time
 
 from pathlib import Path
@@ -72,7 +73,7 @@ def _render_one(session_dir: Path, src_file: Path, notes_key: str,
 
 
 @router.post("/previews/{session_id}")
-async def render_previews(session_id: str, force: bool = False,
+def render_previews(session_id: str, force: bool = False,
                           only: Optional[str] = None):
     """
     Render `transcription_preview.wav` + `arrangement_preview.wav` for
@@ -105,7 +106,25 @@ async def render_previews(session_id: str, force: bool = False,
     if only:
         jobs = [j for j in jobs if j[0] == only] or jobs
 
+    # Plain `def` (not async): FastAPI runs it in a worker thread.  As `async def`
+    # a two-minute render blocked the event loop, so every other request,
+    # including the audio stream being listened to, waited behind it.
+    def same_notes():
+        try:
+            a = json.loads(transcription_file.read_text())["notes"]
+            b = json.loads(transformed_file.read_text())["transformed_notes"]
+        except Exception:                                                # noqa: BLE001
+            return False
+        k = lambda n: (int(n["pitch"]), round(float(n["onset"]), 4), round(float(n["offset"]), 4))
+        return len(a) == len(b) and [k(n) for n in a] == [k(n) for n in b]
     for name, src, key, out_name in jobs:
+        other = "transcription_preview.wav" if out_name == "arrangement_preview.wav" else "arrangement_preview.wav"
+        if (not force and not (session_dir / out_name).exists() and (session_dir / other).exists()
+                and same_notes()):
+            # the arranger's output passes through unchanged: one render serves both tracks
+            shutil.copyfile(session_dir / other, session_dir / out_name)
+            summary["tracks"][name] = {"cached": True, "copied_from": other}
+            continue
         summary["tracks"][name] = _render_one(session_dir, src, key, out_name, force)
 
     return summary

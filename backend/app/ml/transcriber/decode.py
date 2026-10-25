@@ -30,7 +30,8 @@ def decode_notes(onset: np.ndarray, frame: np.ndarray,
                  velocity: np.ndarray = None,
                  onset_thr: float = 0.5, frame_thr: float = 0.5,
                  min_frames: int = 2, min_note_s: float = None,
-                 keep_restruck: bool = False) -> List[Dict]:
+                 keep_restruck: bool = False, merge_fragment_s: float = 0.0,
+                 offset: np.ndarray = None, offset_thr: float = 0.5) -> List[Dict]:
     """Rolls (88, T) of probabilities -> [{pitch, onset, offset, velocity}].
 
     A note begins only where the ONSET head fires, never merely where the
@@ -56,6 +57,14 @@ def decode_notes(onset: np.ndarray, frame: np.ndarray,
             end = t
             while end < T and fr[p, end]:
                 end += 1
+            if offset is not None:          # the model's own "key up here": first firing after the strike,
+                nxt = t                     # before the key's next strike, within 2 s past the sustain run
+                while nxt < T and not on[p, nxt]:
+                    nxt += 1
+                lim = min(T, nxt, max(end, start + 1) + int(2 * C.FPS))
+                hit = np.flatnonzero(offset[p, start + 1:lim] >= offset_thr)
+                if len(hit):
+                    end = start + 1 + int(hit[0])
             if end - start < min_frames:
                 continue
             v = 80
@@ -96,6 +105,19 @@ def decode_notes(onset: np.ndarray, frame: np.ndarray,
         # keep_restruck=True keeps them; playback gives short notes an audible
         # minimum length instead (sampler.audible).  The default is unchanged
         # so existing callers behave exactly as before.
+        # A flicker, not a re-strike: two presses of the same key that touch (gap <= 30 ms) where one
+        # piece is only a sliver (< merge_fragment_s) are ONE held note -- the onset confidence dipped
+        # and rose again on a sustained note.  Real repeats have real length and a gap, and stay.
+        if merge_fragment_s > 0 and len(group) > 1:
+            merged = [group[0]]
+            for b in group[1:]:
+                a = merged[-1]
+                short = min(a["offset"] - a["onset"], b["offset"] - b["onset"]) < merge_fragment_s
+                if short and b["onset"] - a["offset"] <= 0.03:
+                    a["offset"] = max(a["offset"], b["offset"]); a["velocity"] = max(a["velocity"], b["velocity"])
+                else:
+                    merged.append(b)
+            group = merged
         floor = MIN_NOTE_S if min_note_s is None else min_note_s
         out.extend(n for n in group
                    if n["offset"] - n["onset"] >= floor)

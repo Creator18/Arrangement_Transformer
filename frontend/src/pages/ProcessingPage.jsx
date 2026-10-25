@@ -14,7 +14,7 @@ import AudioBars from '../components/AudioBars'
 import { countUp, elasticPop } from '../utils/animefx'
 import {
   transcribeAudio, separateStems, segmentAudio,
-  transformArrangement, scoreFidelity, renderPreviews,
+  transformArrangement, renderPreviews,
   getTranscriptionAudioUrl, getTransformedAudioUrl,
 } from '../utils/api'
 
@@ -25,7 +25,6 @@ const STEPS = [
   { key: 'segment',    label: 'Chords',     detail: 'Finding the beat grid and chords…',           sym: '▪', color: '#34d399' },
   { key: 'transform',  label: 'Arrange',    detail: 'Fitting the arrangement to your keyboard and hands…',    sym: '▶', color: '#f87171' },
   { key: 'previews',   label: 'Previews',   detail: 'Rendering original + arranged audio on a sampled grand…', sym: '♫', color: '#fbbf24' },
-  { key: 'score',      label: 'Score',      detail: 'Comparing spectrograms for fidelity…',                     sym: '◉', color: '#e879f9' },
 ]
 
 // ── Step pad ───────────────────────────────────────────────────────────────────
@@ -233,8 +232,10 @@ export default function ProcessingPage() {
         .then(() => fetch(getTransformedAudioUrl(sessionId), { cache: 'reload' }))
         .catch(() => {})
 
-      setCurrentStep(6); await scoreFidelity(sessionId)
-      setCurrentStep(7)
+      // Fidelity scoring is off for now: it compared spectrograms of the song and
+      // the piano, which is not how arrangements are judged at the moment, and
+      // it added ~40 s before Results opened.  /score still exists.
+      setCurrentStep(6)
       setTimeout(() => navigate(`/results/${sessionId}`), 900)
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || 'Pipeline failed.')

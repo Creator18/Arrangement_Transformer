@@ -5,7 +5,7 @@ import { ArrowRight, ChevronDown, AudioWaveform } from 'lucide-react'
 import SonicWaveform from '../components/SonicWaveform'
 import Act from '../components/Act'
 import PipelineScrolly from '../components/PipelineScrolly'
-import { uploadAudio, getWarmupStatus } from '../utils/api'
+import { uploadAudio, uploadUrl, getWarmupStatus } from '../utils/api'
 import { scrollToTarget } from '../utils/smoothscroll'
 import { initScrollSnap } from '../utils/scrollsnap'
 
@@ -152,6 +152,23 @@ export default function LandingPage() {
       setUploading(false)
     }
   }, [navigate, preset])
+
+  const [link, setLink] = useState('')
+  const [fetching, setFetching] = useState(false)
+  const handleLink = useCallback(async (e) => {
+    e.preventDefault()
+    if (!link.trim()) return
+    setError(null); setFetching(true)
+    try {
+      const result = await uploadUrl(link.trim())
+      navigate(`/processing/${result.session_id}`, {
+        state: { filename: result.filename, duration: result.duration_seconds, preset },
+      })
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not fetch that link. Please try again.')
+      setFetching(false)
+    }
+  }, [link, navigate, preset])
 
   const onDrop = useCallback((e) => {
     e.preventDefault(); setDragging(false)
@@ -313,6 +330,27 @@ export default function LandingPage() {
                   {progress}<span style={{ fontSize: 14, color: 'var(--ct-faint)' }}>%</span>
                 </div>
               </div>
+            )}
+
+            {!uploading && (
+              <form onSubmit={handleLink} style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                <input
+                  type="url"
+                  value={link}
+                  onChange={(e) => setLink(e.target.value)}
+                  placeholder="…or paste a YouTube link"
+                  disabled={fetching}
+                  className="ct-panel"
+                  style={{
+                    flex: 1, minWidth: 0, padding: '12px 14px', fontSize: 12,
+                    fontFamily: 'ui-monospace,monospace', color: 'var(--ct-text)',
+                    background: 'transparent', outline: 'none',
+                  }}
+                />
+                <button className="ct-cta" type="submit" disabled={fetching || !link.trim()}>
+                  <span>{fetching ? 'Fetching…' : 'Fetch'}</span>
+                </button>
+              </form>
             )}
 
             <AnimatePresence>

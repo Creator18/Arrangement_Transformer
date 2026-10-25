@@ -5,6 +5,7 @@ import Navbar from './components/Navbar'
 import LandingPage from './pages/LandingPage'
 import ProcessingPage from './pages/ProcessingPage'
 import ResultsPage from './pages/ResultsPage'
+import ProgressPage from './pages/ProgressPage'
 import { initSmoothScroll, getLenis } from './utils/smoothscroll'
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="/" element={<LandingPage />} />
           <Route path="/processing/:sessionId" element={<ProcessingPage />} />
           <Route path="/results/:sessionId" element={<ResultsPage />} />
+          <Route path="/progress" element={<ProgressPage />} />
         </Routes>
       </AnimatePresence>
     </div>

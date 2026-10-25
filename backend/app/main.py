@@ -20,7 +20,7 @@ for _candidate in [
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.routers import upload, transcribe, separate, segment, transform, score, export, previews
+from app.routers import upload, transcribe, separate, segment, transform, score, export, previews, progress
 from app.services.session import TEMP_BASE
 from app.services import warmup
 
@@ -46,6 +46,7 @@ app.include_router(transform.router, tags=["transform"])
 app.include_router(previews.router, tags=["previews"])
 app.include_router(score.router, tags=["score"])
 app.include_router(export.router, tags=["export"])
+app.include_router(progress.router, tags=["progress"])
 
 
 app.mount("/session-data", StaticFiles(directory=str(TEMP_BASE)), name="session-data")

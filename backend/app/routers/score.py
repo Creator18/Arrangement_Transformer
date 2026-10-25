@@ -13,7 +13,7 @@ def _render_notes_to_audio(notes, tempo, sr=22050):
 
 
 @router.post("/score/{session_id}")
-async def score_fidelity(session_id: str):
+def score_fidelity(session_id: str):
     session_dir = get_session_dir(session_id)
 
     transcription_file = session_dir / "transcription.json"

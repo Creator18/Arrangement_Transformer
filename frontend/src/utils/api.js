@@ -14,6 +14,12 @@ export async function uploadAudio(file, onProgress) {
   return data
 }
 
+export async function uploadUrl(url) {
+  // the backend fetches the audio itself (yt-dlp), so there is no upload progress to report
+  const { data } = await api.post('/upload-url', { url })
+  return data
+}
+
 export async function transcribeAudio(sessionId) {
   const { data } = await api.post(`/transcribe/${sessionId}`)
   return data

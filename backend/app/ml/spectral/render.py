@@ -252,7 +252,7 @@ def load(p: pathlib.Path):
     return z["y"].astype(np.float32) / 32767.0, z["on"], z["fr"]
 
 
-def render_window(pm, t0: float, seconds: float, piano: str):
+def render_window(pm, t0: float, seconds: float, piano: str, pedal=None, onset_shift=None):
     """One window of a parsed MIDI, rendered with pre-roll; (audio, onsets, frames).
 
     The full-dataset path.  Unlike render_clip, the window position is given
@@ -268,8 +268,15 @@ def render_window(pm, t0: float, seconds: float, piano: str):
         for n in inst.notes:
             if n.end <= base or n.start >= t0 + seconds:
                 continue
-            notes.append({"pitch": n.pitch, "onset": max(0.0, n.start - base),
-                          "offset": min(span, n.end - base), "velocity": n.velocity})
+            end_snd = n.end
+            if pedal:                       # sustain pedal: the SOUND rings on until the pedal lifts
+                for a_, b_ in pedal:        # (the label keeps the written key release)
+                    if a_ <= n.end < b_:
+                        nxt = min((m.start for m in inst.notes if m.pitch == n.pitch and m.start > n.start), default=b_)
+                        end_snd = max(n.end, min(b_, nxt))
+            sh = onset_shift.get((n.pitch, round(n.start, 3)), 0.0) if onset_shift else 0.0   # rolled chord: SOUND only
+            notes.append({"pitch": n.pitch, "onset": max(0.0, n.start + sh - base),
+                          "offset": min(span, max(end_snd, n.start + sh + .05) - base), "velocity": n.velocity})
             if n.end > t0:
                 labelled.append((n.pitch, n.start - t0, min(seconds, n.end - t0)))
     y = render_with(piano, notes)

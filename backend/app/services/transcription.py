@@ -247,6 +247,11 @@ _last_pedal: List[Dict[str, float]] = []
 # that rebuilds note dicts (measured: a role tag survived on ~200 of 2,851
 # notes through one such stage).
 _last_source: str = "bytedance"
+# True when the song-to-piano arranger produced the notes of the current call.
+# Its output is the arrangement: with ARRANGEMENT_ARRANGER_RAW (default on) it skips
+# refine_notes (25 ms minimum, 10 ms duplicates) and dedupe_octave_partials (quiet
+# octaves over a note), which were built for the old transcriber's artefacts.
+_arranger_used: bool = False
 
 
 def _onsets_frames_notes(wav_path: Path) -> List[Dict[str, Any]]:
@@ -896,6 +901,8 @@ def _transcribe_fullmix_of(
       pitch >= 56 → pattern / melody via the phase-7 classifier when its
                     checkpoint exists, else 'melody'
     """
+    global _last_pedal, _last_source, _arranger_used
+    _arranger_used = False
     audio_path = session_dir / 'audio.wav'
     if not audio_path.exists():
         raise FileNotFoundError('audio.wav missing for full-mix transcription.')
@@ -972,7 +979,6 @@ def _transcribe_fullmix_of(
         if method == 'of' and PIANO_MODE == 'spectral':
             try:
                 from app.services import spectral_transcription
-                global _last_pedal, _last_source
                 content = (meta or {}).get("content") or {}
                 # ARRANGEMENT_FORCE_SONG=1: every upload is a song (the solo-piano
                 # detector misreads piano-heavy songs — flatness 0.0025 on one)
@@ -982,6 +988,7 @@ def _transcribe_fullmix_of(
                     # trained on ByteDance output and, untagged, shortened
                     # every arranged note (2,356 of 2,356 on the first song).
                     _last_pedal, _last_source = [], "spectral"
+                    _arranger_used = True
                     # A song, heard by the song-to-piano arranger at the
                     # requested difficulty (0 beginner, 1 intermediate,
                     # 2 advanced).  Solo piano stays on the transcriber.
@@ -1078,8 +1085,12 @@ def _transcribe_fullmix_of(
     # apples-to-apples.
     all_notes = sorted(bass_notes + upper_notes,
                        key=lambda n: (float(n['onset']), int(n['pitch'])))
-    refined = refine_notes(all_notes, tempo)
-    refined = dedupe_octave_partials(refined)
+    if _arranger_used and _os.environ.get("ARRANGEMENT_ARRANGER_RAW", "1") == "1":
+        refined = all_notes
+        print(f"[transcription] arranger notes kept as they are: {len(refined)}")
+    else:
+        refined = refine_notes(all_notes, tempo)
+        refined = dedupe_octave_partials(refined)
 
     # Solo piano keeps the transcriber's timing.  The 16th-note snap moved 67%
     # of notes (a third by >30 ms) on 12 real MAESTRO recordings and took F1

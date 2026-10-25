@@ -71,7 +71,13 @@ def _load():
     from app.ml.spectral.model import from_checkpoint
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
-    if "K" in ck:                       # style-code model (app/ml/spectral/style_train.py)
+    if ck.get("kind") == "joint_refine":    # stage 5: all effect adapters side by side (joint_refine.py)
+        from app.ml.spectral.joint_refine import Gate, from_joint, switches
+        net = from_joint(ck).to(dev).eval()
+        spec = os.environ.get("ARRANGEMENT_JOINT_SWITCHES", "all")
+        Gate.g = switches(ck["modules"], spec).to(dev)       # fixed for the song until stage 6's gate sets them
+        print(f"[spectral] joint model, adapters on: {spec}")
+    elif "K" in ck:                       # style-code model (app/ml/spectral/style_train.py)
         from app.ml.spectral.style_train import load_for_app
         net = load_for_app(ck, 0).to(dev).eval()
         print(f"[spectral] style model: {ck['K']} codes, ARRANGEMENT_STYLE_CODE="
@@ -85,12 +91,17 @@ def _load():
         net = from_checkpoint(ck).to(dev).eval()
     fe = S.SpectralFrontend().to(dev).eval()
     fe.mu.copy_(ck["fe_mu"]); fe.sd.copy_(ck["fe_sd"])
+    stats = os.environ.get("ARRANGEMENT_FE_STATS", "")
+    if stats:                           # normalise with other statistics (eval/fe_shift.py: real-audio calibration)
+        z = np.load(stats)
+        fe.mu.copy_(torch.from_numpy(z["mu"])); fe.sd.copy_(torch.from_numpy(z["sd"]))
+        print(f"[spectral] front-end statistics from {stats}")
     _cache[CKPT] = (net, fe, dev)
     print(f"[spectral] loaded {CKPT.name} (step {ck['step']}) on {dev}")
     return net, fe, dev
 
 
-def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
+def rolls(audio_path: pathlib.Path, cond: Optional[int] = None, with_offset: bool = False):
     """(onset, frame, velocity) probabilities, each (88, T), for a whole file.
 
     Split out of transcribe() so an evaluation can run the model once and
@@ -117,7 +128,8 @@ def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
     win = int(WINDOW_S * S.FPS)          # frames per window
     edge = int(EDGE_S * S.FPS)           # frames discarded at each inner edge
     keep = win - 2 * edge
-    on, fr, vl = (np.zeros((S.N_KEYS, T), np.float32) for _ in range(3))
+    on, fr, vl, of = (np.zeros((S.N_KEYS, T), np.float32) for _ in range(4))
+    has_off = getattr(net, "offset_head", None) is not None
     f0 = 0                               # first frame this window contributes
     with torch.no_grad():
         while f0 < T:
@@ -125,14 +137,45 @@ def rolls(audio_path: pathlib.Path, cond: Optional[int] = None):
             seg = y[a * S.HOP:(a + win - 1) * S.HOP]
             x = fe(torch.from_numpy(seg.astype(np.float32))[None].to(dev))
             c = torch.tensor([cond], device=dev) if cond is not None else None
-            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in net(x, c)[:3])
+            outs = net(x, c)
+            po, pf, pv = (torch.sigmoid(t.float())[0].T.cpu().numpy() for t in outs[:3])
+            pof = torch.sigmoid(outs[-1].float())[0].T.cpu().numpy() if has_off else None
             lo = f0 - a
             hi = min(lo + keep, po.shape[1], T - a)
             on[:, a + lo:a + hi] = po[:, lo:hi]
             fr[:, a + lo:a + hi] = pf[:, lo:hi]
             vl[:, a + lo:a + hi] = pv[:, lo:hi]
+            if has_off:
+                of[:, a + lo:a + hi] = pof[:, lo:hi]
             f0 = a + hi
+    if with_offset:
+        return on, fr, vl, (of if has_off else None)
     return on, fr, vl
+
+
+def centroid_onsets(notes, on, thr, fps):
+    """Place each note's start at the CENTRE of its onset bump instead of the first frame over the bar.
+
+    A start shows up as probability spread over 2-3 frames; the probability-weighted centre of the
+    peak frame and its two neighbours lands between frames.  On held-out renders this halves the median
+    start error (4.5 ms first-frame -> 2.2 ms centroid; eval/timing_check.py).  Ends are untouched;
+    ARRANGEMENT_ONSET_CENTROID=0 switches it off."""
+    T = on.shape[1]
+    for n in notes:
+        k = int(n["pitch"]) - 21
+        if not 0 <= k < on.shape[0]:
+            continue
+        f0 = int(round(n["onset"] * fps)); f0 = min(max(f0, 0), T - 1)
+        end = f0
+        while end + 1 < T and on[k, end + 1] >= thr:                       # this note's run over the bar
+            end += 1
+        pk = f0 + int(np.argmax(on[k, f0:end + 1]))
+        lo, hi = max(0, pk - 1), min(T, pk + 2)
+        w = on[k, lo:hi]
+        t = float((np.arange(lo, hi) * w).sum() / max(float(w.sum()), 1e-9)) / fps
+        if t < n["offset"]:
+            n["onset"] = t
+    return notes
 
 
 def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
@@ -148,19 +191,26 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
     if ckpt is not None:
         CKPT = pathlib.Path(ckpt)
     try:
-        r = rolls(audio_path, cond=cond)
+        r = rolls(audio_path, cond=cond, with_offset=True)
     finally:
         CKPT = keep
     if r is None:
         return []
-    on, fr, vl = r
+    on, fr, vl, of = r
     thr = onset_thr if onset_thr is not None else ONSET_THR
     fthr = frame_thr if frame_thr is not None else FRAME_THR
+    # The song-to-piano arranger only (ckpt given): touching same-key presses where one piece is a
+    # sliver are merged into one held note (decode.py; ARRANGEMENT_MERGE_FRAGMENT_S, 0 = off).
+    frag = float(os.environ.get("ARRANGEMENT_MERGE_FRAGMENT_S", "0.06")) if ckpt is not None else 0.0
     if KEEP_SHORT:
         notes = decode_notes(on, fr, vl, thr, fthr, min_frames=1,
-                             min_note_s=0.0, keep_restruck=True)
+                             min_note_s=0.0, keep_restruck=True, merge_fragment_s=frag,
+                             offset=of, offset_thr=float(os.environ.get("ARRANGEMENT_OFFSET_THR", "0.5")))
     else:
         notes = decode_notes(on, fr, vl, thr, fthr)
+    if os.environ.get("ARRANGEMENT_ONSET_CENTROID", "1") != "0":
+        from app.ml.spectral import frontend as S
+        notes = centroid_onsets(notes, on, thr, S.FPS)
     out = []
     for n in notes:
         p = int(n["pitch"])

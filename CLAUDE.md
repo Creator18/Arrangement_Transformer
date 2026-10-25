@@ -1,0 +1,112 @@
+# Arrangement Transformer: hand-off notes for Claude Code
+
+Read this first. It says what the project is, what is running on the cluster right now, how to check it, and the
+rules the user has set. Last updated **2026-10-24** (branch `feat/song-to-piano`).
+
+## What this is
+
+A web app that turns a song into a **piano arrangement**: FastAPI backend (`backend/`), React + Vite frontend
+(`frontend/`). The core is a spectral transformer ("arranger"): audio -> HCQT features -> tokens -> per-frame,
+per-key note start / held / velocity probabilities -> decoded notes. Models are trained on the Northeastern
+**Explorer** cluster from **rendered** audio (arrangement MIDI played by soundfont instruments).
+
+## The current plan (decided 2026-10-24): `NEW_BASE_PLAN.md`
+
+renders -> **new base** (`base20m`) -> 14 **instrument adapters** -> **combining them** (attention over adapter
+outputs, no bundle adjustment) -> final comparison. Details and every decision are in `NEW_BASE_PLAN.md`.
+
+- **Data, renders only (no real songs in training):** POP909 + Music2MIDI *training* arrangements, rendered by
+  `backend/eval/render_base.py` (wraps `render_arrangements.py`): arrangement + extra parts + drums, 14
+  instrument families from 3 soundfonts (all banks), synth-style tone (no pitch effects), loud mastering, lead
+  melodies, 25% sped up. Target = the arrangement at the **written** times. **Done:** 227,860 train + 34,262
+  validation clips in `/scratch/basu.ang/base_render`.
+- **Base:** ~19.9M params (d 384, depth 8, heads 6), **half-octave tokens** (`--patch-h 18`), **learned soft time
+  windows** (`--time-windows s,0,s,0,s,0,s,0`), **soft onset target** (`--onset-neighbor-weight 0.3`), front end
+  calibrated on 400 new renders, 120k steps.
+
+## What is running on the cluster (as of 2026-10-24 ~midnight EDT)
+
+| Job | ID | What |
+|---|---|---|
+| `base-train-1/2/3` | 11358316 / 11358317 / 11358318 | the new base; chained 8 h jobs, each resumes from `last.pt` (spare ones exit at once) |
+| `basetest` | 11358319 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
+| `win-D_halfoct` / `winev-D_halfoct` | 11354453 / 11354489 | half-octave token test (D) and its tests. **If D's real-song / dense-mix tests are clearly worse than A, stop the base early and rethink** (the base was switched to half-octave tokens on D's validation lead alone). |
+| `progress-snap` | scrontab | 5-minute snapshot + email alerts (see below) |
+
+Job IDs change if anything is resubmitted: always check `squeue -u basu.ang`.
+
+## How to check status (from any machine with the `explorer` ssh alias)
+
+```bash
+ssh explorer 'squeue -u basu.ang -o "%i %j %T %M %R"'                      # what is queued / running
+ssh explorer 'tail -5 ~/arrangement_transformer/checkpoints/base20m/train.log' # base training (VAL lines = validation)
+ssh explorer 'cat ~/arrangement_transformer/progress/latest.json' | python3 -m json.tool | head -100   # full snapshot
+ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # newest logs
+```
+
+- **Snapshot:** `backend/eval/progress_dump.py --write` runs every 5 min (scrontab, `eval/progress_scrontab.txt`)
+  and writes `~/arrangement_transformer/progress/{latest.json,history.jsonl,sent.json}`. It emails new alerts
+  (failed shards / jobs, stuck lanes, a stage finished, no GPU work queued) to the user via a 1-minute Slurm job.
+  Add a key to `sent.json` to silence a known alert.
+- **Progress page:** run the backend + frontend locally, open `http://localhost:5173/progress`. The backend's
+  `/progress-data` reads `latest.json` over `ssh explorer` (`backend/app/routers/progress.py`).
+- **Test outputs per model:** `logs/<prefix>_ioi_<set>.out` (recall / precision / F1 / double presses at the
+  app's 0.9 bar, quick-note recall by gap), `logs/<prefix>_timing_<set>.out` (start error),
+  `logs/<prefix>_real.out` (106 held-out Music2MIDI real songs: strict / tolerant / pitch-class F1).
+  Sets `mod_plain`, `mod_combo`, `mod_fast` live in `/scratch/basu.ang/mod_*/validation`.
+
+## Cluster facts
+
+- `ssh explorer`; env `module load miniconda3/25.9.1; source activate ~/envs/arr`; code `~/arrangement_transformer/backend`;
+  checkpoints `~/arrangement_transformer/checkpoints/`; logs `~/arrangement_transformer/logs/`; data `/scratch/basu.ang/`.
+- Partitions: `gpu` (8 h max, ~4 running per user), `courses` (CPU, ~1000 cores) and `courses-gpu` (2 jobs) with
+  `-A cs7170.202710`. **GPU minimum is V100**: always `-x c2184,c2185,c2186,c2187,c2188,c2193,c2194,c2195,d1025`
+  (P100s + a T4). Don't run heavy Python on the login node (it gets killed); use `srun`/`sbatch`.
+- **Submit with `backend/eval/sbatch_once.sh -J <name> ...`, never a blind sbatch retry:** the controller often
+  replies "Unexpected message received" yet accepts the job, and retries created duplicates that corrupted data.
+- Node `d0135` hung 31 render shards with no output (2026-10-24); exclude it if it misbehaves again.
+- Shell scripts must have LF line endings (CRLF broke them before).
+
+## Results so far (the 0.9 app bar)
+
+| Model | val F1 | combo renders F1 | double /1000 | real strict | real P / R | notes/s (human 8.0) |
+|---|---|---|---|---|---|---|
+| A global attention (`win_A_global`) | 0.813 | 0.785 | 121 | 0.248 | 0.234 / 0.279 | 9.1 |
+| B per-layer windows (`win_B_layers`) | 0.823 | 0.790 | 115 | 0.252 | 0.228 / 0.296 | 10.3 |
+| **C learned soft windows** (`win_C_soft`) | 0.832 | 0.793 | **102** | 0.245 | **0.241** / 0.265 | **8.3** |
+| D half-octave tokens (`win_D_halfoct`) | ~0.83 at 42k (led A by 4-6 pts at every check) | pending | | pending | | |
+
+- The user hears **C** as clearly best (alternating attention "improved a lot", vocals much better). C is hosted
+  locally from `backend/app/ml/spectral/checkpoints/win_C_soft/best.pt`.
+- Ruled out: time stretching dense passages (hurt everywhere, `eval/stretch_oracle.py`), finer time resolution,
+  8 kHz band limit (no effect). Real songs sat ~0.8 spreads louder / 1.7x wider than old renders at the front end;
+  the new renders' mastering closes most of that (`eval/fe_shift.py`).
+- **Centroid onset timing** is on in the app (`spectral_transcription.centroid_onsets`, halves start error on
+  renders; user heard it help). `ARRANGEMENT_ONSET_CENTROID=0` turns it off.
+- Earlier lines (keep for reference, not active): the modular effect adapters + joint refinement + gate
+  (`render_modular.py`, `joint_refine.py`, `gate.py`; paused: weak on real songs), the attack / fast / singer
+  LoRA adapters on `arr_tone_full` (`launch_*.sh`).
+
+## The user's rules and preferences
+
+- **Targets are always the written times**, never where the sound starts (the old piano renders shifted labels by
+  the sampler latency; `render_base.py` disables that).
+- **Renders only** for training; real songs (Music2MIDI test songs) are for evaluation only. POP909 has no audio;
+  Music2MIDI audio on disk is 16 kHz mono.
+- **Never add or remove arrangement notes in a render** except as non-target "extra parts"; no pitch effects
+  (detuned / chorus *presets* are fine as instrument sounds).
+- **Ear beats metric.** The user listens in the app at the **0.9** onset bar; host candidates for them.
+  Host servers in a **terminal tab** (`backend/serve.ps1 -Arranger <ckpt>` on Windows; on a Mac run the same
+  env vars with `python -m uvicorn app.main:app --port 8000`), not the preview pane (the app stops those).
+- No 5-octave converter: present the arranger's raw 7-octave output.
+- Ask before downloading anything; never handle the user's passwords or keys.
+- High, efficient cluster use: parallelise, no idle waiter jobs, CPU for scoring, GPU for training / inference.
+- Explain results plainly, with tables; keep the progress page and `NEW_BASE_PLAN.md` up to date.
+
+## Next steps
+
+1. When D's tests land: compare with A / C (render sets + real songs). If D is clearly worse on real songs, stop
+   `base-train-*` and decide with the user.
+2. Watch the base (`checkpoints/base20m/train.log`); when `basetest` finishes, copy `best.pt` to the laptop and
+   host it beside C for the user (large files: copy in 5 MB pieces with `split` + checksum if scp drops).
+3. Then build the instrument-adapter renders and adapters (`NEW_BASE_PLAN.md` section 3), then the combining layer.

@@ -93,6 +93,9 @@ def main():
     ap.add_argument("--d", type=int, default=256)
     ap.add_argument("--depth", type=int, default=6)
     ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--patch-h", type=int, default=36, help="token height in pitch bins: 36 = one octave, 18 = half an octave")
+    ap.add_argument("--time-windows", default="",
+                    help="per-layer time attention span in 32 ms tokens: 0 global, w = +-w tokens, s = learned soft window; e.g. 2,0,6,0,24,0")
     ap.add_argument("--max-minutes", type=float, default=460.0,
                     help="save and exit before this wall-clock budget (8 h job limit)")
     ap.add_argument("--limit-train", type=int, default=0, help="trial runs only")
@@ -109,6 +112,10 @@ def main():
                     help="conditioning labels (4 for song-to-piano difficulty: 3 levels + unknown)")
     ap.add_argument("--mix-p", type=float, default=0.0,
                     help="probability of burying a second clip 12-24 dB under each example")
+    ap.add_argument("--onset-neighbor-weight", type=float, default=1.0,
+                    help="soft onset target: how much a note start predicted ONE FRAME early or late is penalised "
+                         "(1 = fully, as a wrong frame; 0.3 = 30%%).  The target stays at the written frame.")
+    ap.add_argument("--calib-clips", type=int, default=64, help="training clips the front end is calibrated on")
     ap.add_argument("--soft-weight", type=float, default=0.0,
                     help="extra onset-loss weight for soft notes (vel < 50), up to 1+w at vel 0")
     ap.add_argument("--augment", action="store_true",
@@ -146,8 +153,9 @@ def main():
         + (", augmenting rendered clips" if args.augment else ""))
 
     fe = S.SpectralFrontend().to(dev).eval()
+    tw = [(-1 if w.strip() == "s" else int(w)) for w in args.time_windows.split(",")] if args.time_windows else None
     net = SpectralTranscriber(d=args.d, depth=args.depth, heads=args.heads,
-                              n_cond=args.n_cond, roles=args.roles).to(dev)
+                              n_cond=args.n_cond, roles=args.roles, time_windows=tw, patch_h=args.patch_h).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=0.01)
 
     def lr_at(step):
@@ -181,7 +189,7 @@ def main():
         say(f"initialised from {args.init} (step {ck['step']})")
     else:
         # normalisation from FULL-register training audio, never a narrow slice
-        cal = RenderedClips(random.Random(1).sample(tr_paths, min(64, len(tr_paths))),
+        cal = RenderedClips(random.Random(1).sample(tr_paths, min(args.calib_clips, len(tr_paths))),
                             crop_s=None)
         fe.calibrate([cal[i][0][None].to(dev) for i in range(len(cal))])
         say(f"front end calibrated on {len(cal)} training clips")
@@ -283,6 +291,15 @@ def main():
             if args.soft_weight:
                 soft = ((50 / 127 - vlT) / (50 / 127)).clamp(0, 1) * m
                 w_on = 1 + args.soft_weight * soft
+            if args.onset_neighbor_weight != 1.0:
+                # SOFT ONSET TARGET: the frames either side of a written start are not "no start here" at full
+                # cost -- a start one frame early or late is nearly right.  (Not a soft LABEL: with the x30
+                # positive weight a 0.3 label would push neighbours to ~0.9, i.e. double presses.)
+                pk = (onT > 0.5).float()
+                nb = torch.zeros_like(pk); nb[:, 1:] = pk[:, :-1]; nb[:, :-1] = torch.maximum(nb[:, :-1], pk[:, 1:])
+                nb = nb * (1 - pk)
+                w_nb = 1 - (1 - args.onset_neighbor_weight) * nb
+                w_on = w_nb if w_on is None else w_on * w_nb
             if args.roles:
                 # Curriculum clips: onset/frame loss only where every pitched
                 # note is labelled (scope "all"); melody/bass loss wherever the

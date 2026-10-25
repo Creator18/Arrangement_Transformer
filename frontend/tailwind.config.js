@@ -1,12 +1,19 @@
+import plugin from 'tailwindcss/plugin'
+
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ['./index.html', './src/**/*.{js,jsx}'],
+  content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
   theme: {
     extend: {
       fontFamily: {
         sans: ['-apple-system', 'BlinkMacSystemFont', 'SF Pro Display', 'Segoe UI', 'sans-serif'],
       },
       colors: {
+        // shadcn tokens (components/ui); values live in index.css as oklch components
+        border: 'oklch(var(--border) / <alpha-value>)',
+        muted: { DEFAULT: 'oklch(var(--muted) / <alpha-value>)', foreground: 'oklch(var(--muted-foreground) / <alpha-value>)' },
+        primary: { DEFAULT: 'oklch(var(--primary) / <alpha-value>)', foreground: 'oklch(var(--primary-foreground) / <alpha-value>)' },
+        ring: 'oklch(var(--ring) / <alpha-value>)',
         glass: {
           white: 'rgba(255,255,255,0.72)',
           border: 'rgba(255,255,255,0.45)',
@@ -21,5 +28,8 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Tailwind 4's not-last: variant, used by the shadcn timeline
+    plugin(({ addVariant }) => addVariant('not-last', '&:not(:last-child)')),
+  ],
 }

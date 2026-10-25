@@ -40,6 +40,15 @@ ARRANGEMENT_MODE = "transformer"
 # only when building sheet music, where a readable rhythm is the whole point.
 SOURCE_FIDELITY = True
 
+# Song-to-piano arranger output (ARRANGEMENT_SONG_ARRANGER) is the arrangement
+# itself: it reaches the app untouched by the May 5-octave generator and the
+# rule stack (range fit, beat outliers, hand constraints).  The piano-only
+# setting marks every song as solo piano, which used to send the arranger's
+# notes through that generator and rewrite about half of them.
+# ARRANGEMENT_ARRANGER_RAW=0 restores the old chain.
+import os as _os
+ARRANGER_RAW = bool(_os.environ.get("ARRANGEMENT_SONG_ARRANGER")) and     _os.environ.get("ARRANGEMENT_ARRANGER_RAW", "1") == "1"
+
 from app.services.session import get_session_dir
 from app.services.transformation import notes_to_pretty_midi, enforce_uniform_tempo
 from app.services.nmf_voice_leading import (
@@ -186,7 +195,7 @@ def _apply_song_stages(notes, key_root, scale_name, beat_times_arr,
 
 
 @router.post("/transform/{session_id}")
-async def transform_arrangement(session_id: str, body: TransformRequest = TransformRequest()):
+def transform_arrangement(session_id: str, body: TransformRequest = TransformRequest()):
     session_dir = get_session_dir(session_id)
 
     for fname, step in [
@@ -210,6 +219,32 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
     source_span = body.source_octave_range or transcription["octave_range"]["octave_span"]
     tgt_low, tgt_high = _OCTAVE_BOUNDS.get(body.target_octave_range, (TARGET_LOW, TARGET_HIGH))
     audio_path  = session_dir / "audio.wav"
+
+    if ARRANGER_RAW:
+        # The arranger's notes ARE the arrangement: none of the analysis below
+        # (chords, dominance, percussion, layers) would be used, so skip it all.
+        # One-key-one-press (resolve_doubled_keys) is OFF here too (user, 2026-10-16): overlapping
+        # strikes of a held key are kept exactly as the arranger wrote them.
+        export_notes = [dict(n) for n in notes]
+        root, scale_name, _ = detect_scale(export_notes)
+        for stale in ["arrangement_preview.wav", "transcription_preview.wav"]:
+            if (session_dir / stale).exists():
+                (session_dir / stale).unlink()
+        midi_path = session_dir / "transformed.mid"
+        notes_to_pretty_midi(export_notes, tempo).write(str(midi_path))
+        result = {
+            "session_id": session_id, "method": "arranger_raw",
+            "source_octave_range": source_span, "target_octave_range": body.target_octave_range,
+            "nmf_components": body.nmf_components, "original_note_count": len(notes),
+            "transformed_note_count": len(export_notes), "transformed_notes": export_notes,
+            "detected_scale": _scale_info(root, scale_name), "midi_path": str(midi_path),
+            "layers": None, "arrangement_mode": ARRANGEMENT_MODE,
+            "pedal": transcription.get("pedal", []), "retrieval_provenance": None,
+        }
+        with open(session_dir / "transformed.json", "w") as f:
+            json.dump(result, f)
+        print(f"[transform] arranger output passed through untouched: {len(export_notes)} notes")
+        return result
 
     # Per-layer timing feel from transcription (median onset offset vs beat)
     timing_feel = transcription.get("timing_feel", {})
@@ -269,7 +304,7 @@ async def transform_arrangement(session_id: str, body: TransformRequest = Transf
         # at 4096 and this song produced 28,423, so it raised RuntimeError,
         # the handler below caught it silently, and every song stage was
         # skipped while /transform still returned 200.
-        if USE_ML_PIPELINE and model_available() and not is_song:
+        if USE_ML_PIPELINE and model_available() and not is_song and not ARRANGER_RAW:
             # ── ML path ───────────────────────────────────────────────────
             method = "ml"
             # Estimate piece duration from the latest note offset (+1s tail).

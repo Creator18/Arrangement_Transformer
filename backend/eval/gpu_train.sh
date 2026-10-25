@@ -11,6 +11,7 @@ MODE=$1; NAME=$2; CK=$3; LOG=$4; shift 4
 CMD=("$@")                                   # the training command, kept apart from everything else
 SELF=$(readlink -f "$0")
 MAX_SUBMITS=${MAX_SUBMITS:-24}
+CPUS=${CPUS:-8}                               # data-loader workers = CPUS - 1 (ft_aux reads SLURM_CPUS_PER_TASK)
 ENV="module load miniconda3/25.9.1; source activate ~/envs/arr; cd ~/arrangement_transformer/backend;"
 mkdir -p "$CK" "$LOG"
 
@@ -18,7 +19,7 @@ submit() {   # submit <gres> <mode> <job name>
   local n; n=$(cat "$CK/.submits" 2>/dev/null || echo 0)
   if [ "$n" -ge "$MAX_SUBMITS" ]; then echo "[gpu] submission limit ($MAX_SUBMITS) reached — not resubmitting"; return 1; fi
   echo $((n + 1)) > "$CK/.submits"
-  sbatch --parsable -p gpu --gres="$1" -c 8 --mem=48G --time=08:00:00 -J "$3" -o "$LOG/$3_%j.out" \
+  sbatch --parsable -p gpu --gres="$1" -c $CPUS --mem=48G --time=08:00:00 -J "$3" -o "$LOG/$3_%j.out" \
     --wrap "$ENV bash $SELF $2 $NAME $CK $LOG $(printf '%q ' "${CMD[@]}")"
 }
 finished() { tail -3 "$CK/train.log" 2>/dev/null | grep -q "(finished)"; }

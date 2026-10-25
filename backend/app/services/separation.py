@@ -246,8 +246,21 @@ def _normalise(audio: np.ndarray) -> np.ndarray:
 SKIP_DEMUCS_FOR_PIANO = True
 
 
+def _fast_beats(audio: np.ndarray, sr: int) -> Tuple[List[int], List[int], float, int]:
+    """librosa's beat tracker: a few seconds instead of madmom's ~30.  For the piano-only
+    experiment, where the arranger reads only the audio and the beat grid feeds just the
+    piano-roll lines, notation tempo and the hand labels.  4/4 assumed for downbeats."""
+    import scipy.signal
+    if not hasattr(scipy.signal, "hann"):                 # librosa still calls the name SciPy removed
+        scipy.signal.hann = scipy.signal.windows.hann
+    tempo, beats = librosa.beat.beat_track(y=audio, sr=sr, hop_length=512)
+    beats = [int(b) for b in beats]
+    tempo = float(np.atleast_1d(tempo)[0]) if beats else 120.0
+    return beats, beats[::4], tempo, 4
+
+
 def _separate_piano_only(wav_path: Path, session_dir: Path,
-                         content: Dict[str, Any]) -> Dict[str, Any]:
+                         content: Dict[str, Any], fast_beats: bool = False) -> Dict[str, Any]:
     """
     Solo-piano path: beat-track the raw mix and write the same on-disk layout,
     without running Demucs at all.
@@ -261,7 +274,7 @@ def _separate_piano_only(wav_path: Path, session_dir: Path,
     import soundfile as sf
 
     audio, _ = librosa.load(str(wav_path), sr=SR, mono=True)
-    beat_frames, downbeat_frames, tempo, beats_per_bar = _madmom_beats(audio, SR)
+    beat_frames, downbeat_frames, tempo, beats_per_bar = (_fast_beats if fast_beats else _madmom_beats)(audio, SR)
 
     comp_dir = session_dir / "components"
     comp_dir.mkdir(parents=True, exist_ok=True)
@@ -320,7 +333,7 @@ def separate_components(wav_path: Path, session_dir: Path) -> Dict[str, Any]:
     import os
     if os.environ.get("ARRANGEMENT_PIANO_ONLY") == "1":
         print("[separation] piano-only experiment: treating the mix as piano")
-        return _separate_piano_only(wav_path, session_dir, content)
+        return _separate_piano_only(wav_path, session_dir, content, fast_beats=True)
 
     model = _get_separator()
     sr_model = int(model.samplerate)

@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* shadcn tokens for components/ui (oklch components); the site is always dark */
+:root {
+  --primary: 0.6 0.2 250;
+  --primary-foreground: 1 0 0;
+  --ring: 0.55 0.2 250;
+  --border: 0.34 0.01 260;
+  --muted: 0.22 0.01 260;
+  --muted-foreground: 0.72 0.01 260;
+}
+
 @layer base {
   * {
     box-sizing: border-box;

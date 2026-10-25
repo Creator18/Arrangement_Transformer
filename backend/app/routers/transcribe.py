@@ -8,7 +8,7 @@ router = APIRouter()
 
 
 @router.post("/transcribe/{session_id}")
-async def transcribe_audio(session_id: str):
+def transcribe_audio(session_id: str):
     session_dir = get_session_dir(session_id)
 
     if not (session_dir / "components.json").exists():

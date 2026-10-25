@@ -8,7 +8,7 @@ router = APIRouter()
 
 
 @router.post("/separate/{session_id}")
-async def separate_stems(session_id: str):
+def separate_stems(session_id: str):
     session_dir = get_session_dir(session_id)
     wav_path    = session_dir / "audio.wav"
 

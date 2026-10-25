@@ -98,7 +98,7 @@ def _apply_original_cleanup(session_dir, segment_result):
 
 
 @router.post("/segment/{session_id}")
-async def segment_audio(session_id: str):
+def segment_audio(session_id: str):
     session_dir = get_session_dir(session_id)
     wav_path    = session_dir / "audio.wav"
 
