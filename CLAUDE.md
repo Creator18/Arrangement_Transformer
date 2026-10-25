@@ -35,6 +35,11 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
 
 Job IDs change if anything is resubmitted: always check `squeue -u basu.ang`.
 
+**Reading the base's validation:** it is scored on the NEW renders, which are much harder (loud masters, more
+instruments, lead lines, extra parts). Its early numbers look low, but fully trained C scores the same on those clips
+(note F1 0.391 at the 0.5 bar, P 0.274 / R 0.684; 0.514 at the app's 0.9 bar). The base matched that by step 6,000.
+Compare against C on the same clips, never against the old 0.8+ numbers.
+
 ## How to check status (from any machine with the `explorer` ssh alias)
 
 ```bash
