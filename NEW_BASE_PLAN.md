@@ -55,6 +55,12 @@ first-frame rule), but merged double strikes, flat-topped bumps and uneven bumps
 2. **Then inside the model:** a sub-frame timing output trained against the written times, added at the
    instrument-adapter stage; keep the decoder only if it still adds something.
 
+## 4c. Later test: alternating pitch-attention windows
+
+Pitch attention already has a learned per-head, per-row-distance bias (a fully learned soft window). Test later:
+D + hard local pitch windows (+-1 octave = 4 half-octave rows) alternating with global pitch layers, vs D, on the
+old data (~3.5 h on one GPU). Expect a small gain at most; overtones need the long reach the global layers keep.
+
 ## 5. Checks at every stage
 
 - Held-out renders: recall / precision / F1, quick notes by gap, double presses, timing (centroid), per family.
