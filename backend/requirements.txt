@@ -12,6 +12,8 @@ music21==9.1.0
 soundfile==0.12.1
 resampy>=0.2.2,<0.4.3
 pydantic==2.7.1
+# Audio from a pasted link (routers/upload.py /upload-url)
+yt-dlp>=2026.10.21
 
 # ── ML transformation core (backend/app/ml) ──────────────────────────────────
 # Default `pip install -r requirements.txt` pulls CPU-only torch wheels.

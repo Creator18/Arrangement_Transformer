@@ -1,7 +1,7 @@
 # Arrangement Transformer: hand-off notes for Claude Code
 
 Read this first. It says what the project is, what is running on the cluster right now, how to check it, and the
-rules the user has set. Last updated **2026-10-24** (branch `feat/song-to-piano`).
+rules the user has set. Last updated **2026-10-25** (branch `feat/song-to-piano`).
 
 ## What this is
 
@@ -24,15 +24,16 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
   windows** (`--time-windows s,0,s,0,s,0,s,0`), **soft onset target** (`--onset-neighbor-weight 0.3`), front end
   calibrated on 400 new renders, 120k steps.
 
-## What is running on the cluster (as of 2026-10-24 ~midnight EDT)
+## What is running on the cluster (as of 2026-10-25 ~17:00 EDT)
 
-| Job | ID | What |
-|---|---|---|
-| `base-fast` (A100) | 11363201 | **the base, training now** (resumed from step 26,000 at ~5.5 steps/s) |
-| `base-train-2/3` | 11363259 / 11363260 | V100+ spares: wait for the A100 job, resume from `last.pt` if it dies (exit at once if training is finished) |
-| `basetest` | 11363261 | after training: render tests + 106 real songs -> `~/arrangement_transformer/logs/basetest_*` |
-| `win-D_halfoct` / `winev-D_halfoct` | 11354453 / 11354489 | half-octave token test (D) and its tests. **If D's real-song / dense-mix tests are clearly worse than A, stop the base early and rethink** (the base was switched to half-octave tokens on D's validation lead alone). |
-| `progress-snap` | scrontab | 5-minute snapshot + email alerts (see below) |
+**Nothing but `progress-snap`** (scrontab, 5-minute snapshot + email alerts, see below). The base finished:
+`base-fast` (A100, 11363201) trained to 120,000 steps at 14:27; `basetest` (11363261) ran the render tests and the
+106 real songs (`logs/basetest_*`, `/scratch/basu.ang/eval_base20m.json`). D's tests (`winev_*D_halfoct*`) finished
+too and were not worse than A, so the base was kept.
+
+Quirk seen at the end: both V100 spares (`base-train-2/3`) still started, resumed at step 120,001, ran one
+validation and exited, about a minute of GPU each. The "exit at once if finished" check in `base_fast.sh` is not
+quite working.
 
 Job IDs change if anything is resubmitted: always check `squeue -u basu.ang`.
 
@@ -87,6 +88,14 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
 | B per-layer windows (`win_B_layers`) | 0.823 | 0.790 | 115 | 0.252 | 0.228 / 0.296 | 10.3 |
 | **C learned soft windows** (`win_C_soft`) | 0.832 | 0.793 | **102** | 0.245 | **0.241** / 0.265 | **8.3** |
 | **D half-octave tokens** (`win_D_halfoct`) | **0.848** | **0.804** | 105 | 0.249 | 0.239 / 0.273 | 8.8 |
+| **Base** (`base20m`, step 112k) | n/a (new renders) | **0.867** | **32** | **0.251** | 0.228 / **0.298** | 10.9 |
+
+- **The base (2026-10-25):** the user judged it the best by ear, "bridging the gap between C and D and doing the
+  good things from both". On metrics: big win on dense mixes (combo F1 +6 pts over D, a third of the double
+  presses), ~2 pts behind D on plain (0.937 vs 0.953) and fast (0.912 vs 0.933) piano renders (it misses quick
+  notes), level on real songs, and it over-plays (10.9 notes/s). Val note F1 on the new renders 0.568 at the 0.5 bar
+  (C: 0.391). Full tables in `NEW_BASE_PLAN.md` ("Base result").
+- All real-song runs above used the 0.90 threshold (tuned on validation songs by `s2p_evaluate.py`).
 
 - By ear: **C** clearly beat A / arr_scratch (alternating attention "improved a lot", vocals much better), and
   **D beat C** (2026-10-25). D is hosted locally from `backend/app/ml/spectral/checkpoints/win_D_halfoct/best.pt`;
@@ -116,12 +125,27 @@ ssh explorer 'ls -t ~/arrangement_transformer/logs | head'                    # 
 - High, efficient cluster use: parallelise, no idle waiter jobs, CPU for scoring, GPU for training / inference.
 - Explain results plainly, with tables; keep the progress page and `NEW_BASE_PLAN.md` up to date.
 
+## Hosting on the Mac (set up 2026-10-25)
+
+`backend/venv` (Python 3.11 via `uv`), `frontend/node_modules`, ffmpeg (Homebrew), the base at
+`backend/app/ml/spectral/checkpoints/base20m/best.pt` and `SalamanderGrandPiano-master/` (copied from the cluster)
+are all in place and git-ignored. Gotchas: madmom needs `uv pip install Cython` then `--no-build-isolation
+"madmom @ git+https://github.com/CPJKU/madmom"`; pretty_midi needs `setuptools<81` (pkg_resources); `pysfizz` gives
+the Salamander piano; yt-dlp (link fetch) is now in `requirements.txt`. C and D checkpoints are not on the Mac.
+
+```bash
+cd backend && ARRANGEMENT_PIANO_MODE=spectral ARRANGEMENT_PIANO_ONLY=1 ARRANGEMENT_SONG_ARRANGER=app/ml/spectral/checkpoints/base20m/best.pt ARRANGEMENT_SONG_ARRANGER_THR=0.9 ARRANGEMENT_SONG_ARRANGER_FRAME_THR=0.5 ARRANGEMENT_FORCE_SONG=1 ARRANGEMENT_SPECTRAL_ONSET_THR=0.85 venv/bin/python -m uvicorn app.main:app --port 8000
+cd frontend && npm run dev
+```
+
 ## Next steps
 
-1. When D's tests land: compare with A / C (render sets + real songs). If D is clearly worse on real songs, stop
-   `base-train-*` and decide with the user.
-2. Watch the base (`checkpoints/base20m/train.log`); when `basetest` finishes, copy `best.pt` to the laptop and
-   host it beside C for the user (large files: copy in 5 MB pieces with `split` + checksum if scp drops).
-3. Learned note timing (`NEW_BASE_PLAN.md` section 4b): once the base is ready, build the small learned decoder
-   (exact start times, merged double strikes), test it on the base and C, then put a timing output inside the model.
-4. Then build the instrument-adapter renders and adapters (`NEW_BASE_PLAN.md` section 3), then the combining layer.
+1. **Voice** (`VOICE_PLAN.md`): build the vocal-line score on the 106 real songs (base, C, D), including the
+   probability-shape diagnostic that decides whether a generative (flow-matching) melody decoder is worth it.
+2. Then the **voice adapter** on the frozen base, rendered with the 1,594 cloned VocalSet singers (the base never
+   heard them). Open decision for the user: allow natural vibrato / scoops / early-late entries on singer stems
+   (targets still the written notes).
+3. Learned note timing (`NEW_BASE_PLAN.md` section 4b): the small learned decoder (exact start times, merged double
+   strikes), tested on the base and C, then a timing output inside the model.
+4. Then the other instrument-adapter renders and adapters (`NEW_BASE_PLAN.md` section 3), then the combining layer.
+5. Optional: the base over-plays on real songs (10.9 notes/s vs 8.0); try a higher onset bar (0.93-0.95) by ear.

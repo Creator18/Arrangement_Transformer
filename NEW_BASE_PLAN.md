@@ -39,6 +39,10 @@ One LoRA adapter per instrument family (14), on the frozen base.
 
 Same tone variation and mastering as the base.
 
+**Voice comes first** (decided 2026-10-25, see `VOICE_PLAN.md`): the base's sung renders all used the soundfont
+vowel voice, never the 1,594 cloned VocalSet singers. Build the vocal-line score on the real songs, then the voice
+adapter rendered with the cloned singers.
+
 ## 4. Combining the adapters
 
 An attention layer over the adapters' outputs (AdapterFusion-style), trained on mixed renders with the adapters frozen. **No bundle adjustment.**
@@ -75,3 +79,20 @@ old data (~3.5 h on one GPU). Expect a small gain at most; overtones need the lo
 - Tokens: **half an octave** tall (29 pitch rows). Half-octave test (D) led its octave twin (A) at every validation
   check by 4-6 points; base switched before D's real-song tests (they run alongside; stop the base early if they flop).
 - Time attention: learned soft windows (C), so the base combines both improvements (untested together).
+
+## Base result (2026-10-25)
+
+Trained to 120k steps on an A100 (`checkpoints/base20m/best.pt` = step 112,000, val note F1 0.568 at the 0.5 bar
+vs 0.391 for C on the same clips). At the app's 0.9 bar:
+
+| Set | Base | D | C |
+|---|---|---|---|
+| combo renders F1 / double per 1000 | **0.867 / 32** | 0.804 / 105 | 0.793 / 102 |
+| plain renders F1 / double | 0.937 / **11** | **0.953** / 16 | 0.938 / 19 |
+| fast renders F1 / double | 0.912 / **14** | **0.933** / 19 | 0.918 / 19 |
+| real songs strict (P / R) | **0.251** (0.228 / 0.298) | 0.249 (0.239 / 0.273) | 0.245 (0.241 / 0.265) |
+| real notes/s (human 8.0) | 10.9 | 8.8 | 8.3 |
+
+By ear (user, 2026-10-25): **the base sounds best, combining the good things of C and D.** On metrics it wins dense
+mixes clearly, trails D by ~2 points on clean / fast piano (recall on quick notes), ties on real songs, and
+over-plays (10.9 notes/s). Next: voice (`VOICE_PLAN.md`).
