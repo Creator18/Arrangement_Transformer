@@ -4,9 +4,9 @@ Why: the base reads a voice well inside a mix but drops notes when the voice is 
 eval/aah_fill_test.py).  The fix (fill the solo bars with the song's own accompaniment, transcribe, remove what was
 added) needs to know where the solo bars are, and the app should not run a separation model to find them.
 
-Labels (the user's idea, 2026-10-26): where the mix is basically the vocal stem.  A frame is solo when the vocal is
-active (within 35 dB of the song's loudest vocal frame) and everything else sits well below it; the soft target
-rises from 0 at 6 dB to 1 at 18 dB of vocal dominance (12 dB = the 0.5 line used for scoring).
+Labels (the user's idea, 2026-10-26): where the mix is basically the vocal stem.  With the vocal active (within 35 dB
+of the song's loudest vocal frame), a frame is SILENT when everything else sits >= 25 dB below the voice and QUIET when
+it sits 8-25 dB below (both wanted: a soft pad under a voice counts too); otherwise neither.  Three classes per frame.
   * Music2MIDI songs: stems from Demucs, offline only (eval/m2m_vocal_curves.py keeps just the loudness curves)
   * MUSDB18-HQ: the true stems; natural solo voice is rare there (~1% of vocal time), so solo passages are also
     made by turning the band down in random stretches (bare, or with the "other" stem left as a quiet bed)
@@ -44,9 +44,16 @@ def frame_db(x):
     return 10 * np.log10(e + 1e-12)
 
 
+QUIET_DB, SILENT_DB = 8, 25
+NONE, QUIET, SILENT = 0, 1, 2
+
+
 def target(vdb, rdb, vmax):
+    """Per-frame class: 0 neither, 1 voice over a quiet band, 2 voice over a (nearly) silent band."""
     active = (vdb > vmax - 35) & (vdb > -60)
-    return (active * np.clip((vdb - rdb - 6) / 12, 0, 1)).astype(np.float32)
+    dom = vdb - rdb
+    y = np.where(active & (dom >= SILENT_DB), SILENT, np.where(active & (dom >= QUIET_DB), QUIET, NONE))
+    return y.astype(np.int64)
 
 
 class Musdb:
@@ -118,7 +125,7 @@ class M2M:
         yy = y[f0:f0 + T]
         if len(x) < CLIP:
             x = np.pad(x, (0, CLIP - len(x)))
-        return x, np.pad(yy, (0, T - len(yy)))
+        return x, np.pad(yy, (0, T - len(yy)))       # pads with 0 = neither
 
     def sample(self, rng):
         i = int(rng.integers(len(self.items)))
@@ -140,15 +147,15 @@ class SoloNet(nn.Module):
         self.enc = nn.TransformerEncoder(layer, depth)
         self.pos = nn.Parameter(torch.zeros(1, 2048, d))
         nn.init.normal_(self.pos, std=0.02)
-        self.head = nn.Linear(d, 2)                              # two 16 ms frames per token
+        self.head = nn.Linear(d, 6)                              # two 16 ms frames per token x 3 classes
 
-    def forward(self, x):                                        # (B, C, 264, T) -> (B, T) logits
+    def forward(self, x):                                        # (B, C, 264, T) -> (B, T, 3) logits
         B, _, _, Tn = x.shape
         h = self.conv(x)                                         # (B, 48, 22, T/2)
         h = h.permute(0, 3, 1, 2).flatten(2)                     # (B, T/2, 48*22)
         h = self.proj(h)
         h = self.enc(h + self.pos[:, : h.shape[1]])
-        return self.head(h).reshape(B, -1)[:, :Tn]
+        return self.head(h).reshape(B, -1, 3)[:, :Tn]
 
 
 class Stream(torch.utils.data.IterableDataset):
@@ -165,9 +172,8 @@ class Stream(torch.utils.data.IterableDataset):
             yield (x * 10 ** (rng.uniform(-12, 6) / 20)).astype(np.float32), y      # level jitter
 
 
-def metrics(p, y):
-    """Frame scores against the 12 dB line: AP, and P / R / F1 at 0.5."""
-    t = y >= 0.5
+def metrics(p, t):
+    """Frame scores for one binary question (p = probability, t = truth): AP, and P / R / F1 at 0.5."""
     if t.sum() == 0:
         return {"ap": None, "p": None, "r": None, "f1": None, "pos": 0}
     o = np.argsort(-p)
@@ -230,6 +236,7 @@ def main():
     }
 
     net = SoloNet().to(dev)
+    cls_w = torch.tensor([1.0, 4.0, 4.0], device=dev)
     say(f"SoloNet {sum(p.numel() for p in net.parameters()) / 1e6:.2f}M params")
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
@@ -253,9 +260,12 @@ def main():
                 xb = torch.from_numpy(np.stack([c[0] for c in clips[j:j + 16]])).to(dev)
                 with torch.autocast("cuda", dtype=amp):
                     lg = net(fe(xb))
-                P.append(torch.sigmoid(lg.float()).cpu().numpy().ravel())
+                P.append(torch.softmax(lg.float(), -1).reshape(-1, 3).cpu().numpy())
                 Y.append(np.stack([c[1] for c in clips[j:j + 16]]).ravel())
-            res[k] = metrics(np.concatenate(P), np.concatenate(Y))
+            P, Y = np.concatenate(P), np.concatenate(Y)
+            res[k] = metrics(P[:, QUIET] + P[:, SILENT], Y >= QUIET)          # solo = quiet or silent band
+            res[k + "_silent"] = metrics(P[:, SILENT], Y == SILENT)
+            res[k + "_quiet"] = metrics(P[:, QUIET], Y == QUIET)
         net.train()
         return res
 
@@ -271,9 +281,8 @@ def main():
             feat = fe(xb)
         with torch.autocast("cuda", dtype=amp):
             lg = net(feat)
-        # positives are rare: weight them up
-        w = 1 + 4 * yb
-        loss = (F.binary_cross_entropy_with_logits(lg.float(), yb, reduction="none") * w).mean()
+        # solo frames are rare: weight them up
+        loss = F.cross_entropy(lg.float().reshape(-1, 3), yb.reshape(-1), weight=cls_w)
         opt.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
@@ -289,7 +298,7 @@ def main():
             t0, seen = time.time(), 0
         if step % a.val_every == 0 or step == a.steps:
             r = evaluate()
-            score = np.mean([v["ap"] for v in r.values() if v["ap"] is not None])
+            score = np.mean([r[k]["ap"] for k in vals if r[k]["ap"] is not None])
             say("VAL " + json.dumps({"step": step, "score": round(float(score), 4),
                                      **{k: {kk: (round(vv, 4) if isinstance(vv, float) else vv) for kk, vv in v.items()}
                                         for k, v in r.items()}}))

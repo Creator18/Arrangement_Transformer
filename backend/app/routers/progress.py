@@ -54,7 +54,7 @@ VOICE_LIVE = (
     "echo CURVES $(ls /scratch/basu.ang/solo_det/m2m_curves 2>/dev/null | wc -l) $(ls /scratch/basu.ang/m2m/audio | wc -l);"
     "echo JOBS; squeue -u $USER -h -o '%i|%j|%T|%M|%l|%b|%R' | grep -E 'm2m-demucs|solo' ;"
     "echo LOG; grep -E '^(VAL|step [0-9]*00 |data:|SoloNet|new best|\(finished\))' "
-    "~/arrangement_transformer/checkpoints/solo_det/train.log 2>/dev/null | tail -400"
+    "~/arrangement_transformer/checkpoints/solo_det2/train.log 2>/dev/null | tail -400"
 )
 _vcache = {"at": 0.0, "data": None}
 
@@ -83,7 +83,7 @@ def voice_data():
                     live["vals"].append(json.loads(ln[4:]))
                 elif ln.startswith("step "):
                     p = ln.split()
-                    live["trace"].append([int(p[1]), float(p[3]), float(p[7])])
+                    live["trace"].append([int(p[1]), float(p[3]), float(p[6])])
                 elif ln.startswith("(finished)"):
                     live["finished"] = True
                 else:

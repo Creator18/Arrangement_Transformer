@@ -151,6 +151,9 @@ melodies sung as a synthetic neutral "aah" (`eval/aah_test.py`, `eval/aah_fill_t
   basically the voice" out. Labels: Demucs on Music2MIDI (`eval/m2m_vocal_curves.py`, curves only, cluster) + MUSDB18-HQ
   true stems with the band turned down. Real songs train this detector by the user's decision; the arranger stays
   renders-only. Music2MIDI val AP 0.849 / F1 0.77; MUSDB natural AP 0.768.
+- v1 counted a quiet band only half (soft target 6-18 dB). The user wants **both quiet and silent**: v2
+  (`checkpoints/solo_det2`, job `solo-train3`) has three classes per frame: silent band (25 dB+ below the voice),
+  quiet band (8-25 dB), neither.
 - Demucs 4.1.0 is installed in `~/envs/arr` on the cluster (weights copied from the laptop). Don't run heavy jobs on the laptop.
 
 ## Next steps

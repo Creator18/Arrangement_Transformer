@@ -5,7 +5,7 @@ import { Mic } from "lucide-react";
 type PRF = { name: string; p: number; r: number; f1: number };
 type Cond = { name: string; solo: number; fill: number; fill_p?: number; fill_r?: number };
 type ValSet = { ap: number | null; p: number | null; r: number | null; f1: number | null; pos: number };
-type VoiceVal = { step: number; score: number; m2m_val: ValSet; musdb_nat: ValSet; musdb_aug: ValSet };
+type VoiceVal = { step: number; score: number; [set: string]: ValSet | number };
 type Job = { id: string; name: string; state: string; elapsed: string; limit: string; reason: string };
 type VoiceData = {
   updated: string;
@@ -154,7 +154,7 @@ export default function VoicePanel() {
     L.jobs.some((j) => j.name.startsWith("solo-train")) ? "queued" : "waits for the Demucs labels";
   const sepDone = L.curves != null && L.songs ? Math.min(L.curves, L.songs) : null;
   const base = d.fill.conditions[0], hard = d.fill.conditions.at(-1)!;
-  const sets: [keyof VoiceVal, string, string][] = [["m2m_val", "Music2MIDI val (Demucs labels)", C1], ["musdb_nat", "MUSDB test, natural", C2], ["musdb_aug", "MUSDB test, made solo", C3]];
+  const sets: [string, string, string][] = [["m2m_val", "Music2MIDI val (Demucs labels)", C1], ["musdb_nat", "MUSDB test, natural", C2], ["musdb_aug", "MUSDB test, made solo", C3]];
 
   return (
     <section className="mb-10 rounded-xl border border-border bg-white/[0.02] p-4">
@@ -213,7 +213,7 @@ export default function VoicePanel() {
       <div className="mt-4 rounded-lg border border-border/70 p-3">
         <div className="text-xs font-medium text-white">7 · Solo-voice detector (training)</div>
         <div className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
-          Reads the full mix, marks each 16 ms frame where the mix is essentially the voice. Labels: Demucs stems on Music2MIDI
+          Reads the full mix, marks each 16 ms frame where the voice stands over a silent band (25 dB+ below it) or a quiet one (8-25 dB below). Labels: Demucs stems on Music2MIDI
           songs (offline only) and MUSDB18-HQ's true stems with the band turned down in random stretches. Frozen base front end,
           small transformer over time.
         </div>
@@ -245,8 +245,9 @@ export default function VoicePanel() {
           <table className="mt-3 w-full max-w-xl text-left text-xs">
             <thead className="text-muted-foreground"><tr><th className="pb-1 font-normal">best (step {best.step.toLocaleString()})</th><th className="font-normal">AP</th><th className="font-normal">precision</th><th className="font-normal">recall</th><th className="font-normal">F1</th><th className="font-normal">solo share</th></tr></thead>
             <tbody>
-              {sets.map(([k, nm]) => { const v = best[k] as ValSet; return (
-                <tr key={k} className="border-t border-border/60 tabular-nums"><td className="py-1 pr-3 text-white">{nm}</td><td>{v.ap == null ? "—" : f3(v.ap)}</td><td>{v.p == null ? "—" : f3(v.p)}</td><td>{v.r == null ? "—" : f3(v.r)}</td><td>{v.f1 == null ? "—" : f3(v.f1)}</td><td>{pct(v.pos)}</td></tr>
+              {sets.flatMap(([k, nm]) => [[k, nm], [`${k}_silent`, "   band silent (25 dB+)"], [`${k}_quiet`, "   band quiet (8-25 dB)"]])
+                .filter(([k]) => best[k]).map(([k, nm]) => { const v = best[k] as ValSet; return (
+                <tr key={k} className="border-t border-border/60 tabular-nums"><td className={k.includes("_") && /_(silent|quiet)$/.test(k) ? "py-1 pl-4 pr-3 text-muted-foreground" : "py-1 pr-3 text-white"}>{nm.trim()}</td><td>{v.ap == null ? "—" : f3(v.ap)}</td><td>{v.p == null ? "—" : f3(v.p)}</td><td>{v.r == null ? "—" : f3(v.r)}</td><td>{v.f1 == null ? "—" : f3(v.f1)}</td><td>{pct(v.pos)}</td></tr>
               ); })}
             </tbody>
           </table>
