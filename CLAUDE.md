@@ -155,11 +155,44 @@ melodies sung as a synthetic neutral "aah" (`eval/aah_test.py`, `eval/aah_fill_t
   (`checkpoints/solo_det2`, job `solo-train3`) has three classes per frame: silent band (25 dB+ below the voice),
   quiet band (8-25 dB), neither.
 - Demucs 4.1.0 is installed in `~/envs/arr` on the cluster (weights copied from the laptop). Don't run heavy jobs on the laptop.
+- v2 finished (30k steps, `checkpoints/solo_det2/best.pt`): Music2MIDI val AP 0.893 (silent 0.629, quiet 0.839).
+
+### Fill-and-remove on the 106 REAL test songs (`eval/solo_fill_real.py`, 2026-10-26)
+
+Detector -> beats (librosa, 4/4) -> solo runs (>= 2 beats) -> plain pass of the base on the whole song -> fill notes
+taken from the base's own accompaniment outside the solo runs (chord-matched bar, kept below the voice) -> played
+under the solo runs -> second pass -> remove the added notes. Scored inside the TRUE solo parts (Demucs curves, 12 dB
+line; 15.5 min, 2,087 sung notes in 75 songs) against the human arrangement's top line, **by pitch class within
+150 ms**: human arrangers write the sung line an octave UP in solo passages (+12 in most matches), so exact pitch
+reads ~0.
+
+| run (dir in /scratch/basu.ang) | what | sung notes recovered |
+|---|---|---|
+| plain | the base alone | 26.5% |
+| `solo_fill_real`, `_union` | pluck fill; replace / **union** (plain notes always kept: never worse) | 29.4% / 32.7% |
+| `solo_fill_band` | user: the fill must sound like an instrumental mix. band (bass + keys/guitar + pad) / band+drums, union | 33.8% / **36.8%** |
+| `solo_fill_rules` | band+drums union, v1 vs v2 regions, six removal rules | v1 33.8-36.8%, **v2 35.6-39.5%** |
+
+Detector frames vs the true solo parts: v1 recall 0.81 / precision 0.74 (17 min flagged); v2 0.95 / 0.43 (34 min).
+**Added notes are mostly not the voice:** only 27-37% match a sung note; fill leftovers 3-29% (octave-aware removal
+clears them but also deletes sung notes, -3 pts); "other" (neither voice nor fill: drums, bleed, overtones) 43-64%.
+Voice-floor removal is the cheapest cleanup (-1/4 of added notes for -1 pt).
+
+**Running now (2026-10-26 ~15:30):** `solofillv-*` = the same with a **pitch-track voice filter** (pYIN on the mix
+inside the solo runs; keep an added note only if the sung line sits within 1 semitone for >= 40% of 50-200 ms after
+its start; `-pc` any octave; `voice all` also filters the plain pass's notes). Smoke test first
+(`/scratch/basu.ang/solo_fill_voice_smoke`, log `logs/solofillv_smoke_*.out`), then 106 songs in
+`/scratch/basu.ang/solo_fill_voice` (3 GPU shards + a merge; logs `logs/solofillv_*`). Check:
+`ssh explorer 'squeue -u basu.ang; tail -40 $(ls -t ~/arrangement_transformer/logs/solofillv_merge_*.out | head -1)'`.
+Each run uses a frozen copy of the script in its output dir (`frozen.py`), run with
+`PYTHONPATH=~/arrangement_transformer/backend:~/arrangement_transformer/backend/eval`.
+**sbatch_once.sh still makes duplicates** when the controller is slow (its 20 s check is too short): after every
+submit, `squeue -u basu.ang` and cancel extra copies of a job name before they start.
 
 ## Next steps
 
-0. Voice: detector -> fill flagged bars -> transcribe -> remove, on the 106 real test songs (plus the voice-filter
-   retune: check 50-200 ms after the note start, wider tolerance).
+0. Voice: fill-and-remove on the 106 real songs is measured (section above); the voice-filter run is going. Then
+   pick detector + removal rule by ear in the app, and put the chosen chain into the app.
 
 1. **Voice** (`VOICE_PLAN.md`): build the vocal-line score on the 106 real songs (base, C, D), including the
    probability-shape diagnostic that decides whether a generative (flow-matching) melody decoder is worth it.
