@@ -182,7 +182,8 @@ Voice-floor removal is the cheapest cleanup (-1/4 of added notes for -1 pt).
 inside the solo runs; keep an added note only if the sung line sits within 1 semitone for >= 40% of 50-200 ms after
 its start; `-pc` any octave; `voice all` also filters the plain pass's notes). Smoke test first
 (`/scratch/basu.ang/solo_fill_voice_smoke`, log `logs/solofillv_smoke_*.out`), then 106 songs in
-`/scratch/basu.ang/solo_fill_voice` (3 GPU shards + a merge; logs `logs/solofillv_*`). Check:
+`/scratch/basu.ang/solo_fill_voice` (3 GPU shards + a merge; logs `logs/solofillv_*`). Jobs: smoke 11388792 ->
+shards 11388812 / 11388815 / 11388817 (start only if the smoke test succeeds) -> merge 11388818. Check:
 `ssh explorer 'squeue -u basu.ang; tail -40 $(ls -t ~/arrangement_transformer/logs/solofillv_merge_*.out | head -1)'`.
 Each run uses a frozen copy of the script in its output dir (`frozen.py`), run with
 `PYTHONPATH=~/arrangement_transformer/backend:~/arrangement_transformer/backend/eval`.
