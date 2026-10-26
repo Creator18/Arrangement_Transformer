@@ -1,7 +1,7 @@
 # Arrangement Transformer: hand-off notes for Claude Code
 
 Read this first. It says what the project is, what is running on the cluster right now, how to check it, and the
-rules the user has set. Last updated **2026-10-25** (branch `feat/song-to-piano`).
+rules the user has set. Last updated **2026-10-26** (branch `feat/song-to-piano`).
 
 ## What this is
 
@@ -26,7 +26,7 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
 
 ## What is running on the cluster (as of 2026-10-25 ~17:00 EDT)
 
-**Nothing but `progress-snap`** (scrontab, 5-minute snapshot + email alerts, see below). The base finished:
+**Nothing but `progress-snap`** (the solo detector finished 2026-10-26 04:30; scrontab, 5-minute snapshot + email alerts, see below). The base finished:
 `base-fast` (A100, 11363201) trained to 120,000 steps at 14:27; `basetest` (11363261) ran the render tests and the
 106 real songs (`logs/basetest_*`, `/scratch/basu.ang/eval_base20m.json`). D's tests (`winev_*D_halfoct*`) finished
 too and were not worse than A, so the base was kept.
@@ -138,7 +138,25 @@ cd backend && ARRANGEMENT_PIANO_MODE=spectral ARRANGEMENT_PIANO_ONLY=1 ARRANGEME
 cd frontend && npm run dev
 ```
 
+## Voice: the solo-voice fix (2026-10-26)
+
+The user noticed the base reads a voice well inside a mix but drops notes when the voice is alone. Tests on POP909
+melodies sung as a synthetic neutral "aah" (`eval/aah_test.py`, `eval/aah_fill_test.py`, results in
+`backend/eval/voice_tests.json`, charted on the progress page's "Voice" section):
+- Solo "aah": base F1 0.883 (C 0.998, D 0.997: it is the base's weakness). **Fill and remove** (loop the song's own
+  accompaniment bars, beat-cut and chord-matched, kept *below* the voice; transcribe; delete the added notes; never
+  delete notes the solo pass found) -> 0.974. Singer-like voice 0.567 -> 0.929; with separation bleed + monophony 0.871.
+- Rules can't find solo bars once anything sounds under the voice, so a **solo detector** was trained
+  (`app/ml/spectral/solo_train.py`, ckpt `checkpoints/solo_det/best.pt`, step 24k): mix in, per-frame "the mix is
+  basically the voice" out. Labels: Demucs on Music2MIDI (`eval/m2m_vocal_curves.py`, curves only, cluster) + MUSDB18-HQ
+  true stems with the band turned down. Real songs train this detector by the user's decision; the arranger stays
+  renders-only. Music2MIDI val AP 0.849 / F1 0.77; MUSDB natural AP 0.768.
+- Demucs 4.1.0 is installed in `~/envs/arr` on the cluster (weights copied from the laptop). Don't run heavy jobs on the laptop.
+
 ## Next steps
+
+0. Voice: detector -> fill flagged bars -> transcribe -> remove, on the 106 real test songs (plus the voice-filter
+   retune: check 50-200 ms after the note start, wider tolerance).
 
 1. **Voice** (`VOICE_PLAN.md`): build the vocal-line score on the 106 real songs (base, C, D), including the
    probability-shape diagnostic that decides whether a generative (flow-matching) melody decoder is worth it.

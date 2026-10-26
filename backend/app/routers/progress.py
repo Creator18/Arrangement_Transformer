@@ -46,3 +46,50 @@ def progress_data():
             data = live
         _cache.update(at=time.time(), data=data)
         return data
+
+
+# ---- voice work (solo-voice fix): fixed test results from eval/voice_tests.json + live cluster status ----
+VOICE_JSON = __import__("pathlib").Path(__file__).resolve().parents[2] / "eval" / "voice_tests.json"
+VOICE_LIVE = (
+    "echo CURVES $(ls /scratch/basu.ang/solo_det/m2m_curves 2>/dev/null | wc -l) $(ls /scratch/basu.ang/m2m/audio | wc -l);"
+    "echo JOBS; squeue -u $USER -h -o '%i|%j|%T|%M|%l|%b|%R' | grep -E 'm2m-demucs|solo' ;"
+    "echo LOG; grep -E '^(VAL|step [0-9]*00 |data:|SoloNet|new best|\(finished\))' "
+    "~/arrangement_transformer/checkpoints/solo_det/train.log 2>/dev/null | tail -400"
+)
+_vcache = {"at": 0.0, "data": None}
+
+
+@router.get("/voice-data")
+def voice_data():
+    with _lock:
+        if _vcache["data"] is not None and time.time() - _vcache["at"] < TTL:
+            return _vcache["data"]
+    data = json.loads(VOICE_JSON.read_text())
+    live = {"curves": None, "songs": None, "jobs": [], "vals": [], "trace": [], "info": [], "finished": False}
+    try:
+        out = subprocess.run(SSH + [VOICE_LIVE], capture_output=True, text=True, timeout=60).stdout
+        sec = None
+        for ln in out.splitlines():
+            if ln.startswith("CURVES"):
+                _, c, s = ln.split()
+                live["curves"], live["songs"] = int(c), int(s)
+            elif ln in ("JOBS", "LOG"):
+                sec = ln
+            elif sec == "JOBS" and "|" in ln:
+                i, n, st, el, lim, gres, why = ln.split("|", 6)
+                live["jobs"].append({"id": i, "name": n, "state": st, "elapsed": el, "limit": lim, "reason": why})
+            elif sec == "LOG":
+                if ln.startswith("VAL "):
+                    live["vals"].append(json.loads(ln[4:]))
+                elif ln.startswith("step "):
+                    p = ln.split()
+                    live["trace"].append([int(p[1]), float(p[3]), float(p[7])])
+                elif ln.startswith("(finished)"):
+                    live["finished"] = True
+                else:
+                    live["info"].append(ln)
+    except subprocess.TimeoutExpired:
+        live["error"] = "cluster did not answer"
+    data["live"] = live
+    _vcache.update(at=time.time(), data=data)
+    return data

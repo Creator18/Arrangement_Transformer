@@ -341,7 +341,7 @@ def alerts():
                 done.add(key)
             elif state.split()[0] in BAD:
                 bad[key] = (jid, state, node)
-        elif name.startswith(("mod-", "base-", "basetest", "win-", "winev-", "inst", "fusion")) and state.split()[0] in BAD:
+        elif name.startswith(("mod-", "base-", "basetest", "win-", "winev-", "inst", "fusion", "solo-", "m2m-demucs")) and state.split()[0] in BAD:
             out.append({"key": f"job:{jid}", "text": f"{name} ({jid}) ended {state} on {node}"})
     for key, (jid, state, node) in bad.items():
         if key not in done:

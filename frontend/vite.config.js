@@ -20,6 +20,7 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
       '/session-data': 'http://localhost:8000',
       '/progress-data': 'http://localhost:8000',
+      '/voice-data': 'http://localhost:8000',
     }
   }
 })
