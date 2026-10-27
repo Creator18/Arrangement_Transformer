@@ -46,11 +46,32 @@ def frame_db(x):
 
 QUIET_DB, SILENT_DB = 8, 25
 NONE, QUIET, SILENT = 0, 1, 2
+# --label rel (v3, the user's rule, 2026-10-26): the band is judged against the SONG'S OWN instrumental range, not a
+# fixed margin under the voice.  Range = 2nd-98th percentile of the instrumental while it sounds; with an active voice,
+# SILENT = below the song's softest, QUIET ("light") = within the bottom FRAC of that range in dB.  (eval/solo_rel_stats.py:
+# 30% flags 10% of the voice time on the test songs, between v1's 7% and v2's 12%.)
+LABEL, FRAC = "margin", 0.3
 
 
-def target(vdb, rdb, vmax):
-    """Per-frame class: 0 neither, 1 voice over a quiet band, 2 voice over a (nearly) silent band."""
+def song_range(rdb):
+    """(softest, cut) of a song's instrumental, dB, from its whole-song curve."""
+    top = np.percentile(rdb, 99.5)
+    sounding = rdb > max(-70.0, top - 50)
+    if sounding.sum() > 50:
+        soft, loud = np.percentile(rdb[sounding], 2), np.percentile(rdb[sounding], 98)
+    else:
+        soft, loud = top - 50, top
+    return float(soft), float(soft + FRAC * (loud - soft))
+
+
+def target(vdb, rdb, vmax, rng_=None):
+    """Per-frame class: 0 neither, 1 voice over a quiet band, 2 voice over a (nearly) silent band.
+    rng_ = the song's (softest, cut) for the song-relative label (LABEL == "rel")."""
     active = (vdb > vmax - 35) & (vdb > -60)
+    if LABEL == "rel":
+        soft, cut = rng_
+        y = np.where(active & (rdb < soft), SILENT, np.where(active & (rdb <= cut), QUIET, NONE))
+        return y.astype(np.int64)
     dom = vdb - rdb
     y = np.where(active & (dom >= SILENT_DB), SILENT, np.where(active & (dom >= QUIET_DB), QUIET, NONE))
     return y.astype(np.int64)
@@ -63,6 +84,8 @@ class Musdb:
         self.songs = sorted(p for p in pathlib.Path(root).iterdir() if (p / "bassdrums.npy").exists())
         self.st = [{k: np.load(p / f"{k}.npy", mmap_mode="r") for k in ("vocals", "other", "bassdrums")} for p in self.songs]
         self.vmax = [float(np.percentile(frame_db(np.asarray(s["vocals"])), 99.5)) for s in self.st]
+        self.range = [song_range(frame_db(np.asarray(s["other"], np.float32) + np.asarray(s["bassdrums"], np.float32)))
+                      for s in self.st] if LABEL == "rel" else [None] * len(self.st)
         self.aug = aug
 
     def clip(self, i, a, rng):
@@ -91,7 +114,7 @@ class Musdb:
                 go = np.minimum(go, np.maximum(env, 10 ** (-rng.uniform(12, 20) / 20)) if bed else env)
             o, b = o * go, b * gb
         rest = o + b
-        y = target(frame_db(v), frame_db(rest), self.vmax[i])
+        y = target(frame_db(v), frame_db(rest), self.vmax[i], self.range[i])
         return v + rest, y
 
     def sample(self, rng):
@@ -116,7 +139,7 @@ class M2M:
                 vdb = np.interp(tt, src, z["vocal_db"])
                 rdb = np.interp(tt, src, z["rest_db"])
                 vmax = float(np.percentile(z["vocal_db"], 99.5))
-                self.items.append((w, target(vdb, rdb, vmax)))
+                self.items.append((w, target(vdb, rdb, vmax, song_range(z["rest_db"].astype(float)))))
 
     def clip(self, i, a):
         w, y = self.items[i]
@@ -197,7 +220,12 @@ def main():
     ap.add_argument("--val-every", type=int, default=1000)
     ap.add_argument("--musdb-share", type=float, default=0.5)
     ap.add_argument("--workers", type=int, default=5)
+    ap.add_argument("--label", choices=["margin", "rel"], default="margin",
+                    help="margin: v2's fixed 8 / 25 dB under the voice; rel: v3, the song's own instrumental range")
+    ap.add_argument("--frac", type=float, default=0.3, help="--label rel: bottom share of the range that counts as light")
     a = ap.parse_args()
+    global LABEL, FRAC
+    LABEL, FRAC = a.label, a.frac
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     log = open(out / "train.log", "a")
@@ -304,7 +332,7 @@ def main():
                                         for k, v in r.items()}}))
             state = {"model": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
                      "step": step, "best": max(best, score), "fe_mu": fe.mu.cpu(), "fe_sd": fe.sd.cpu(),
-                     "kind": "solo_detector"}
+                     "kind": "solo_detector", "label": LABEL, "frac": FRAC}
             if score > best:
                 best = score
                 torch.save({k: v for k, v in state.items() if k not in ("opt", "sched")}, out / "best.pt")

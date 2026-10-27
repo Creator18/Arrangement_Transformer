@@ -38,6 +38,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def _step_timer(request, call_next):
+    """[timing] line for every processing step (POST), so slow steps show up in the log."""
+    import time as _time
+    t0 = _time.perf_counter()
+    response = await call_next(request)
+    if request.method == "POST":
+        print(f"[timing] {request.url.path.split('/')[1]}: {_time.perf_counter() - t0:.1f} s")
+    return response
+
+
 app.include_router(upload.router, tags=["upload"])
 app.include_router(transcribe.router, tags=["transcribe"])
 app.include_router(separate.router, tags=["separate"])

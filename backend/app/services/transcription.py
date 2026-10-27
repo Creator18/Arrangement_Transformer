@@ -1005,6 +1005,14 @@ def _transcribe_fullmix_of(
                             audio_path, onset_thr=SONG_ARRANGER_THR,
                             ckpt=SONG_ARRANGER, cond=SONG_ARRANGER_LEVEL,
                             frame_thr=SONG_ARRANGER_FRAME_THR)
+                        # solo-voice parts: fill with the song's own accompaniment, transcribe, remove
+                        # (app/services/solo_fill.py; ARRANGEMENT_SOLO_DETECTOR, off when unset)
+                        from app.services import solo_fill
+                        if solo_fill.enabled():
+                            try:
+                                notes = solo_fill.apply(audio_path, notes, SONG_ARRANGER, SONG_ARRANGER_THR)
+                            except Exception as e:                  # noqa: BLE001
+                                print(f"[solo-fill] failed ({type(e).__name__}: {e}); normal pass kept")
                     print(f"[transcription] song-to-piano arranger "
                           f"(level {SONG_ARRANGER_LEVEL}, thr {SONG_ARRANGER_THR})")
                 elif spectral_transcription.available():
@@ -1133,6 +1141,9 @@ def _transcribe_fullmix_of(
 
 # ── main entry point ──────────────────────────────────────────────────────────
 
+_TRANSCRIBER_MODE = 'of_fullmix'      # see the choice explained inside transcribe_components
+
+
 def transcribe_components(
     session_dir: Path,
 ) -> tuple:
@@ -1176,6 +1187,10 @@ def transcribe_components(
     )
 
     # ── bass: pYIN ────────────────────────────────────────────────────────────
+    # Only the stem modes below use these notes; 'of_fullmix' (the one in use) ignores them by design, and
+    # pYIN over a whole song was 31 of 42 s of /transcribe (2026-10-26), so it is skipped there.
+    if _TRANSCRIBER_MODE == 'of_fullmix':
+        return _transcribe_fullmix_of(session_dir, comp_dir, tempo, beat_times, [], meta)
     y_bass, sr_bass = librosa.load(str(bass_path), sr=sr_comp, mono=True)
     bass_notes      = _pyin_to_notes(y_bass, sr_bass, hop_length=hop_length)
 
@@ -1210,7 +1225,7 @@ def transcribe_components(
     #                         afterwards.  One transcriber = one timing
     #                         character = coherent hands; also the fix for
     #                         the audible LH/RH inconsistency.
-    TRANSCRIBER_MODE = 'of_fullmix'
+    TRANSCRIBER_MODE = _TRANSCRIBER_MODE
 
     if TRANSCRIBER_MODE == 'of_fullmix':
         return _transcribe_fullmix_of(

@@ -31,7 +31,10 @@ const TIMELINE_W      = 28    // left strip for measure / beat labels
 const ROLL_MAX_H      = 370
 // "Future-empty" padding at the top of the SVG so the now-line can stay glued
 // to the bottom of the viewport (= top of the keyboard) at the very end of
-// the song without the scroll going negative.
+// the song without the scroll going negative.  This is the MINIMUM: the pad
+// used is at least the roll's own height (`pad` below).  A fixed 380 px was
+// shorter than the full-screen results roll, so the scroll clamped at 0 for
+// the last few seconds and the final notes froze above the keys.
 const VIEWPORT_PAD    = 380
 
 // Which pitch classes are black keys
@@ -349,13 +352,16 @@ export default function PianoRollPlayer({
     : 10
   // SVG layout (notes fall *into* the keyboard):
   //   • y = 0 sits at "future-empty" padding above the latest note
-  //   • y = VIEWPORT_PAD is t = maxTime
+  //   • y = pad is t = maxTime
   //   • y grows downward as time goes earlier — so notes with smaller onsets
   //     end up nearer the bottom, ready to drop into the keyboard.
   // The +1.5 s of past-padding at the bottom keeps the view from clipping the
   // very first downbeat when the user pauses at t = 0.
-  const rollSvgH   = Math.max(800, (maxTime + 1.5) * PX_PER_S + VIEWPORT_PAD)
-  const yOf        = (t) => (maxTime - t) * PX_PER_S + VIEWPORT_PAD
+  // ...plus the audio's tail past the last note (release + reverb, ~2 s): playback runs to `duration`, so the
+  // now-line must still be able to reach the keyboard there.
+  const pad        = Math.max(VIEWPORT_PAD, rollHeight) + Math.max(0, (duration || 0) - maxTime) * PX_PER_S
+  const rollSvgH   = Math.max(800, (maxTime + 1.5) * PX_PER_S + pad)
+  const yOf        = (t) => (maxTime - t) * PX_PER_S + pad
 
   // Beat / measure layout
   const beatDur    = 60 / tempo
@@ -547,7 +553,7 @@ export default function PianoRollPlayer({
         // Pin the now-line to the bottom edge of the viewport (= top of the
         // keyboard).  Future notes sit above; as time advances the stage
         // "falls" — the offset decreases and notes glide down into the keys.
-        applyScroll((maxTime - t) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight)
+        applyScroll((maxTime - t) * PX_PER_S + pad - roll.clientHeight)
 
         // The keyboard is the only part of the tree the clock can change, and
         // only when a note actually starts or stops.
@@ -575,7 +581,7 @@ export default function PianoRollPlayer({
       // pinning effect resume from where playback actually stopped.
       setCurrentTime(timeRef.current)
     }
-  }, [playing, maxTime, applyScroll, syncKeys])
+  }, [playing, maxTime, pad, applyScroll, syncKeys])
 
   // ── Transport ───────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {
@@ -602,12 +608,12 @@ export default function PianoRollPlayer({
     if (!c || !audio) return
     const rect = c.getBoundingClientRect()
     const svgY = (clientY - rect.top) + scrollRef.current
-    const t    = Math.max(0, Math.min(maxTime - (svgY - VIEWPORT_PAD) / PX_PER_S, duration || maxTime))
+    const t    = Math.max(0, Math.min(maxTime - (svgY - pad) / PX_PER_S, duration || maxTime))
     audio.currentTime = t
     timeRef.current = t
     setCurrentTime(t)
-    applyScroll(((maxTime - t) * PX_PER_S + VIEWPORT_PAD) - c.clientHeight)
-  }, [duration, maxTime, applyScroll])
+    applyScroll(((maxTime - t) * PX_PER_S + pad) - c.clientHeight)
+  }, [duration, maxTime, pad, applyScroll])
 
   const onMouseDown = useCallback((e) => {
     if (e.button !== 0) return
@@ -649,9 +655,9 @@ export default function PianoRollPlayer({
     timeRef.current = t
     setCurrentTime(t)
     if (rollRef.current) {
-      applyScroll((maxTime - t) * PX_PER_S + VIEWPORT_PAD - rollRef.current.clientHeight)
+      applyScroll((maxTime - t) * PX_PER_S + pad - rollRef.current.clientHeight)
     }
-  }, [duration, maxTime, applyScroll])
+  }, [duration, maxTime, pad, applyScroll])
 
   // When NOT playing (initial mount, paused, end-of-track), keep the roll
   // pinned to `currentTime`.  Without this the roll would snap to scrollTop=0
@@ -661,9 +667,9 @@ export default function PianoRollPlayer({
     const roll = rollRef.current
     if (!roll || playing) return
     timeRef.current = currentTime
-    applyScroll((maxTime - currentTime) * PX_PER_S + VIEWPORT_PAD - roll.clientHeight)
+    applyScroll((maxTime - currentTime) * PX_PER_S + pad - roll.clientHeight)
     syncKeys(currentTime)
-  }, [currentTime, playing, maxTime, notes, applyScroll, syncKeys])
+  }, [currentTime, playing, maxTime, pad, notes, applyScroll, syncKeys])
 
   // Read the clock from the ref while playing.  A render triggered by
   // something else (a key lighting up) would otherwise repaint these two from
@@ -717,7 +723,7 @@ export default function PianoRollPlayer({
         )}
       </g>
     )
-  }), [beatCount, beatDur, maxTime, rollSvgW])
+  }), [beatCount, beatDur, maxTime, pad, rollSvgW])
 
   const noteLayer = useMemo(() => notes.map((n, i) => {
     const p = parseInt(n.pitch, 10)
@@ -764,7 +770,7 @@ export default function PianoRollPlayer({
         )}
       </g>
     )
-  }), [notes, midiLo, midiHi, noteW, activePart, partLo, partHi, maxTime])
+  }), [notes, midiLo, midiHi, noteW, activePart, partLo, partHi, maxTime, pad])
 
   // ── LH/RH divider x position ───────────────────────────────────────────────
   const handDivX = (midiLo <= 60 && 60 <= midiHi)

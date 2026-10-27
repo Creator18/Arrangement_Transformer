@@ -211,6 +211,10 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
     if os.environ.get("ARRANGEMENT_ONSET_CENTROID", "1") != "0":
         from app.ml.spectral import frontend as S
         notes = centroid_onsets(notes, on, thr, S.FPS)
+    if ckpt is not None:                 # the song arranger only: keep / drop each note (app/services/cleanup.py)
+        from app.services import cleanup
+        if cleanup.enabled():
+            notes = cleanup.apply(notes, on, fr)
     out = []
     for n in notes:
         p = int(n["pitch"])

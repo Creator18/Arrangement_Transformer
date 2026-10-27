@@ -86,3 +86,10 @@ backend/eartest/
 
 # Listening samples pulled from the cluster
 render_samples/
+
+# local test outputs (2026-10-26/27)
+/aah_fill/
+/aah_fill_runs/
+/aah_test*/
+/solo_detect/
+/.v2_session

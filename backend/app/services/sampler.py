@@ -124,9 +124,9 @@ def render_notes(notes: List[Dict], sr: int = 22050,
     """
     if _try_sfz():
         try:
-            from app.services.sfz_sampler import render_notes_sfz, SFZ_PATH
+            from app.services.sfz_sampler import render_notes_sfz_parallel, SFZ_PATH
             _log_backend("sfizz", str(SFZ_PATH.name) if SFZ_PATH else "")
-            return _room(render_notes_sfz(notes, sr=sr, pedal=pedal), sr)
+            return _room(render_notes_sfz_parallel(notes, sr=sr, pedal=pedal), sr)
         except Exception as e:
             print(f"[sampler] sfizz render failed ({e}); falling back to SF2")
 

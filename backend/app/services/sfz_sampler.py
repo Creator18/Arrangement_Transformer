@@ -148,7 +148,7 @@ RESONANCE_CC = {
 
 
 def render_notes_sfz(notes: List[Dict], sr: int = 22050,
-                     pedal: Optional[Sequence[Dict]] = None) -> np.ndarray:
+                     pedal: Optional[Sequence[Dict]] = None, normalize: bool = True) -> np.ndarray:
     """
     Render a note list through the SFZ instrument and return a mono float32
     waveform.  Same signature as `sf2_sampler.render_notes_sf2`, plus an
@@ -264,11 +264,62 @@ def render_notes_sfz(notes: List[Dict], sr: int = 22050,
     )                                                    # (2, N)
     audio_mono = audio_stereo.mean(axis=0).astype(np.float32)
 
-    peak = float(np.abs(audio_mono).max())
-    if peak > 1e-6:
-        audio_mono = (audio_mono / peak * 0.92).astype(np.float32)
+    if normalize:
+        peak = float(np.abs(audio_mono).max())
+        if peak > 1e-6:
+            audio_mono = (audio_mono / peak * 0.92).astype(np.float32)
 
     return audio_mono
+
+
+# ── parallel render ───────────────────────────────────────────────────────────
+# One sfizz voice loop on one core rendered 5,247 notes (365 s of audio) in 250 s: the preview was 85% of an
+# upload.  The song is cut into time chunks rendered in worker processes, each with its own synth: a note is
+# rendered whole (release tail included) in the chunk where it STARTS, so nothing is cut at a boundary; the
+# chunks are summed at their offsets.  Lost: sympathetic resonance between notes in different chunks, only for
+# notes ringing across a boundary.  ARRANGEMENT_RENDER_WORKERS (default 8; 1 = the old single render).
+RENDER_WORKERS = int(os.environ.get("ARRANGEMENT_RENDER_WORKERS", "8"))
+CHUNK_S = 20.0
+_POOL = None
+
+
+def _render_chunk(args):
+    notes, pedal, sr, t0 = args
+    return t0, render_notes_sfz(notes, sr=sr, pedal=pedal, normalize=False)
+
+
+def render_notes_sfz_parallel(notes: List[Dict], sr: int = 22050,
+                              pedal: Optional[Sequence[Dict]] = None) -> np.ndarray:
+    """render_notes_sfz on RENDER_WORKERS processes, chunk by chunk; same output up to boundary resonance."""
+    global _POOL
+    if RENDER_WORKERS <= 1 or len(notes) < 300:
+        return render_notes_sfz(notes, sr=sr, pedal=pedal)
+    end = max(float(n["onset"]) for n in notes)
+    jobs = []
+    t = 0.0
+    while t <= end:
+        a, b = t, t + CHUNK_S
+        sub = [dict(n, onset=float(n["onset"]) - a, offset=float(n.get("offset", float(n["onset"]) + 0.5)) - a)
+               for n in notes if a <= float(n["onset"]) < b]
+        # pedal intervals overlapping this chunk's sounding span, clipped to start at the chunk
+        ped = [{"onset": max(0.0, float(p["onset"]) - a), "offset": float(p.get("offset", p["onset"] + 0.5)) - a}
+               for p in (pedal or []) if float(p.get("offset", p["onset"] + 0.5)) > a and float(p["onset"]) < b + 10]
+        if sub:
+            jobs.append((sub, ped, sr, a))
+        t = b
+    if _POOL is None:
+        from concurrent.futures import ProcessPoolExecutor
+        _POOL = ProcessPoolExecutor(max_workers=RENDER_WORKERS)
+    parts = list(_POOL.map(_render_chunk, jobs))
+    n = max(int(t0 * sr) + len(y) for t0, y in parts)
+    out = np.zeros(n, np.float32)
+    for t0, y in parts:
+        i = int(t0 * sr)
+        out[i:i + len(y)] += y
+    peak = float(np.abs(out).max())
+    if peak > 1e-6:
+        out = (out / peak * 0.92).astype(np.float32)
+    return out
 
 
 # Convenience alias — matches the SF2 sampler's exported name pattern so

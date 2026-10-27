@@ -79,7 +79,29 @@ class SoloNetV1(SoloNet):
         return self.head(h).reshape(B, -1)[:, :Tn]
 
 
+SONG = [None]                                       # the song main() is on (for the curve detectors)
+SIM_DIR = ["/scratch/basu.ang/solo_det/m2m_sim"]
+
+
+def curve_detector(spec):
+    """"sim:0.8" / "simlog:0.6": no network, the stem-similarity curves (eval/m2m_stem_similarity.py, Demucs) of the
+    song: 1 where the vocal stem sounds and its similarity to the mix is >= the bar, else 0."""
+    kind, thr = spec.split(":")
+    key, thr = ("sim" if kind == "sim" else "sim_log"), float(thr)
+
+    def run(y):
+        z = np.load(pathlib.Path(SIM_DIR[0]) / f"{SONG[0]}.npz")
+        vdb = z["vocals_db"]
+        on = (z[key] >= thr) & (vdb > np.percentile(vdb, 99.5) - 35) & (vdb > -60)
+        n = S.n_frames(len(y))
+        i = np.minimum((np.arange(n) / FPS / float(z["hop"])).astype(int), len(on) - 1)
+        return on[i].astype(float)
+    return run
+
+
 def detector(path):
+    if path.startswith(("sim:", "simlog:")):
+        return curve_detector(path)
     ck = torch.load(path, map_location="cpu", weights_only=False)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     fe = S.SpectralFrontend().to(dev).eval()
@@ -150,8 +172,23 @@ def inside(t, runs):
     return any(a <= t < b for a, b in runs)
 
 
-def choose_fill(plain, runs, beats):
-    """The notes to add under the solo runs, taken from the song's own accompaniment elsewhere: (notes, voice floor)."""
+OCC = []          # octave placement: (bar start, bar end, octave bands the plain pass uses there), for band()'s bass
+
+
+def free_band(p, occ, lo, rng_=(36, 96), below=True):
+    """Pitch class of `p` moved into an octave band (p // 12) the plain pass leaves empty in this bar, nearest to
+    `p`; below the voice floor when one is free there (and `below`), else anywhere in `rng_`; None when none is."""
+    c = [q for q in range(int(p) % 12, 128, 12) if rng_[0] <= q <= rng_[1] and q // 12 not in occ]
+    if below and [q for q in c if q < lo - 1]:
+        c = [q for q in c if q < lo - 1]
+    return min(c, key=lambda q: (abs(q - p), q)) if c else None
+
+
+def choose_fill(plain, runs, beats, place="floor"):
+    """The notes to add under the solo runs, taken from the song's own accompaniment elsewhere: (notes, voice floor).
+    place "floor": moved below the voice by octaves (so far).  "octave" (the user's idea, 2026-10-26): moved into
+    octave bands where the plain pass has no notes in that bar, so the fill and the voice never share an octave and
+    the removal can tell them apart (rule "octave"); below the voice when such a band is free there."""
     arr = np.array([[g["onset"], g["offset"], g["pitch"]] for g in plain], float)
     out_ix = [i for i, g in enumerate(plain) if not inside(g["onset"], runs)]
     acc = []
@@ -173,9 +210,13 @@ def choose_fill(plain, runs, beats):
     src_c = [chroma([x for x in acc_l if a <= x[0] < b], a, b) for a, b in src]
     src_n = [sum(a <= x[0] < b for x in acc_l) for a, b in src]
     added = []
+    OCC[:] = []
     for b0, b1 in bars:
         if not any(b0 < r1 and b1 > r0 for r0, r1 in runs) or not src:
             continue
+        occ = {int(g["pitch"]) // 12 for g in plain if g["onset"] < b1 and g["offset"] > b0}
+        if place == "octave":
+            OCC.append((b0, b1 + 0.3, occ))
         vc = chroma([(g["onset"], g["offset"], g["pitch"]) for g in solo_v], b0, b1)
         cand = [j for j in range(len(src)) if src_n[j] >= 4] or list(range(len(src)))
         if vc.sum() > 0:
@@ -188,6 +229,11 @@ def choose_fill(plain, runs, beats):
             if sa <= on < sb:
                 ns, ne = b0 + (on - sa) * k, min(b0 + (off - sa) * k, b1 + 0.3)
                 if not inside(ns, runs):
+                    continue
+                if place == "octave":
+                    q = free_band(p, occ, lo)
+                    if q is not None:
+                        added.append(pretty_midi.Note(80, int(q), ns, ne))
                     continue
                 while p > lo - 1:
                     p -= 12
@@ -213,6 +259,12 @@ def band(added, n, runs, beats, rng, sf2s, drums):
         p = b.pitch
         while p > 52:
             p -= 12
+        occ = [o for b0, b1, o in OCC if b0 <= b.start < b1]
+        if occ:                                       # octave placement: a free band in the bass range, or no bass
+            p = free_band(b.pitch, occ[0], 999, (28, 52), below=False)
+            if p is None:
+                chord += [b] + rest
+                continue
         bass.append(pretty_midi.Note(b.velocity, p, b.start, b.end))
         chord += rest if rest else ([b] if b.pitch > 52 else [])
     sf2 = sf2s[int(rng.integers(len(sf2s)))]
@@ -270,10 +322,12 @@ def fill_pass(y, runs, added, style, ck, thr, level, tmp, rng, sf2s):
 #                  runs (there the mix is mostly the voice) sits within 1 semitone of the note for >= 40% of the
 #                  50-200 ms after its start (past a scoop at the start); "-pc" accepts the track in any octave
 #   +voice all     the voice filter on EVERY note in the solo runs, the plain pass's too (can lose voice notes)
+#   octave         floor, and also every new note in an octave band where a played fill note sounds at that moment
+#                  (made for octave placement: there the fill never shares a band with the plain pass's notes)
 RULES = {"strict": (False, 0.05, False, None), "floor": (False, 0.05, True, None),
          "oct+wide": (True, 0.10, False, None), "strict+voice": (False, 0.05, False, "exact"),
          "floor+voice": (False, 0.05, True, "exact"), "floor+voice-pc": (False, 0.05, True, "pc"),
-         "floor+voice all": (False, 0.05, True, "all")}
+         "floor+voice all": (False, 0.05, True, "all"), "octave": (False, 0.05, True, None)}
 TRACK_FPS = 16000 / 256
 
 
@@ -320,6 +374,9 @@ def union_with(plain, got, played, runs, lo, rule, tr=None):
     new = [g for g in got if inside(g["onset"], runs) and not seen(g)
            and not any(same(g["pitch"], f.pitch) and abs(g["onset"] - f.start) < tol for f in played)
            and not (floor and g["pitch"] < lo)]
+    if rule == "octave":
+        new = [g for g in new if not any(g["pitch"] // 12 == f.pitch // 12 and f.start - 0.05 <= g["onset"] < f.end + 0.05
+                                         for f in played)]
     base = plain
     if voice:
         new = [g for g in new if follows(g, tr, pc=voice == "pc")]
@@ -352,8 +409,9 @@ def match(ref, est, tol, pc=False, pairs=False):
     return len(m)
 
 
-DETS = ["v1", "v2"]
+DETS = ["v1", "v2"]            # run names; main() replaces them with --runs
 SYSTEMS = ["plain"] + [f"{d} {r}" for d in DETS for r in RULES]
+PLACE = {}
 
 
 def summarize(rows, out):
@@ -402,6 +460,7 @@ def main():
     ap.add_argument("--ckpt")
     ap.add_argument("--det", help="v1 detector (checkpoints/solo_det)")
     ap.add_argument("--det2", help="v2 detector (checkpoints/solo_det2)")
+    ap.add_argument("--runs", default="", help="instead of --det/--det2: name=detector.pt@place,... (place floor | octave)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--thr", type=float, default=0.9)
     ap.add_argument("--det-thr", type=float, default=0.5)
@@ -415,6 +474,13 @@ def main():
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    if a.runs:
+        spec = [(r.split("=")[0], *r.split("=")[1].split("@")) for r in a.runs.split(",")]
+    else:
+        spec = [("v1", a.det, "floor"), ("v2", a.det2, "floor")]
+    DETS[:] = [n for n, _, _ in spec]
+    SYSTEMS[:] = ["plain"] + [f"{d} {r}" for d in DETS for r in RULES]
+    PLACE.update({n: pl for n, _, pl in spec})
     if a.merge:
         rows = [r for f in sorted(out.glob("rows_*.json")) for r in json.loads(f.read_text())]
         summarize(rows, out)
@@ -423,7 +489,8 @@ def main():
     U = json.loads((m2m / "m2m_units.json").read_text())
     old = set(json.loads((m2m / "m2m_splits.json").read_text())["train"])
     test = [i for i in U["splits"]["test"] if i not in old][: a.limit or None][a.shard::a.nshards]
-    dets = {"v1": detector(a.det), "v2": detector(a.det2)}
+    loaded = {pth: detector(pth) for _, pth, _ in spec}
+    dets = {n: loaded[pth] for n, pth, _ in spec}
     ck = pathlib.Path(a.ckpt)
     sf2s = [pathlib.Path(x) for x in a.sf2s.split(",")]
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))           # render_arrangements
@@ -432,6 +499,7 @@ def main():
     test = [i for i in test if i not in {r["song"] for r in rows}]
     for sid in test:
         y = np.load(pathlib.Path(a.audio) / f"{sid}.npy").astype(np.float32)
+        SONG[0] = sid
         n = S.n_frames(len(y))
         t = truth(pathlib.Path(a.curves) / f"{sid}.npz", n)
         tf = t >= 0.5
@@ -441,14 +509,15 @@ def main():
         sf.write(wav, y, SR)
         plain = ST.transcribe(wav, onset_thr=a.thr, ckpt=ck, frame_thr=0.5)
         res, new, meta = {"plain": plain}, {}, {}
-        probs = {d: dets[d](y) for d in DETS}
+        byfn = {}                                    # (a network detector runs once per song)
+        probs = {d: byfn[id(dets[d])] if id(dets[d]) in byfn else byfn.setdefault(id(dets[d]), dets[d](y)) for d in DETS}
         allruns = {d: solo_beats(probs[d], beats, a.det_thr) for d in DETS}
         tr = voice_track(y, [r for d in DETS for r in allruns[d]])
         for d in DETS:
             p = probs[d]
             df = p >= a.det_thr
             runs = allruns[d]
-            added, lo = choose_fill(plain, runs, beats) if runs else ([], 0)
+            added, lo = choose_fill(plain, runs, beats, PLACE[d]) if runs else ([], 0)
             meta[d] = dict(det_s=round(df.sum() / FPS, 1), added=len(added),
                            cover=[int((tf & df).sum()), int(df.sum()), int(tf.sum())])
             if added:
@@ -463,7 +532,7 @@ def main():
         mel = hum[top_voice(hum)]
         in_t = lambda x: tf[min(n - 1, int(x * FPS))]
         ref = [r for r in mel if in_t(r[0])]
-        row = dict(song=sid, solo_s=round(tf.sum() / FPS, 1), ref=len(ref), det=meta, cover=meta["v1"]["cover"])
+        row = dict(song=sid, solo_s=round(tf.sum() / FPS, 1), ref=len(ref), det=meta, cover=meta[DETS[0]]["cover"])
         for k in SYSTEMS:
             ns = res[k]
             est = [g for g in ns if in_t(g["onset"])]
@@ -485,7 +554,7 @@ def main():
             for f in [wav] + [out / f"{sid}_fill_{d}.wav" for d in DETS]:
                 f.unlink(missing_ok=True)
         (out / f"rows_{a.shard}.json").write_text(json.dumps(rows))
-        print(f"{sid}: true solo {row['solo_s']:5.1f}s  v1 {meta['v1']['det_s']:5.1f}s  v2 {meta['v2']['det_s']:5.1f}s  "
+        print(f"{sid}: true solo {row['solo_s']:5.1f}s  " + "  ".join(f"{d} {meta[d]['det_s']:5.1f}s" for d in DETS) + "  "
               f"voice notes {len(ref):3d}  "
               + "  ".join(f"{k} {row[k][2]}" for k in SYSTEMS), flush=True)
     if a.nshards == 1:

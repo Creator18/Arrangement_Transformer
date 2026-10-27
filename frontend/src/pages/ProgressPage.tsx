@@ -14,6 +14,7 @@ import {
 import { GridHeatmap } from "@/components/ui/grid-heatmap";
 import { cn } from "@/lib/utils";
 import VoicePanel from "./VoicePanel";
+import CleanupPanel from "./CleanupPanel";
 
 // ---- shape of /progress-data (backend/eval/progress_dump.py) ----
 type Val = { time: string; step: number; f1: number; p: number; r: number; frame: number };
@@ -1045,6 +1046,8 @@ export default function ProgressPage() {
           {snap ? `Cluster at ${snap.time.slice(11)}` : "Loading"}
         </button>
       </header>
+
+      <CleanupPanel />
 
       <VoicePanel />
 

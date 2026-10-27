@@ -13,7 +13,8 @@ type VoiceData = {
   fill: { note: string; conditions: Cond[]; steps: { note: string; rows: PRF[] }; models: { name: string; solo: number; fill: number }[] };
   detect_rules: { note: string; rows: { name: string; plain_p: number; plain_r: number; pad_p: number; pad_r: number }[] };
   musdb: { note: string; duration: { margin: number; share: number }[]; starts: { margin: number; share: number }[] };
-  live: { curves: number | null; songs: number | null; jobs: Job[]; vals: VoiceVal[]; trace: [number, number, number][]; info: string[]; finished: boolean; error?: string };
+  live: { curves: number | null; songs: number | null; jobs: Job[]; vals: VoiceVal[]; trace: [number, number, number][]; info: string[]; finished: boolean; error?: string;
+          run?: string; gpu?: string | null; ref?: Record<string, VoiceVal[]>; stale?: string };
 };
 
 // categorical order (validated for dark surfaces and colour-blind separation): before, after, third
@@ -22,7 +23,7 @@ const f3 = (v: number) => v.toFixed(3);
 const pct = (v: number) => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`;
 
 /** Grouped horizontal bars on a 0-1 (or 0-max) scale: one row per item, one bar per series, value at the bar end. */
-function HBars({ title, rows, series, max = 1, fmt = f3 }: {
+export function HBars({ title, rows, series, max = 1, fmt = f3 }: {
   title: string; rows: { label: string; vals: number[] }[]; series: { name: string; color: string }[];
   max?: number; fmt?: (v: number) => string;
 }) {
@@ -70,7 +71,7 @@ function HBars({ title, rows, series, max = 1, fmt = f3 }: {
 
 type Series = { name: string; color: string; pts: [number, number][] };
 /** Multi-series line chart over steps (same look as the page's other charts). */
-function Lines({ label, series, fmt, lo, hi }: { label: string; series: Series[]; fmt: (v: number) => string; lo?: number; hi?: number }) {
+export function Lines({ label, series, fmt, lo, hi }: { label: string; series: Series[]; fmt: (v: number) => string; lo?: number; hi?: number }) {
   const all = series.flatMap((s) => s.pts);
   if (all.length < 2) return <div className="text-[11px] text-muted-foreground">{label}: not enough points yet</div>;
   const w = 420, h = 150, padL = 40, padR = 8, padT = 10, padB = 16;
@@ -105,7 +106,7 @@ function Lines({ label, series, fmt, lo, hi }: { label: string; series: Series[]
   );
 }
 
-function Tile({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
+export function Tile({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
     <div className="rounded-lg border border-border bg-white/[0.02] px-3 py-2.5">
       <div className="text-[11px] text-muted-foreground">{label}</div>
@@ -121,6 +122,101 @@ function Card({ title, note, children }: { title: string; note?: string; childre
       <div className="text-xs font-medium text-white">{title}</div>
       {note && <div className="mb-2 mt-0.5 text-[11px] text-muted-foreground">{note}</div>}
       {children}
+    </div>
+  );
+}
+
+const TOTAL = 30000;
+const C4 = "#9b7bea";   // speed chart only, always on its own
+
+function DetectorHealth({ L, sets, best, detState }: {
+  L: VoiceData["live"]; sets: [string, string, string][]; best: VoiceVal | null; detState: string;
+}) {
+  const last = L.trace.at(-1);
+  const sps = L.trace.length ? L.trace.slice(-5).reduce((a, t) => a + t[2], 0) / Math.min(5, L.trace.length) : 0;
+  const left = last && sps > 0 && !L.finished ? (TOTAL - last[0]) / sps / 60 : null;
+  const vs = (v?: ValSet | number) => (v && typeof v === "object" ? v : undefined);
+  const ap = (k: string) => L.vals.filter((v) => vs(v[k])?.ap != null).map((v) => [v.step, vs(v[k])!.ap!] as [number, number]);
+  const pr = (k: string, f: "p" | "r") => L.vals.filter((v) => vs(v[k])?.[f] != null).map((v) => [v.step, vs(v[k])![f]!] as [number, number]);
+  const refBest = (r: VoiceVal[] = []) => (r.length ? r.reduce((a, b) => (b.score > a.score ? b : a)) : null);
+  const refs = Object.entries(L.ref ?? {}).map(([k, r]) => [k, refBest(r)] as const).filter(([, b]) => b);
+  return (
+    <div className="mb-4 rounded-lg border border-primary/50 bg-primary/[0.04] p-3">
+      <div className="flex flex-wrap items-baseline gap-x-3">
+        <div className="text-sm font-semibold text-white">Solo-voice detector v3: training health</div>
+        <div className="text-[11px] text-muted-foreground">{L.run ?? "v3"}{L.gpu ? ` · ${L.gpu}` : ""}</div>
+        {L.stale && <div className="text-[11px] text-amber-200">cluster didn't answer just now: showing its last reading, from {L.stale}</div>}
+      </div>
+      <div className="mb-3 mt-0.5 text-[11px] text-muted-foreground">
+        Reads the full mix and marks each 16 ms frame where the voice sounds over a band that is silent (below the song's
+        softest instrumental level) or light (in the bottom 30% of that song's own range, the threshold chosen from the base's
+        recall per level). Labels: Demucs on Music2MIDI (offline) and MUSDB18-HQ's true stems, band turned down in random stretches.
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <Tile label="Progress" value={last ? `${((100 * last[0]) / TOTAL).toFixed(0)}%` : "—"} hint={last ? `step ${last[0].toLocaleString()} / ${TOTAL.toLocaleString()}` : detState} />
+        <Tile label="Speed" value={sps ? `${sps.toFixed(1)}/s` : "—"} hint={L.finished ? "finished" : left != null ? `~${Math.round(left)} min left` : "steps per second"} />
+        <Tile label="Best validation AP" value={best ? f3(best.score) : "—"} hint={best ? `step ${best.step.toLocaleString()} (mean of 3 sets)` : "first check at step 1,000"} />
+        <Tile label="Latest loss" value={last ? f3(last[1]) : "—"} hint="cross-entropy, solo classes weighted x4" />
+      </div>
+      {last && (
+        <div className="mb-3 max-w-xl">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full" style={{ width: `${(100 * last[0]) / TOTAL}%`, background: C2 }} />
+          </div>
+        </div>
+      )}
+      {L.jobs.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
+          {L.jobs.map((j) => (
+            <span key={j.id} className="rounded-md border border-border px-2 py-0.5 text-muted-foreground">
+              <span className="text-white">{j.name}</span> · {j.state.toLowerCase()} {j.state === "RUNNING" ? `${j.elapsed} / ${j.limit}` : j.reason}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {L.vals.length || L.trace.length ? (
+        <div className="grid gap-x-6 gap-y-4 md:grid-cols-2 2xl:grid-cols-3">
+          <Lines label="validation AP (silent or light), by set" lo={0} hi={1} fmt={f3}
+                 series={sets.map(([k, nm, c]) => ({ name: nm, color: c, pts: ap(k) }))} />
+          <Lines label="Music2MIDI val AP, by class" lo={0} hi={1} fmt={f3}
+                 series={[{ name: "silent or light", color: C1, pts: ap("m2m_val") }, { name: "silent", color: C2, pts: ap("m2m_val_silent") },
+                          { name: "light", color: C3, pts: ap("m2m_val_quiet") }]} />
+          <Lines label="Music2MIDI val precision / recall at 0.5" lo={0} hi={1} fmt={f3}
+                 series={[{ name: "precision", color: C1, pts: pr("m2m_val", "p") }, { name: "recall", color: C2, pts: pr("m2m_val", "r") }]} />
+          <Lines label="MUSDB natural AP, by class" lo={0} hi={1} fmt={f3}
+                 series={[{ name: "silent or light", color: C1, pts: ap("musdb_nat") }, { name: "silent", color: C2, pts: ap("musdb_nat_silent") },
+                          { name: "light", color: C3, pts: ap("musdb_nat_quiet") }]} />
+          <Lines label="training loss (per 100 steps)" fmt={f3} series={[{ name: "loss", color: C1, pts: L.trace.map((t) => [t[0], t[1]] as [number, number]) }]} />
+          <Lines label="speed (steps / s)" lo={0} fmt={(v) => v.toFixed(1)} series={[{ name: "steps/s", color: C4, pts: L.trace.map((t) => [t[0], t[2]] as [number, number]) }]} />
+        </div>
+      ) : <div className="text-[11px] text-muted-foreground">{detState}</div>}
+
+      {best && (
+        <table className="mt-4 w-full max-w-2xl text-left text-xs">
+          <thead className="text-muted-foreground"><tr><th className="pb-1 font-normal">best so far (step {best.step.toLocaleString()})</th><th className="font-normal">AP</th><th className="font-normal">precision</th><th className="font-normal">recall</th><th className="font-normal">F1</th><th className="font-normal">share of frames</th></tr></thead>
+          <tbody>
+            {sets.flatMap(([k, nm]) => [[k, nm], [`${k}_silent`, "band silent"], [`${k}_quiet`, "band light (bottom 30%)"]])
+              .filter(([k]) => vs(best[k])).map(([k, nm]) => { const v = vs(best[k])!; const sub = /_(silent|quiet)$/.test(k); return (
+              <tr key={k} className="border-t border-border/60 tabular-nums"><td className={sub ? "py-1 pl-4 pr-3 text-muted-foreground" : "py-1 pr-3 text-white"}>{nm}</td><td>{v.ap == null ? "—" : f3(v.ap)}</td><td>{v.p == null ? "—" : f3(v.p)}</td><td>{v.r == null ? "—" : f3(v.r)}</td><td>{v.f1 == null ? "—" : f3(v.f1)}</td><td>{pct(v.pos)}</td></tr>
+            ); })}
+          </tbody>
+        </table>
+      )}
+      {refs.length > 0 && (
+        <>
+          <table className="mt-3 w-full max-w-2xl text-left text-xs">
+            <thead className="text-muted-foreground"><tr><th className="pb-1 font-normal">earlier detectors, best (their own labels)</th><th className="font-normal">Music2MIDI val AP</th><th className="font-normal">F1</th><th className="font-normal">MUSDB natural AP</th><th className="font-normal">solo share</th></tr></thead>
+            <tbody>
+              {refs.map(([k, b]) => { const mv = vs(b!["m2m_val"]); const mn = vs(b!["musdb_nat"]); return (
+                <tr key={k} className="border-t border-border/60 tabular-nums"><td className="py-1 pr-3 text-white">{k === "v1" ? "v1 (voice 12 dB+ over the band)" : "v2 (voice 8 dB+ over the band)"}</td><td>{mv?.ap != null ? f3(mv.ap) : "—"}</td><td>{mv?.f1 != null ? f3(mv.f1) : "—"}</td><td>{mn?.ap != null ? f3(mn.ap) : "—"}</td><td>{mv ? pct(mv.pos) : "—"}</td></tr>
+              ); })}
+            </tbody>
+          </table>
+          <div className="mt-1 text-[11px] text-muted-foreground">Each detector is scored against its own definition of solo, so these are context, not a ranking; the real comparison is fill-and-remove on the 106 test songs.</div>
+        </>
+      )}
     </div>
   );
 }
@@ -167,6 +263,7 @@ export default function VoicePanel() {
         </span>
       </div>
 
+      <DetectorHealth L={L} sets={sets} best={best} detState={detState} />
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
         <Tile label="Clean 'aah' melody, F1" value={<>{f3(base.solo)} → {f3(base.fill)}</>} hint="solo → fill and remove (50 songs)" />
         <Tile label="Singer-like voice + bleed, F1" value={<>{f3(hard.solo)} → {f3(hard.fill)}</>} hint="with monophony cleanup" />
@@ -210,49 +307,6 @@ export default function VoicePanel() {
         </Card>
       </div>
 
-      <div className="mt-4 rounded-lg border border-border/70 p-3">
-        <div className="text-xs font-medium text-white">7 · Solo-voice detector (training)</div>
-        <div className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
-          Reads the full mix, marks each 16 ms frame where the voice stands over a silent band (25 dB+ below it) or a quiet one (8-25 dB below). Labels: Demucs stems on Music2MIDI
-          songs (offline only) and MUSDB18-HQ's true stems with the band turned down in random stretches. Frozen base front end,
-          small transformer over time.
-        </div>
-        {sepDone != null && L.songs ? (
-          <div className="mb-3 max-w-md">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-              <div className="h-full rounded-full" style={{ width: `${(100 * sepDone) / L.songs}%`, background: C2 }} />
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">Demucs labels: {sepDone} / {L.songs} songs</div>
-          </div>
-        ) : null}
-        {L.jobs.length > 0 && (
-          <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
-            {L.jobs.map((j) => (
-              <span key={j.id} className="rounded-md border border-border px-2 py-0.5 text-muted-foreground">
-                <span className="text-white">{j.name}</span> · {j.state.toLowerCase()} {j.state === "RUNNING" ? `${j.elapsed} / ${j.limit}` : j.reason}
-              </span>
-            ))}
-          </div>
-        )}
-        {L.vals.length || L.trace.length ? (
-          <div className="grid gap-x-6 gap-y-3 md:grid-cols-2">
-            <Lines label="validation average precision" lo={0} hi={1} fmt={f3}
-                   series={sets.map(([k, nm, c]) => ({ name: nm, color: c, pts: L.vals.filter((v) => (v[k] as ValSet).ap != null).map((v) => [v.step, (v[k] as ValSet).ap!] as [number, number]) }))} />
-            <Lines label="training loss" fmt={f3} series={[{ name: "loss", color: C1, pts: L.trace.map((t) => [t[0], t[1]] as [number, number]) }]} />
-          </div>
-        ) : <div className="text-[11px] text-muted-foreground">{detState}</div>}
-        {best && (
-          <table className="mt-3 w-full max-w-xl text-left text-xs">
-            <thead className="text-muted-foreground"><tr><th className="pb-1 font-normal">best (step {best.step.toLocaleString()})</th><th className="font-normal">AP</th><th className="font-normal">precision</th><th className="font-normal">recall</th><th className="font-normal">F1</th><th className="font-normal">solo share</th></tr></thead>
-            <tbody>
-              {sets.flatMap(([k, nm]) => [[k, nm], [`${k}_silent`, "   band silent (25 dB+)"], [`${k}_quiet`, "   band quiet (8-25 dB)"]])
-                .filter(([k]) => best[k]).map(([k, nm]) => { const v = best[k] as ValSet; return (
-                <tr key={k} className="border-t border-border/60 tabular-nums"><td className={k.includes("_") && /_(silent|quiet)$/.test(k) ? "py-1 pl-4 pr-3 text-muted-foreground" : "py-1 pr-3 text-white"}>{nm.trim()}</td><td>{v.ap == null ? "—" : f3(v.ap)}</td><td>{v.p == null ? "—" : f3(v.p)}</td><td>{v.r == null ? "—" : f3(v.r)}</td><td>{v.f1 == null ? "—" : f3(v.f1)}</td><td>{pct(v.pos)}</td></tr>
-              ); })}
-            </tbody>
-          </table>
-        )}
-      </div>
     </section>
   );
 }

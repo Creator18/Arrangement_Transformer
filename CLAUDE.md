@@ -190,6 +190,53 @@ Each run uses a frozen copy of the script in its output dir (`frozen.py`), run w
 **sbatch_once.sh still makes duplicates** when the controller is slow (its 20 s check is too short): after every
 submit, `squeue -u basu.ang` and cancel extra copies of a job name before they start.
 
+## Onset bar 0.8 and the clean-up model (2026-10-27)
+
+The user hears that **0.8 has the notes they want, voice included**; the app is hosted at 0.8 with no solo detector
+for now (`serve.ps1 -Threshold 0.8`; the script now clears the solo env vars when `-Solo` is not given).
+`eval/thr_review.py` (logs `thrrev_*`):
+
+| bar | combo F1 | new renders F1 / sung recall | plain F1 | real pc-F1 / notes/s / sung line |
+|---|---|---|---|---|
+| 0.8 | 0.856 | 0.692 / 0.820 | 0.932 | 0.477 / 15.1 / 0.787 |
+| 0.85 | 0.869 | 0.714 / 0.791 | 0.937 | 0.496 / 13.1 / 0.747 |
+| 0.9 | 0.871 | 0.719 / 0.722 | 0.935 | 0.510 / 10.7 / 0.671 |
+
+Notes 0.8 adds over 0.9 on renders: 28-44% right, the rest double presses, octave / overtone ghosts, neighbours.
+Peak probability, length, loudness and "key held" barely separate right from wrong on real songs, so no rule cleanup.
+**Clean-up model** (user's design): messy 0.8 output in, written arrangement as the answer; keep / drop per note
+(never writes). Data = the base at 0.8 on the 34,262 base_render VALIDATION clips (228 songs, never trained on):
+`eval/cleanup_data.py` -> `/scratch/basu.ang/cleanup_data` (jobs `cudata-0..7`). Model `app/ml/spectral/cleanup_train.py`
+(note tokens + a +-3-frame window of the base's onset / frame probabilities at the key, neighbours, octaves, twelfths;
+6-layer transformer; split by song) -> `checkpoints/cleanup1`, job `cutrain` (VAL lines compare with base 0.8 / 0.9).
+Result: best at step 4,000 (then overfits: 228 songs): keep 0.4 F1 0.769 (R 0.711 / P 0.838) vs raw 0.9 0.751, raw 0.8
+0.722. **By ear: "0.4 cleanup sounded amazing"** (song 134777de: 15.5 -> 9.7 notes/s). In the app:
+`serve.ps1 -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup1/best.pt -Keep 0.4` (`app/services/cleanup.py`,
+20 s windows every 10 s, centre-weighted). Progress page has its training-health panel (`/cleanup-data`).
+
+### Clean-up v2: more data + learned quantizing (2026-10-27)
+
+The user still hears excess double presses on some songs and wants beats/tempo so notes can be quantized, but **not
+naive snapping** (notes sit at fractions / multiples of the beat, and some are deliberately off-grid). Checks first:
+- `eval/grid_check.py`: POP909 written notes are 94% within 2% of a 16th or triplet slot (92% exact; median song 98%).
+  Music2MIDI only 73% within 2% (23% exact: human-played timing) -> **position labels from POP909 clips only**.
+- `eval/beat_check.py` (300 clips, true beats recovered from the source song): madmom (built from source in `~/envs/arr`,
+  `~/src/madmom`) beat model puts 82% of true beats on its grid, 87% of its grid on true half-beats, usable on 67%;
+  tempo x1 57% / x2 32% / x0.5 6%. Downbeat model similar (0.830 / 0.888 / 0.690). So madmom's beats are
+  **features**, not a hard grid, and an OFF class covers notes (or clips) where the grid is wrong.
+- Design: `app/ml/spectral/cleanup2_train.py` = v1 features + same-key context + madmom beat features (phase in the
+  beat at 1, 1/2, 1/3, 1/4, tempo, distance to each slot, activations, bar phase) + a **position head**: the written
+  start's slot in the madmom beat holding the base start, slots 0, 1/4, 1/3, 1/2, 2/3, 3/4, 1, or OFF (tolerance
+  min(30 ms, 8% of the beat)). Loss = keep BCE + 0.5 x position CE.
+- Data: v1's validation clips + 40 clips of each of the 1,522 TRAINING songs (`cleanup_data_tr`, 60,878 clips,
+  jobs `cudtr-0..7`), madmom beats for all 95k clips in `/scratch/basu.ang/clip_beats` (`eval/clip_beats.py`).
+- Smoke tests passed (`/scratch/basu.ang/cu2_smoke*`). Note: on renders the base's start is already within 3 ms of
+  the written time (median), better than nearest-slot snapping (8 ms); the position head must earn its keep on
+  real songs and by ear.
+- **Running:** `cutrain2` (job 11405430, gpu, 60k steps) -> `checkpoints/cleanup2`, log `logs/cutrain2_*.out`
+  (step lines `step N loss L pos Q`). Then: compare keep/drop with v1, measure quantizing, add madmom on the whole
+  song + v2 to `app/services/cleanup.py`, host for the user.
+
 ## Next steps
 
 0. Voice: fill-and-remove on the 106 real songs is measured (section above); the voice-filter run is going. Then
