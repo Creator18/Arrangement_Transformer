@@ -178,14 +178,24 @@ Detector frames vs the true solo parts: v1 recall 0.81 / precision 0.74 (17 min 
 clears them but also deletes sung notes, -3 pts); "other" (neither voice nor fill: drums, bleed, overtones) 43-64%.
 Voice-floor removal is the cheapest cleanup (-1/4 of added notes for -1 pt).
 
-**Running now (2026-10-26 ~15:30):** `solofillv-*` = the same with a **pitch-track voice filter** (pYIN on the mix
-inside the solo runs; keep an added note only if the sung line sits within 1 semitone for >= 40% of 50-200 ms after
-its start; `-pc` any octave; `voice all` also filters the plain pass's notes). Smoke test first
-(`/scratch/basu.ang/solo_fill_voice_smoke`, log `logs/solofillv_smoke_*.out`), then 106 songs in
-`/scratch/basu.ang/solo_fill_voice` (3 GPU shards + a merge; logs `logs/solofillv_*`). Jobs: smoke 11388792 ->
-shards 11388812 / 11388815 / 11388817 (start only if the smoke test succeeds) -> merge 11388818. Check:
-`ssh explorer 'squeue -u basu.ang; tail -40 $(ls -t ~/arrangement_transformer/logs/solofillv_merge_*.out | head -1)'`.
-Each run uses a frozen copy of the script in its output dir (`frozen.py`), run with
+**Pitch-track voice filter** (`/scratch/basu.ang/solo_fill_voice`, finished 2026-10-26 17:53; band+drums union):
+pYIN on the mix inside the solo runs (there the mix is mostly the voice); keep an added note only if the sung line
+sits within 1 semitone for >= 40% of 50-200 ms after its start (`-pc`: any octave); `voice all` also filters the
+plain pass's notes in the solo runs (the only variant that can lose a plain note).
+
+| | recovered | notes / sung note | added | voice | leftover | other |
+|---|---|---|---|---|---|---|
+| plain | 26.5% | 1.37 | | | | |
+| v2 strict | **39.4%** | 2.04 | 1,404 | 27% | 29% | 44% |
+| v2 strict + voice | 37.5% | 1.68 | 655 | 43% | 14% | 43% |
+| v2 floor + voice-pc | 37.7% | 1.70 | 699 | 43% | 17% | 41% |
+| **v2 floor + voice all** | 33.7% | **1.27** | 631 | 43% | 14% | 42% |
+| v1 floor + voice | 34.4% | 1.57 | 429 | **47%** | 13% | 40% |
+
+The voice filter halves the added notes for ~2 pts; `voice all` is the first variant better than plain on BOTH
+recovery (+7 pts) and note count (1.27 vs 1.37). ~40% of added notes are still "other" (neither voice nor fill).
+Not yet compared by ear, nor against the stem split below. Shard 2 was killed twice by signal 9 on node **c2205**
+(1.4 GB used, not memory): exclude c2205. Each run uses a frozen copy of the script in its output dir (`frozen.py`), run with
 `PYTHONPATH=~/arrangement_transformer/backend:~/arrangement_transformer/backend/eval`.
 **sbatch_once.sh still makes duplicates** when the controller is slow (its 20 s check is too short): after every
 submit, `squeue -u basu.ang` and cancel extra copies of a job name before they start.
@@ -266,7 +276,7 @@ to the mix (the base trained on loud masters). About +75 s per song on the lapto
 
 ## Next steps
 
-0. Voice: fill-and-remove on the 106 real songs is measured (section above); the voice-filter run is going. Then
+0. Voice: fill-and-remove on the 106 real songs is measured, voice filter included (section above). Then
    pick detector + removal rule by ear in the app, and put the chosen chain into the app.
 
 1. **Voice** (`VOICE_PLAN.md`): build the vocal-line score on the 106 real songs (base, C, D), including the
