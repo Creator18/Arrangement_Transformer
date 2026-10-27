@@ -9,6 +9,10 @@
 #        -SoloPlace octave -SoloRule octave: fill only in octave bands the normal pass leaves empty)
 #   & .\serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup1/best.pt
 #       (keep / drop each note, app/services/cleanup.py; -Keep 0.3 keeps more)
+#   & .\serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup2/best.pt -Quantize
+#       (v2: also moves notes to the beat slot it learned, madmom beats; -QuantP 0.7 moves fewer)
+#   ... -Cleanup app/ml/spectral/checkpoints/cleanup2/best.pt -Quantize -Stems
+#       (the user's stem split, app/services/stem_split.py: Demucs voice at 0.8 + clean-up keep 0.5, the rest at 0.9, joined, quantized)
 param(
     [string]$Arranger = "app/ml/spectral/checkpoints/arr_scratch/best.pt",
     [string]$Threshold = "0.9",
@@ -17,7 +21,10 @@ param(
     [string]$SoloRule = "floor",
     [string]$SoloPlace = "floor",
     [string]$Cleanup = "",
-    [string]$Keep = "0.4"
+    [string]$Keep = "0.4",
+    [switch]$Quantize,
+    [string]$QuantP = "0.5",
+    [switch]$Stems
 )
 Set-Location $PSScriptRoot
 # FluidSynth library for the solo fill's band (pyfluidsynth looks for libfluidsynth-3.dll on PATH)
@@ -35,5 +42,8 @@ if ($Solo) { $env:ARRANGEMENT_SOLO_DETECTOR = $Solo; $env:ARRANGEMENT_SOLO_RULE 
 else { Remove-Item Env:ARRANGEMENT_SOLO_DETECTOR, Env:ARRANGEMENT_SOLO_RULE, Env:ARRANGEMENT_SOLO_PLACE -ErrorAction SilentlyContinue }   # a previous -Solo run in this shell must not linger
 if ($Cleanup) { $env:ARRANGEMENT_CLEANUP = $Cleanup; $env:ARRANGEMENT_CLEANUP_KEEP = $Keep }
 else { Remove-Item Env:ARRANGEMENT_CLEANUP, Env:ARRANGEMENT_CLEANUP_KEEP -ErrorAction SilentlyContinue }
-Write-Host "backend: arranger $Arranger at $Threshold$(if ($Solo) { " + solo fill ($Solo, $SoloPlace placement, $SoloRule)" })$(if ($Cleanup) { " + clean-up ($Cleanup, keep $Keep)" })"
+if ($Quantize) { $env:ARRANGEMENT_CLEANUP_QUANT = "1"; $env:ARRANGEMENT_CLEANUP_QUANT_P = $QuantP }
+else { Remove-Item Env:ARRANGEMENT_CLEANUP_QUANT, Env:ARRANGEMENT_CLEANUP_QUANT_P -ErrorAction SilentlyContinue }
+if ($Stems) { $env:ARRANGEMENT_STEM_SPLIT = "1" } else { Remove-Item Env:ARRANGEMENT_STEM_SPLIT -ErrorAction SilentlyContinue }
+Write-Host "backend: arranger $Arranger at $Threshold$(if ($Solo) { " + solo fill ($Solo, $SoloPlace placement, $SoloRule)" })$(if ($Cleanup) { " + clean-up ($Cleanup, keep $Keep$(if ($Quantize) { ", quantize at $QuantP" }))" })$(if ($Stems) { " + stem split (voice 0.8 keep 0.5, rest 0.9)" })"
 & .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000

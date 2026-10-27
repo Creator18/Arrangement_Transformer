@@ -16,8 +16,34 @@ import numpy as np
 SR = 24000
 
 
+def _compat():
+    """madmom 0.16 (pip, the laptop's venv) on Python 3.11 / numpy >= 1.24; a no-op for the git build on the cluster."""
+    import collections
+    import collections.abc
+    for n in ("MutableSequence", "MutableMapping", "Sequence", "Mapping", "Iterable"):
+        if not hasattr(collections, n):
+            setattr(collections, n, getattr(collections.abc, n))
+    for n, t in (("float", float), ("int", int), ("bool", bool), ("complex", complex), ("object", object)):
+        if n not in np.__dict__:
+            setattr(np, n, t)
+    import madmom.features.downbeats as D
+
+    class _NP:                                             # results = [(path, logprob), ...] is ragged for new numpy
+        def __getattr__(self, n):
+            return getattr(np, n)
+
+        def asarray(self, a, *k, **kw):
+            try:
+                return np.asarray(a, *k, **kw)
+            except ValueError:
+                return np.asarray(a, dtype=object)
+    if D.np is np:
+        D.np = _NP()
+
+
 def track(y24):
     """the trackers on 24 kHz mono audio: dict of arrays (also used by the app)."""
+    _compat()
     import librosa
     from madmom.features.beats import RNNBeatProcessor, DBNBeatTrackingProcessor
     from madmom.features.downbeats import RNNDownBeatProcessor, DBNDownBeatTrackingProcessor

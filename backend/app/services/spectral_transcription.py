@@ -187,6 +187,12 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
     from app.ml.transcriber.decode import decode_notes
     global CKPT
 
+    if ckpt is not None:                 # the user's stem split: voice at 0.8 + clean-up, the rest at 0.9 (stem_split.py)
+        from app.services import stem_split
+        if stem_split.enabled():
+            notes = stem_split.transcribe(audio_path, pathlib.Path(ckpt), frame_thr)
+            onset_thr = f"stems {stem_split.VOCAL_THR} / {stem_split.REST_THR}"
+            return _finish(notes, audio_path, onset_thr)
     keep = CKPT
     if ckpt is not None:
         CKPT = pathlib.Path(ckpt)
@@ -214,7 +220,12 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
     if ckpt is not None:                 # the song arranger only: keep / drop each note (app/services/cleanup.py)
         from app.services import cleanup
         if cleanup.enabled():
-            notes = cleanup.apply(notes, on, fr)
+            notes = cleanup.apply(notes, on, fr, audio_path)
+    return _finish(notes, audio_path, onset_thr if onset_thr is not None else ONSET_THR)
+
+
+def _finish(notes, audio_path, bar):
+    import librosa
     out = []
     for n in notes:
         p = int(n["pitch"])
@@ -223,6 +234,5 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
                         "onset": float(n["onset"]), "offset": float(n["offset"]),
                         "velocity": int(n["velocity"])})
     out.sort(key=lambda n: (n["onset"], n["pitch"]))
-    print(f"[spectral] {len(out)} notes from {pathlib.Path(audio_path).name} "
-          f"(onset_thr {onset_thr if onset_thr is not None else ONSET_THR})")
+    print(f"[spectral] {len(out)} notes from {pathlib.Path(audio_path).name} (onset_thr {bar})")
     return out

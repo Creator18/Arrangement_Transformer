@@ -233,9 +233,36 @@ naive snapping** (notes sit at fractions / multiples of the beat, and some are d
 - Smoke tests passed (`/scratch/basu.ang/cu2_smoke*`). Note: on renders the base's start is already within 3 ms of
   the written time (median), better than nearest-slot snapping (8 ms); the position head must earn its keep on
   real songs and by ear.
-- **Running:** `cutrain2` (job 11405430, gpu, 60k steps) -> `checkpoints/cleanup2`, log `logs/cutrain2_*.out`
-  (step lines `step N loss L pos Q`). Then: compare keep/drop with v1, measure quantizing, add madmom on the whole
-  song + v2 to `app/services/cleanup.py`, host for the user.
+- **Result** (`cutrain2`, 60k steps, best step 38k, `checkpoints/cleanup2/best.pt`, also on the laptop): no overfitting
+  but keep/drop barely moves (keep 0.4 F1 0.771 vs v1 0.769; P 0.852). Position head 89.5% right slot; start error
+  vs written: base 3.7 ms, learned 8.0 ms, nearest-slot 10.0 ms (renders are already exact; real songs untested).
+- **Hosted (2026-10-27):** `serve.ps1 -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup2/best.pt -Keep 0.4
+  -Quantize` (`-QuantP` = min slot probability, default 0.5; never moves a note > 60 ms; same-key strikes landing
+  together are merged). madmom on the whole song (laptop venv has pip madmom 0.16: `clip_beats._compat()` patches it
+  for Python 3.11 / numpy 1.26). Song 134777de: 5,394 -> 3,454 notes, 3,041 moved, ~93 s.
+- **User (2026-10-27): madmom is a stopgap; build our OWN learned beat / downbeat / tempo model next.** Renders give
+  exact beat labels (known MIDI tempo, incl. the 25% sped-up ones); score it with `eval/beat_check.py` vs madmom, then
+  retrain v2 on our beats.
+
+### The user's stem split (2026-10-27, hosted)
+
+User's idea: Demucs (`htdemucs_6s`, `separation._get_separator`) splits voice / rest; **voice at 0.8 + clean-up v2
+keep 0.5**, **rest at 0.9**; voice notes on a key the rest strikes within 50 ms are dropped as duplicates; join;
+quantize with v2's position head (madmom on the mix). `app/services/stem_split.py`, hooked at the top of
+`spectral_transcription.transcribe`; `serve.ps1 ... -Cleanup app/ml/spectral/checkpoints/cleanup2/best.pt -Keep 0.4
+-Quantize -Stems` (env `ARRANGEMENT_STEM_SPLIT=1`, `_VOCAL_THR` / `_VOCAL_KEEP` / `_REST_THR`). Stems are RMS-matched
+to the mix (the base trained on loud masters). About +75 s per song on the laptop GPU.
+- Song 57439b3b: 2,221 notes (mix 0.8 + v2 + quantize) -> 2,856 (voice 657 -> kept 560, 496 new; rest 2,373 at 0.9).
+  Session copy `backend/temp/57439b3b-stems` (`/results/57439b3b-stems`). Waiting on the user's ear.
+- My worry (base weak on a voice alone) was mostly the 0.9 bar: solo "aah" recall 0.81 at 0.9, 0.95 at 0.5.
+- **Running (2026-10-27):** `stemsplit-0..3` (jobs 11409506 / 11409507 / 11409512 / 11409516, gpu) =
+  `eval/stem_split_real.py` on the 106 real songs: mix 0.9 / mix 0.8 + v2 / stems / stems keep 0.4; strict + pitch-class
+  F1, notes/s, sung line, re-strikes per 1000 notes. Parts in `/scratch/basu.ang/stem_split_real/part*.json`, logs
+  `logs/stemsplit_*`. Merge: `python eval/stem_split_real.py --merge /scratch/basu.ang/stem_split_real/part*.json`.
+  The cluster now has the 6-stem weights (`~/.cache/torch/hub/checkpoints/5c90dfd2-34c22ccb.th`, copied from the laptop).
+- On the Mac: copy `checkpoints/cleanup2/best.pt` from the cluster to `backend/app/ml/spectral/checkpoints/cleanup2/`;
+  the Mac's git madmom needs no patch; Demucs 6-stem weights download on first use unless copied
+  (`~/.cache/torch/hub/checkpoints/5c90dfd2-34c22ccb.th` on the cluster) — ask the user before any download.
 
 ## Next steps
 
