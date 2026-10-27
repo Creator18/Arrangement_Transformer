@@ -274,6 +274,38 @@ to the mix (the base trained on loud masters). About +75 s per song on the lapto
   the Mac's git madmom needs no patch; Demucs 6-stem weights download on first use unless copied
   (`~/.cache/torch/hub/checkpoints/5c90dfd2-34c22ccb.th` on the cluster) — ask the user before any download.
 
+## Expression: dynamics and sustain (2026-10-27)
+
+The user: "everything feels numerically accurate but it is not the song I remember". Two measured causes, both fixed
+behind flags in `app/services/expression.py` (hooked in `transcription.py`'s song-arranger branch):
+
+- **Dynamics (`ARRANGEMENT_DYNAMICS=1`).** The base's velocities were squeezed (one real song: p10 78 / median 83 /
+  p90 93): squared-error velocity head, 40% of Music2MIDI targets a flat default 80, and stem gains / soundfonts /
+  mastering in the renders break velocity vs loudness. Its ORDER is right, so each song is stretched to a pianist's
+  spread: `64 + 14 x (v - median) / std`. Playback already honours velocity (Salamander velocity layers).
+- **Sustain (`ARRANGEMENT_SUSTAIN=1`).** The song path sent no pedal (`_last_pedal = []`), so every sound stopped at
+  its key release. Now: pedal down where the song's sound rings past its keys (CQT level of a released key stays
+  within 40 dB of its peak), lifted when the bass moves. The sampler / previews already play a pedal track (CC64).
+- **Bench** `eval/expression_bench.py` (`/scratch/basu.ang/expression_bench`): MAESTRO windows (30 s) rendered through
+  sfizz + Salamander WITH the pianist's pedal, read by the hosted setup (0.8 + clean-up v2 keep 0.4); 29 validation
+  clips to fit, 40 test clips to score (`eval/velocity_metrics.py`, `eval/pedal_metrics.py`, plus pedal-lift
+  recall / precision within 100 ms).
+
+| velocity (40 test clips) | spread ratio | Pearson | MAE | soft-note bias |
+|---|---|---|---|---|
+| base as it was | 0.73 | 0.808 | 11.9 | +17.1 |
+| fixed x1.36 (MAESTRO only: too narrow on pop) | 0.98 | 0.808 | 10.4 | +0.7 |
+| **per-song stretch to std 14 (on)** | **1.03** | 0.809 | **10.3** | **+1.2** |
+
+  The key's CQT level and the song's loudness curve were fitted too and added nothing (the base hears loudness; it
+  only squeezes it). Sustain: no rule beats "always down" on frame F1 (0.697; pianists hold it 61% of the time); ours
+  0.62 (down 79%), lifts recall 0.45 / precision 0.24; lifting at pitch-class changes was worse (F1 0.5-0.6).
+- Test song 10061056 in the app: velocities 52 / 64 / 89 (p10 / median / p90, range 12-109), 486 pedal presses.
+  A/B renders (same notes, 40-100 s: flat dry / dynamics / sustain / both) in `backend/temp/expression_ab/` on the
+  Mac. **Waiting on the user's ear.** Hosted on the Mac with both flags (localhost:5173).
+- The cluster's `transcription.py` differs from the repo's, so the hook is NOT on the cluster yet (the bench calls
+  `expression.py` directly).
+
 ## Next steps
 
 0. Voice: fill-and-remove on the 106 real songs is measured, voice filter included (section above). Then

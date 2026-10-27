@@ -1013,6 +1013,25 @@ def _transcribe_fullmix_of(
                                 notes = solo_fill.apply(audio_path, notes, SONG_ARRANGER, SONG_ARRANGER_THR)
                             except Exception as e:                  # noqa: BLE001
                                 print(f"[solo-fill] failed ({type(e).__name__}: {e}); normal pass kept")
+                    # dynamics and sustain read from the song (app/services/expression.py;
+                    # ARRANGEMENT_DYNAMICS / ARRANGEMENT_SUSTAIN, off when unset)
+                    from app.services import expression
+                    if (expression.DYNAMICS or expression.SUSTAIN) and notes:
+                        try:
+                            y_ex = expression.load(audio_path)
+                            C_ex = expression.cqt_db(y_ex)
+                            if expression.DYNAMICS:
+                                notes = expression.apply_dynamics(notes)
+                                vs = sorted(g["velocity"] for g in notes)
+                                print(f"[expression] dynamics: velocity p10 {vs[len(vs) // 10]} median "
+                                      f"{vs[len(vs) // 2]} p90 {vs[9 * len(vs) // 10]}")
+                            if expression.SUSTAIN:
+                                _last_pedal = expression.sustain_pedal(notes, y_ex, C_ex)
+                                down = sum(p["offset"] - p["onset"] for p in _last_pedal)
+                                print(f"[expression] sustain: {len(_last_pedal)} pedal presses, "
+                                      f"{down:.0f} s down")
+                        except Exception as e:                      # noqa: BLE001
+                            print(f"[expression] failed ({type(e).__name__}: {e}); notes kept as they were")
                     print(f"[transcription] song-to-piano arranger "
                           f"(level {SONG_ARRANGER_LEVEL}, thr {SONG_ARRANGER_THR})")
                 elif spectral_transcription.available():
