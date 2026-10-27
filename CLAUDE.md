@@ -306,8 +306,46 @@ behind flags in `app/services/expression.py` (hooked in `transcription.py`'s son
 - The cluster's `transcription.py` differs from the repo's, so the hook is NOT on the cluster yet (the bench calls
   `expression.py` directly).
 
+## Clean-up v2: keep 0.3, and the merge plan (2026-10-27)
+
+- **By ear the user prefers keep 0.3** over 0.4 and 0.5 (v2, base at 0.8, quantize OFF). The Mac backend now runs
+  `...THR=0.8 ARRANGEMENT_CLEANUP=app/ml/spectral/checkpoints/cleanup2/best.pt ARRANGEMENT_CLEANUP_KEEP=0.3
+  ARRANGEMENT_DYNAMICS=1 ARRANGEMENT_SUSTAIN=1`. The user's last song (link upload, session 6b814090 at keep 0.4:
+  4,754 notes, 13.1/s) rerun at 0.3 as session 07842b8d: 5,837 notes, 16.1/s.
+- **Quantizing stays OFF** (user, 2026-10-27): v2's position head snaps confident notes 100% onto madmom's grid
+  (unreliable: tempo right 57%), flattens rolled chords and pulls the song's push / lay-back / tempo drift onto
+  POP909's written grid; on renders the base's starts are 3.7 ms from the written time, quantized 8.0 ms. A
+  groove-preserving "tighten, don't snap" (song's own tempo curve and groove template, outliers only, partial
+  moves, chords as groups) was designed; a render test bench (known swing / rolls / tempo curves + added sloppiness)
+  was started then paused for the "it is not the song I remember" work.
+- **Clean-up v2 is keep / drop only**: per note, from its pitch, start, length, loudness, the base's onset / frame
+  probabilities +-3 frames on its key, neighbours, octaves and twelfths, what the same key just did, and madmom beat
+  position (a transformer over each 20 s clip). Labels: a base note is "keep" if a written note starts on its key
+  within 48 ms (`eval/cleanup_data.py`).
+
+### PLAN (user's idea, not started): let the clean-up MERGE double presses
+
+Keep / drop cannot repair a double press: one written note the base wrote as two same-key strikes A, B. Dropping B
+leaves A cut short (the base ended it at B); dropping A starts the note late. The decoder's own merge
+(`decode.py` `merge_fragment_s`) only joins a piece < 60 ms with a gap <= 30 ms, so real double presses stay.
+- **New action per note:** "merge with the previous strike of the same key", only when that strike is on the same
+  key and this one starts close behind it (within ~150 ms of its end). Merged note: start = one of the base's two
+  starts (never a new time), end = the later end (never past the base's sound), velocity = the louder. Only the short
+  gap between the strikes is filled. **It never adds a note or extends one beyond the base's own notes** (the
+  user's constraint). Example: written 2 notes -> base 4 (double presses) -> cleaner 2 again.
+- **Labels from data already on the cluster** (`/scratch/basu.ang/cleanup_data`, `cleanup_data_tr`: the base's 0.8
+  notes AND the written notes with lengths): a same-key pair of base notes inside one written note = merge (the
+  start label = whichever base start is nearer the written one).
+- **Model:** v2 + a merge output, fine-tuned from `checkpoints/cleanup2/best.pt` (cheap; v2 already reads the
+  same-key context).
+- **Measure FIRST (CPU, before any training)** on the held-out clips (`checkpoints/cleanup1/split.json`): how often
+  the base splits one written note into >= 2 strikes; what v2 at keep 0.3 does with those today; the ceiling of a
+  perfect merge on note F1 and on F1 WITH note ends (COnPOff, which keep / drop barely moves). Train only if the
+  ceiling is worth it; then the numbers, then the user's ear at keep 0.3.
+
 ## Next steps
 
+0. Clean-up merge (section above): measure the ceiling, then train v2 + merge if it is worth it.
 0. Voice: fill-and-remove on the 106 real songs is measured, voice filter included (section above). Then
    pick detector + removal rule by ear in the app, and put the chosen chain into the app.
 
