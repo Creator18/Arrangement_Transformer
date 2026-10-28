@@ -55,6 +55,12 @@ Base at **0.8** + clean-up **v3** (keep 0.3, **merge 0.5**) + **sustain**, **NO 
 - **Baseline** `eval/beat_compare.py` (jobs `beatcmp`): madmom on the same 600 held-out clips -> `/scratch/basu.ang/beat_compare`;
   merge with `--merge madmom_*.json`; ours with `--ckpt`.
 - Then: swap madmom out of `app/services/cleanup.py` / `eval/clip_beats.py`, recompute the clip beats, retrain clean-up v3.
+- **PAUSED by the user (2026-10-28), pick up later.** The standalone TCN above was NOT the agreed plan: on 2026-10-27
+  we agreed a beat output trained on the renders is added to OUR model. Proposed: beat / downbeat / tempo heads on
+  the frozen base (base20m), trained on `beat_data`'s POP909 labels; alternative: inside the clean-up (notes only, no
+  audio: likely weaker). The user hasn't chosen yet. The TCN run (`beattrain`) was cancelled: its per-clip CPU data
+  pipeline starved the GPU (< 200 steps in 12 min). madmom's numbers on the 600 held-out clips are done:
+  `/scratch/basu.ang/beat_compare/madmom_*.json` (merge with `eval/beat_compare.py --merge`).
 
 ## What is running on the cluster (as of 2026-10-25 ~17:00 EDT)
 
