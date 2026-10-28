@@ -55,6 +55,13 @@ Base at **0.8** + clean-up **v3** (keep 0.3, **merge 0.5**) + **sustain**, **NO 
   class within 150 ms; arrangements gated at |lag| <= 0.5 s. Control: one human arrangement vs the others.
   Smoke test (2 songs): notes/s ours 12.6 raw / 9.2 after clean-up vs humans 7.5; slide-shaped + out-of-key notes are
   1.7% of ours (0.4% of a human's), ~72% never kept; humans disagree a lot (~40% of one arranger's notes not in the others).
+- **Beats split off the GPU jobs (2026-10-28):** the cluster cancelled shards 0, 1, 3, 6 for idling. Profiled: 79 of 82 s
+  a song is madmom (one CPU core) for clean-up v3; the GPU sat at ~0%. Now `--beats` (`never_kept_beats.sh`, CPU on
+  courses, job `nevbeats` 11452752, 40 tasks) caches madmom per song in `/scratch/basu.ang/never_kept/beats`, and
+  `--run --cached-only` (`never_kept_run.sh`) reads it: one song 32 s incl. model loading (was ~200 s). Shards 0, 1, 3, 6
+  queued after the beats (`nevkept-c` 11452778, courses-gpu). Shards 2, 4, 5, 7 still run the old way (code loaded
+  before the change); if they get cancelled too, resubmit them with the new script. **Any GPU job that runs the
+  clean-up v2/v3 chain should take cached beats, never madmom inside the GPU job.**
 - If it holds up: a "humans never keep" output on clean-up v3 (split by song audio). Alternative / complement: renders
   with scoops, slides and vibrato on voice and lead instruments, for clean-up data only (needs the user's OK: exception
   to "no pitch effects").

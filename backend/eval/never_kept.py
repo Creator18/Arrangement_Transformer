@@ -5,12 +5,16 @@ songs, one audio each), scored against ALL the song's human arrangements (1,520;
 do humans play", only "which of our notes does no human keep": a note counts as kept if ANY arrangement has the same
 pitch class (any octave: arrangers move the sung line) starting within 150 ms.  Measurement only, nothing is trained.
 
-    --run    (GPU) per song: the base's raw 0.8 notes, the clean-up's keep / merge probabilities and its output
+    --beats  (CPU) per song: madmom beats for the clean-up, cached in <out>/beats (madmom is ~80 of the ~80 s a song
+             takes; left inside --run it kept the GPU idle and the cluster cancelled the jobs for idling)
+    --run    (GPU) per song: the base's raw 0.8 notes, the clean-up's keep / merge probabilities and its output;
+             --cached-only skips songs whose beats are not cached yet
     --score  (CPU) per song: every arrangement's lag against the audio (gate |lag| <= 0.5 s, as the training
              manifest did), then one row per note of ours (raw and after clean-up) and per human note (the control:
              each arrangement against the OTHER arrangements of its song)
     --report merges the rows and prints the tables
 
+    python eval/never_kept.py --beats --songs songs.json --out /scratch/basu.ang/never_kept --shard k --nshards n
     python eval/never_kept.py --run   --songs songs.json --out /scratch/basu.ang/never_kept --shard k --nshards n
     python eval/never_kept.py --score --songs songs.json --out /scratch/basu.ang/never_kept --shard k --nshards n
     python eval/never_kept.py --report --out /scratch/basu.ang/never_kept
@@ -34,6 +38,21 @@ MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29
 MIN = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 
 
+def beats(a, songs):
+    """madmom on the CPU, one cached record per song still to run (what cleanup.song_beats returns)."""
+    import clip_beats
+    run_dir, out = pathlib.Path(a.out) / "run", pathlib.Path(a.out) / "beats"
+    out.mkdir(parents=True, exist_ok=True)
+    for s in songs:
+        f = out / f"{s['audio']}.npz"
+        if f.exists() or (run_dir / f"{s['audio']}.npz").exists():
+            continue
+        z = clip_beats.track(np.load(AUDIO / f"{s['audio']}.npy").astype(np.float32))
+        np.savez(out / f"{s['audio']}.tmp.npz", **z)
+        os.replace(out / f"{s['audio']}.tmp.npz", f)
+        print(f"{s['audio']}: {len(z['beats'])} beats", flush=True)
+
+
 def run(a, songs):
     os.environ["ARRANGEMENT_CLEANUP"] = a.cleanup
     import soundfile as sf
@@ -52,14 +71,19 @@ def run(a, songs):
         cap["raw"] = [dict(g) for g in notes]
         return apply0(notes, *x, **k)
     cleanup.probs, cleanup.apply = probs, apply
+    cached = pathlib.Path(a.out) / "beats"
+    beats0 = cleanup.song_beats
+    cleanup.song_beats = lambda p: (dict(np.load(cached / f"{cur}.npz")) if (cached / f"{cur}.npz").exists()
+                                    else beats0(p))
     out = pathlib.Path(a.out) / "run"
     out.mkdir(parents=True, exist_ok=True)
     tmp = out / f"tmp_{a.shard}.wav"
     arr = lambda ns: np.array([[g["onset"], g["offset"], g["pitch"], g["velocity"]] for g in ns], float).reshape(-1, 4)
     for s in songs:
         f = out / f"{s['audio']}.npz"
-        if f.exists():
+        if f.exists() or (a.cached_only and not (cached / f"{s['audio']}.npz").exists()):
             continue
+        cur = s["audio"]
         y = np.load(AUDIO / f"{s['audio']}.npy").astype(np.float32)
         sf.write(tmp, y, SR)
         cap.clear()
@@ -279,7 +303,8 @@ def report(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", action="store_true"); ap.add_argument("--score", action="store_true")
+    ap.add_argument("--beats", action="store_true"); ap.add_argument("--run", action="store_true")
+    ap.add_argument("--cached-only", action="store_true"); ap.add_argument("--score", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--songs"); ap.add_argument("--out", required=True)
     ap.add_argument("--ckpt", default=os.path.expanduser("~/arrangement_transformer/checkpoints/base20m/best.pt"))
@@ -289,6 +314,8 @@ def main():
     if a.report:
         return report(a)
     songs = json.loads(pathlib.Path(a.songs).read_text())["songs"][a.shard::a.nshards]
+    if a.beats:
+        beats(a, songs)
     if a.run:
         run(a, songs)
     if a.score:
