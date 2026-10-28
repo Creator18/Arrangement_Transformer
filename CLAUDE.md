@@ -42,6 +42,23 @@ Base at **0.8** + clean-up **v3** (keep 0.3, **merge 0.5**) + **sustain**, **NO 
 - Link fetch: `app/routers/upload.py` now moves a dead googlevideo server onto a backup server from the link's `mn`
   list (2026-10-28: two of the ISP's YouTube cache nodes timed out).
 
+## Slides, and "which of our notes do humans never keep" (2026-10-28, running)
+
+- User: singer / instrument **slides** show up as quick out-of-key notes next to the real one ("flickers"); renders have
+  no pitch bends, so the base and clean-up never learned to ignore them. (Not the main cause of double presses: those
+  happen on renders too, and in song f2af9154 they sit mostly in the bass.)
+- **User's idea:** compare our hosted output with ALL human arrangements of a song and learn only which notes humans
+  NEVER keep (drop-only; the clean-up may learn from real songs, like the solo detector; the base stays renders-only).
+- **Measurement first** `eval/never_kept.py` (`never_kept_run.sh` GPU jobs `nevkept` / `nevkept-c`, then
+  `never_kept_score.sh` on courses, then `--report`; dir `/scratch/basu.ang/never_kept`, frozen script `frozen.py`):
+  925 Music2MIDI songs with audio, 1,520 arrangements (271 songs have 2-17). Kept = any arrangement has the pitch
+  class within 150 ms; arrangements gated at |lag| <= 0.5 s. Control: one human arrangement vs the others.
+  Smoke test (2 songs): notes/s ours 12.6 raw / 9.2 after clean-up vs humans 7.5; slide-shaped + out-of-key notes are
+  1.7% of ours (0.4% of a human's), ~72% never kept; humans disagree a lot (~40% of one arranger's notes not in the others).
+- If it holds up: a "humans never keep" output on clean-up v3 (split by song audio). Alternative / complement: renders
+  with scoops, slides and vibrato on voice and lead instruments, for clean-up data only (needs the user's OK: exception
+  to "no pitch effects").
+
 ## Our own beat / downbeat / tempo model (started 2026-10-28; replaces madmom, the user's priority)
 
 - **Data** `eval/beat_labels.py` (jobs `beatlab` 0-89, courses) -> `/scratch/basu.ang/beat_data` (31 GB): POP909 render
