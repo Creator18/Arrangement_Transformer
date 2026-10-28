@@ -41,6 +41,39 @@ async def upload_audio(file: UploadFile = File(...)):
     }
 
 
+def _reachable(host, timeout=4.0):
+    import socket
+    try:
+        socket.create_connection((host, 443), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _use_reachable_server(info):
+    """for each googlevideo server YouTube picked that can't be reached, move its stream links onto the first backup
+    server (the link's mn parameter) that can.  Leaves other links (manifests, other sites) alone."""
+    from urllib.parse import urlsplit, parse_qs
+    ok = {}
+    for f in info.get("formats") or []:
+        u = urlsplit(f.get("url") or "")
+        h = u.hostname or ""
+        if not (h.startswith("rr") and "---" in h and h.endswith(".googlevideo.com")):
+            continue
+        if h not in ok:
+            ok[h] = h if _reachable(h) else None
+            if ok[h] is None:
+                rr = h.split("---")[0]                                 # e.g. rr3
+                for sn in (parse_qs(u.query).get("mn") or [""])[0].split(","):
+                    b = f"{rr}---{sn}.googlevideo.com"
+                    if sn and b != h and _reachable(b):
+                        ok[h] = b
+                        break
+                print(f"[download] {h} unreachable: " + (f"using backup server {ok[h]}" if ok[h] else "no backup answered"))
+        if ok[h] and ok[h] != h:
+            f["url"] = u._replace(netloc=u.netloc.replace(h, ok[h])).geturl()
+
+
 class UrlIn(BaseModel):
     url: str
 
@@ -58,9 +91,15 @@ def upload_url(body: UrlIn):
     opts = {"format": "bestaudio/best", "outtmpl": str(session_dir / "original.%(ext)s"),
             "noplaylist": True, "quiet": True, "no_warnings": True,
             "max_filesize": 200 * 1024 * 1024, "match_filter": yt_dlp.utils.match_filter_func("duration < 1200")}
+    # one unreachable video server must not fail the fetch (2026-10-28: a link's googlevideo cache node timed out on
+    # every try, IPv4 and IPv6, whatever client asked).  YouTube's stream links name backup servers (the mn
+    # parameter): when the given server can't be reached, try the same link on each backup.
+    print(f"[download] {url}")
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        with yt_dlp.YoutubeDL({**opts, "socket_timeout": 10}) as ydl:
+            info = ydl.extract_info(url, download=False, process=False)   # formats not chosen yet
+            _use_reachable_server(info)
+            info = ydl.process_ie_result(info, download=True)
     except Exception as e:
         raise HTTPException(400, f"Couldn't fetch audio from that link: {str(e).splitlines()[0][:200]}")
     files = [p for p in session_dir.glob("original.*") if not p.name.endswith(".part")]

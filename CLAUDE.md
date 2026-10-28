@@ -24,6 +24,38 @@ outputs, no bundle adjustment) -> final comparison. Details and every decision a
   windows** (`--time-windows s,0,s,0,s,0,s,0`), **soft onset target** (`--onset-neighbor-weight 0.3`), front end
   calibrated on 400 new renders, 120k steps.
 
+## BEST so far, by ear (user, 2026-10-28: "beautiful")
+
+Base at **0.8** + clean-up **v3** (keep 0.3, **merge 0.5**) + **sustain**, **NO dynamics / level**:
+`serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup3/best.pt -Keep 0.3 -Merge 0.5 -Sustain`
+(Mac: the same env vars, `ARRANGEMENT_CLEANUP_MERGE=0.5`, `ARRANGEMENT_SUSTAIN=1`, no `ARRANGEMENT_DYNAMICS`; copy
+`checkpoints/cleanup3/best.pt` from the cluster). Reference song: `backend/temp/f2af9154-nolevel` (`/results/f2af9154-nolevel`).
+- The level stretch (`-Dynamics`) was rejected: the base's velocities follow the MIX loudness, and the 2.6x stretch turns
+  whole quieter passages (fewer singers) down instead of shaping notes. User wants **per-note velocity** ("how hard
+  should this note be struck") instead: a learned model on the written velocities, later.
+- **Clean-up v3** (`app/ml/spectral/cleanup3_train.py`, `checkpoints/cleanup3/best.pt` step 10k; jobs `cutrain3-slow/fast`,
+  V100 -> A100 handover via `eval/cleanup3_run.sh` / `cleanup3_submit.sh`): v2 + a merge output trained on
+  `eval/merge_oracle.py --labels` (`/scratch/basu.ang/merge_labels`). All 3,212 held-out clips, F1 with ends: v2 keep 0.3
+  0.519; v3 keep 0.3 + merge 0.5 **0.526**; keep 0.4 + merge 0.5 0.534; merge 0.3 0.512 (joins real repeats); ceiling 0.619.
+  Small on metrics, but this is the setup the user called the best. Next for merging: the held-note probabilities
+  across the gap between two strikes as input.
+- Link fetch: `app/routers/upload.py` now moves a dead googlevideo server onto a backup server from the link's `mn`
+  list (2026-10-28: two of the ISP's YouTube cache nodes timed out).
+
+## Our own beat / downbeat / tempo model (started 2026-10-28; replaces madmom, the user's priority)
+
+- **Data** `eval/beat_labels.py` (jobs `beatlab` 0-89, courses) -> `/scratch/basu.ang/beat_data` (31 GB): POP909 render
+  clips only (exact beats + downbeats from beat_midi.txt; the renders' drums sit on the same grid; Music2MIDI beats were
+  only estimated, so left out). Speed recovered per song render (1.0 / 1.2 seen). 115,147 train clips (728 songs),
+  14,089 held-out (90 songs); 98.5% of clips labelled. 64-band log-mel, 100 fps, float16 memmaps.
+- **Model** `app/ml/spectral/beat_train.py`: multi-task TCN (2.3M params; beat, downbeat per frame, tempo 30-300 BPM),
+  time-scale 0.8-1.25x augmentation. **Decoder ours** `app/ml/spectral/beat_decode.py` (bar-pointer Viterbi for
+  beats, meter 3/4 Viterbi for downbeats). Job `beattrain` (`eval/beat_run.sh`: < 2 h pieces on gpu / gpu-short,
+  resubmits itself) -> `checkpoints/beat1`.
+- **Baseline** `eval/beat_compare.py` (jobs `beatcmp`): madmom on the same 600 held-out clips -> `/scratch/basu.ang/beat_compare`;
+  merge with `--merge madmom_*.json`; ours with `--ckpt`.
+- Then: swap madmom out of `app/services/cleanup.py` / `eval/clip_beats.py`, recompute the clip beats, retrain clean-up v3.
+
 ## What is running on the cluster (as of 2026-10-25 ~17:00 EDT)
 
 **Nothing but `progress-snap`** (the solo detector finished 2026-10-26 04:30; scrontab, 5-minute snapshot + email alerts, see below). The base finished:
@@ -343,9 +375,30 @@ leaves A cut short (the base ended it at B); dropping A starts the note late. Th
   perfect merge on note F1 and on F1 WITH note ends (COnPOff, which keep / drop barely moves). Train only if the
   ceiling is worth it; then the numbers, then the user's ear at keep 0.3.
 
+### Merge ceiling, measured (2026-10-27, `eval/merge_oracle.py`, `/scratch/basu.ang/merge_oracle`, 40 `courses` tasks)
+
+User's refinement: merges are whatever brings the output closest to the clean written arrangement (no hand rule).
+Per clip and key, an exact search splits the base's strikes into runs; each run is dropped or played as one note (first
+base start, last base end); score +1 start match (50 ms), +1 end match too (mir_eval rule), -1 unmatched. 3,212
+held-out clips (22 songs), 524k written notes, mir_eval note F1:
+
+| | notes | starts R / P / F1 | starts + ends R / P / F1 |
+|---|---|---|---|
+| base 0.8 | 614k | 0.784 / 0.669 / 0.722 | 0.507 / 0.433 / 0.467 |
+| v2 keep 0.3 (hosted) | 477k | 0.734 / 0.807 / 0.768 | 0.495 / 0.544 / 0.519 |
+| best keep / drop | 411k | 0.784 / 1.000 / 0.879 | 0.506 / 0.645 / 0.567 |
+| **best keep / drop / merge** | 410k | 0.782 / 1.000 / 0.877 | **0.552 / 0.706 / 0.619** |
+
+Merging adds nothing on starts but **+5.2 pts with note ends** over perfect keep / drop (+10 over v2 today). The
+base strikes 8.1% of written notes 2+ times (3+: 1.1%); 3.1% of written notes are same-key repeats < 150 ms apart
+(the search keeps those apart). Best plans: 53k merges of 127k strikes (2.4 per merge): many merges use a later
+ghost strike to carry a note the base cut short. Even the ceiling misses ends on ~30% of right-start notes: the
+base's note ends are the next limit.
+
 ## Next steps
 
-0. Clean-up merge (section above): measure the ceiling, then train v2 + merge if it is worth it.
+0. Clean-up merge (section above): ceiling measured (+5 pts with ends); next: v2 + merge output trained on the
+   searched plans (fine-tune from `checkpoints/cleanup2/best.pt`), on `gpu-short` (H200 / A100) in 2 h pieces.
 0. Voice: fill-and-remove on the 106 real songs is measured, voice filter included (section above). Then
    pick detector + removal rule by ear in the app, and put the chosen chain into the app.
 
