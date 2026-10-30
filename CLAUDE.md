@@ -130,9 +130,15 @@ and on file upload (waveform with two handles); pad a few seconds each side then
 downbeat, show original-song times, export MIDI from 0.
 **Hosting (2026-10-30, not started, user wants it):** public demo, free, not from the laptop -> HF Space free CPU (2 vCPU)
 + weights in a PRIVATE HF model repo read via a secret token + frontend on Vercel; no link fetch on the server, length
-cap, one job at a time, sessions expire. CPU timing on the laptop: 3:08 song, full chain 56 s with 2 threads (57 s with
-4), identical 831 notes. madmom is used ONLY as clean-up v2-v4 beat inputs (upload step uses librosa beats); proposed
-check: feed v4 another song's beats at inference, see if scores move.
+cap, one job at a time, sessions expire. **True CPU timing** (laptop, 2 threads, GPU hidden with
+`CUDA_VISIBLE_DEVICES=-1`; an EMPTY value does not hide it on Windows, so an earlier "56 s CPU" figure was the GPU):
+3:08 song v4 156 s, v4 no-beats 137 s (GPU: 56 s vs 12 s). Expect ~3-5 min per 3-min song on HF's free 2 vCPU:
+the start/end range picker matters for the demo.
+**v4 without beat inputs** (`--no-beats`, `checkpoints/cleanup4_nobeat/best.pt` = step 8k, job `cutrain4nb`, init v4):
+step 0 (beats just removed) renders F1 0.775 -> 0.753, merging stops, AUC 0.717 -> 0.674; after 2k steps everything
+back (final: F1 0.777 / ends 0.534, AUC 0.721; bar 0.7 drops a bit more: 9.9 notes/s, 4.3% kept lost vs 3.0%).
+madmom not needed. **Hosted 2026-10-30 for the user's ear** (tab "backend v4 no-beats"); A/B on the user's latest song:
+`/results/f4907c52-cf7c-4634-a613-8b59cfc970a4` (v4, 1,959 notes) vs `/results/f4907c52-nobeat` (1,842).
 
 ## Our own beat / downbeat / tempo model (started 2026-10-28; replaces madmom, the user's priority)
 

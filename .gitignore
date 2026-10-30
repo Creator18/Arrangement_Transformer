@@ -93,3 +93,30 @@ render_samples/
 /aah_test*/
 /solo_detect/
 /.v2_session
+
+# Paper in preparation: kept local, not published (2026-10-30)
+paper/
+
+# Secrets and environment files (only the example is tracked)
+.env
+.env.*
+!.env.example
+
+# Virtual environments and tool caches anywhere in the tree
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Song audio and other media never belong in git
+*.mp3
+*.wav
+*.webm
+*.m4a
+*.ogg
+
+# Model weights in any format
+*.pth
+*.onnx
+*.safetensors
