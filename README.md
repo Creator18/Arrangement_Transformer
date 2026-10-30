@@ -138,3 +138,9 @@ Training ran on a SLURM GPU cluster; the job scripts in `backend/eval/*.sh` show
 
 Datasets are not redistributed here. POP909 and Music2MIDI must be obtained from their authors. Music2MIDI provides
 arrangements and video links; song audio is not part of this repository.
+
+## Licence
+
+The code is released under the MIT licence (`LICENSE`). Third-party files keep their own licences: the Upright Piano
+KW soundfont in `UprightPianoKW-SF2-20220221/` is CC0 (see its `cc0.txt`), and datasets keep the terms set by their
+authors.
