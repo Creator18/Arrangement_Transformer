@@ -1,0 +1,19 @@
+# Slim CPU set for hosting the song-to-piano app (see deploy/README.md).  Not installed here, compared with
+# backend/requirements.txt: Demucs, madmom, basic-pitch and piano_transcription_inference (the hosted path runs
+# clean-up v4 without beats and never separates stems).  torch and torchaudio come from the CPU index in the Dockerfile.
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+pydantic==2.7.1
+numpy==1.26.4
+scipy==1.13.0
+librosa==0.10.1
+soundfile==0.12.1
+resampy>=0.2.2,<0.4.3
+pretty-midi==0.2.10
+mir-eval==0.7
+music21==9.1.0
+scikit-learn==1.5.2
+ffmpeg-python==0.2.0
+yt-dlp>=2026.10.21
+# pysfizz 0.1.3 is built from git in the Dockerfile (no Linux Arm wheel; the PyPI sdist lacks its submodules)

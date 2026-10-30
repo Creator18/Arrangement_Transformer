@@ -1,0 +1,10 @@
+**
+!backend/app/**
+!deploy/requirements.txt
+!deploy/models/**
+!deploy/piano/**
+**/__pycache__
+**/*.pyc
+backend/app/ml/**/checkpoints
+backend/app/ml/**/*.pt
+backend/app/ml/**/*.pth

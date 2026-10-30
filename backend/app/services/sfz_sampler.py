@@ -308,8 +308,11 @@ def render_notes_sfz_parallel(notes: List[Dict], sr: int = 22050,
             jobs.append((sub, ped, sr, a))
         t = b
     if _POOL is None:
+        import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        _POOL = ProcessPoolExecutor(max_workers=RENDER_WORKERS)
+        # spawn, not Linux's default fork: a forked copy of a process whose sfizz synth is already loaded
+        # segfaults in render (seen in the Docker image); macOS spawns anyway
+        _POOL = ProcessPoolExecutor(max_workers=RENDER_WORKERS, mp_context=multiprocessing.get_context("spawn"))
     parts = list(_POOL.map(_render_chunk, jobs))
     n = max(int(t0 * sr) + len(y) for t0, y in parts)
     out = np.zeros(n, np.float32)

@@ -120,3 +120,7 @@ venv/
 *.pth
 *.onnx
 *.safetensors
+
+# Hosting build inputs (made locally by deploy/slim_salamander.py and the weights-only export; not vendored)
+deploy/models/
+deploy/piano/
