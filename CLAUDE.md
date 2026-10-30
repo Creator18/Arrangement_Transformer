@@ -1,7 +1,7 @@
 # Arrangement Transformer: hand-off notes for Claude Code
 
 Read this first. It says what the project is, what is running on the cluster right now, how to check it, and the
-rules the user has set. Last updated **2026-10-26** (branch `feat/song-to-piano`).
+rules the user has set. Last updated **2026-10-30** (branch `feat/song-to-piano`).
 
 ## What this is
 
@@ -62,9 +62,77 @@ Base at **0.8** + clean-up **v3** (keep 0.3, **merge 0.5**) + **sustain**, **NO 
   queued after the beats (`nevkept-c` 11452778, courses-gpu). Shards 2, 4, 5, 7 still run the old way (code loaded
   before the change); if they get cancelled too, resubmit them with the new script. **Any GPU job that runs the
   clean-up v2/v3 chain should take cached beats, never madmom inside the GPU job.**
+- **Result (2026-10-29, all 925 songs; 1,318 of 1,520 arrangements passed the lag gate, 85 songs had none):**
+  notes/s ours 14.6 raw / 10.9 after clean-up vs humans 6.9 median. Fair test (songs with 2+ arrangements, all but one
+  as reference): our notes never kept 32.3% vs the left-out human's 25.2% (the arrangers' own disagreement floor).
+  The excess sits where the voice sounds (35.6% vs human 26.3%; voice silent 25.0% vs 23.1%). Slide-shaped + out of
+  key: 1.7% of our notes (human 0.3%), **84.5% never kept** (human 46%); all slide-shaped 8.8% (human 2.6%), 54% never
+  kept; out of key 52% vs 32%; short < 100 ms 17% of ours vs 5% of a human's. Double presses are NOT visible here
+  (pitch class within 150 ms lets either strike match). Clean-up already drops the foreign ones more (45% vs 34%
+  never kept). Labels get cleaner with more arrangements: never kept 37% (1 arrangement) -> 19% (3+) -> 9% (9+).
 - If it holds up: a "humans never keep" output on clean-up v3 (split by song audio). Alternative / complement: renders
   with scoops, slides and vibrato on voice and lead instruments, for clean-up data only (needs the user's OK: exception
   to "no pitch effects").
+- Slide rule (`app/services/slides.py`, `serve.ps1 -Slides`): drop-only, short + out of local key + next to a longer note
+  1-2 keys away. A/B `/results/f2af9154-nolevel` vs `/results/f2af9154-noslide` (57 notes). Off in the current hosting.
+
+## CURRENT hosted setup (2026-10-30): clean-up v4, "not too bad after testing multiple times" (user)
+
+`serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4/best.pt -Keep 0.3 -Merge 0.5 -NK 0.7 -Sustain`
+**User (2026-10-30): keep this as it is; next step not decided yet; draft a paper of everything so far first.**
+- **v4** (`app/ml/spectral/cleanup4_train.py`, `checkpoints/cleanup4/best.pt` = step 6k, also on the laptop): v3 + a
+  "no human keeps this" output (nk), drop-only after keep / merge when p_nk >= `ARRANGEMENT_CLEANUP_NK` (0.7). Each step
+  = a render batch (v3 losses) + a real-song batch (nk BCE, weight min(3, nref)/2). Data `eval/human_data.py` ->
+  `/scratch/basu.ang/human_data` (840 songs: our raw 0.8 notes + v3 features + labels from never_kept; 89 songs held out
+  = split "test"). Job `cutrain4` (courses-gpu, `eval/cleanup4_run.sh`, BUDGET=1380 runs it in one piece).
+- Held-out 89 songs (AUC 0.72; never kept 34% of our notes): bar 0.9 drops 1.6% (86% of them never kept), 0.8 3.8%
+  (83%, 1.0% of kept notes lost), **0.7 7.8% (75%; 3.0% lost), 11.4 -> 10.5 notes/s**, 0.6 14.5% (66%; 7.4% lost),
+  0.5 23.7% (61%; 14.6% lost). Renders unchanged (keep 0.3 merge 0.5 F1 with ends 0.532 vs v3 0.534).
+
+### Humans on merges and density (2026-10-30, `eval/human_merge.py`, `/scratch/basu.ang/human_merge{,/samekey}`)
+
+Our same-key pairs (B starts <= 150 ms after A ends; 1.25M pairs, 840 songs) vs the arrangements that play A; a pair
+is "single" if no such arrangement re-strikes at B; chance = the same test 370 ms later. `--samekey` (re-strike must
+be the same key as the human's A note) is the readable version:
+
+| start-to-start | share of pairs | v3 merges | humans single | chance | excess |
+|---|---|---|---|---|---|
+| 0-100 ms | 8% | 29% | 84% | 62% | +22 |
+| 100-150 | 16% | 21% | 73% | 57% | +16 |
+| 150-200 | 20% | 20% | 67% | 58% | +9 |
+| 200-300 | 25% | 20% | 60% | 60% | 0 |
+| 300-600 | 23% | 18% | 54% | 61% | -8 (real repeats) |
+| 600+ | 8% | 18% | 52% | 79% | -27 (real repeats) |
+
+Humans' own pairs vs the other arrangers: single 33% vs chance 56% (the test works on human notes). Loudness, length,
+register, voice barely move the excess; v3's merge prob vs "single" AUC 0.62. Pitch-class version (any octave) is
+saturated (chance ~60% of random moments have the pitch class within 150 ms).
+Density per 10 s window (18,323 windows): notes/s ours raw 12.8 / after clean-up 9.9 / human 7.0; human / ours after
+clean-up by our density quartile 0.98 / 0.78 / 0.67 / 0.60; shape across a song (corr. with the other arrangements)
+human 0.77, ours 0.76: we put density in the right places, we only keep too much in busy parts.
+
+**Solo piano through the song path (2026-10-30):** `serve.ps1` forces every upload onto the song path
+(`ARRANGEMENT_FORCE_SONG=1`), piano included. On a piano upload (session e0043c18, detector said piano_only) the chain
+kept 1,624 of 1,747 notes (57 dropped, 64 merged, 2 never-kept drops). User: "the output felt exactly the same as the
+piano song". So no routing change is needed.
+
+**Paper (2026-10-30):** draft in `paper/draft.md` (HTML: `python paper/build_html.py` -> `paper/draft.html`, figures in
+`paper/figures.py`). **User: ablations are still remaining** (list in the draft, section "10b Ablations still to run"):
+pipeline stage removal, clean-up inputs (incl. madmom), never-kept label variants, render-recipe parts, soft onset
+target, and baselines vs published song-to-piano systems (downloads need the user's OK). None started.
+
+**Parked ideas (NOT decided; user wants to think first):** (1) merge by distance: easier merge < 150 ms, v3 bar
+150-300 ms, never > 300 ms (check on held-out renders with F1 with ends, then by ear); (2) density-aware never-kept bar
+that tightens in windows much busier than the song's usual; (3) per-note velocity; (4) beat heads on the base (paused);
+(5) slide renders for clean-up data (needs OK on pitch effects); (6) user's idea (2026-10-30, "keep in mind, don't
+change anything now"): let the user pick a start / end time to transcribe on link fetch (yt-dlp `--download-sections`)
+and on file upload (waveform with two handles); pad a few seconds each side then trim, start notation at the first
+downbeat, show original-song times, export MIDI from 0.
+**Hosting (2026-10-30, not started, user wants it):** public demo, free, not from the laptop -> HF Space free CPU (2 vCPU)
++ weights in a PRIVATE HF model repo read via a secret token + frontend on Vercel; no link fetch on the server, length
+cap, one job at a time, sessions expire. CPU timing on the laptop: 3:08 song, full chain 56 s with 2 threads (57 s with
+4), identical 831 notes. madmom is used ONLY as clean-up v2-v4 beat inputs (upload step uses librosa beats); proposed
+check: feed v4 another song's beats at inference, see if scores move.
 
 ## Our own beat / downbeat / tempo model (started 2026-10-28; replaces madmom, the user's priority)
 

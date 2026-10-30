@@ -221,6 +221,9 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
         from app.services import cleanup
         if cleanup.enabled():
             notes = cleanup.apply(notes, on, fr, audio_path)
+        from app.services import slides
+        if slides.enabled():             # the passing notes of slides / scoops (app/services/slides.py)
+            notes = slides.apply(notes)
     return _finish(notes, audio_path, onset_thr if onset_thr is not None else ONSET_THR)
 
 

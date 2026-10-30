@@ -10,6 +10,8 @@ average over the windows that hold it, weighted towards the window centre.
     ARRANGEMENT_CLEANUP          the clean-up checkpoint (off when unset)
     ARRANGEMENT_CLEANUP_KEEP     keep bar (default 0.4: the best F1 on held-out songs; 0.3 keeps more)
     ARRANGEMENT_CLEANUP_MERGE    merge bar (v3 only; default 0.5: the best F1 with note ends; 1.1 turns merging off)
+    ARRANGEMENT_CLEANUP_NK       v4 only: drop a note v3 kept when "no human would keep it" is at least this
+                                 (default 0.7; 1.1 = off; app/ml/spectral/cleanup4_train.py)
     ARRANGEMENT_CLEANUP_QUANT    1 = move notes to the beat slot the position output picks (v2 only)
     ARRANGEMENT_CLEANUP_QUANT_P  ... only when that slot's probability is at least this (default 0.5)
 """
@@ -22,6 +24,7 @@ import numpy as np
 CKPT = os.environ.get("ARRANGEMENT_CLEANUP", "")
 KEEP = float(os.environ.get("ARRANGEMENT_CLEANUP_KEEP", "0.4"))
 MERGE = float(os.environ.get("ARRANGEMENT_CLEANUP_MERGE", "0.5"))
+NK = float(os.environ.get("ARRANGEMENT_CLEANUP_NK", "0.7"))
 QUANT = os.environ.get("ARRANGEMENT_CLEANUP_QUANT", "0") == "1"
 QUANT_P = float(os.environ.get("ARRANGEMENT_CLEANUP_QUANT_P", "0.5"))
 MAX_SHIFT = 0.06                    # s: training only ever matched starts within 48 ms, so never move a note further
@@ -40,7 +43,9 @@ def _load():
         cfg = dict(s["cfg"])
         ver = cfg.pop("version", 1)
         v2 = ver >= 2
-        if ver == 3:
+        if ver == 4:
+            from app.ml.spectral.cleanup4_train import Cleanup4 as Net
+        elif ver == 3:
             from app.ml.spectral.cleanup3_train import Cleanup3 as Net
         elif v2:
             from app.ml.spectral.cleanup2_train import Cleanup2 as Net
@@ -84,7 +89,9 @@ def probs(notes, on, fr, zb=None, with_merge=False):
         pos_acc = np.zeros((len(n), C2.NPOS))
     x = x.astype(np.float32)
     acc, wsum, macc = np.zeros(len(n)), np.zeros(len(n)), np.zeros(len(n))
-    v3 = _net["ver"] == 3
+    v3 = _net["ver"] >= 3
+    v4 = _net["ver"] >= 4
+    nacc = np.zeros(len(n))
     end = float(n[:, 0].max())
     w0 = 0.0
     with torch.no_grad():
@@ -95,7 +102,7 @@ def probs(notes, on, fr, zb=None, with_merge=False):
                 Tt = torch.from_numpy(n[part, 0] - w0)[None].to(dev)
                 X = torch.from_numpy(x[part])[None].to(dev)
                 pad = torch.zeros(1, len(part), dtype=torch.bool, device=dev)
-                o = net(P, Tt, X, pad)
+                o = net(P, Tt, X, pad, with_nk=True) if v4 else net(P, Tt, X, pad)
                 lk = o[0] if v2 else o
                 p = torch.sigmoid(lk.float())[0].cpu().numpy()
                 w = 1.0 - np.abs(n[part, 0] - (w0 + WIN_S / 2)) / (WIN_S / 2) + 1e-3     # centre-weighted
@@ -105,11 +112,14 @@ def probs(notes, on, fr, zb=None, with_merge=False):
                     pos_acc[part] += w[:, None] * torch.softmax(o[1].float(), -1)[0].cpu().numpy()
                 if v3:
                     macc[part] += w * torch.sigmoid(o[2].float())[0].cpu().numpy()
+                if v4:
+                    nacc[part] += w * torch.sigmoid(o[3].float())[0].cpu().numpy()
             if w0 + WIN_S > end:
                 break
             w0 += HOP_S
     ws = np.maximum(wsum, 1e-9)
     out = acc / ws, (pos_acc / ws[:, None] if v2 else None)
+    probs.nk = nacc / ws if v4 else None                        # v4: "no human would keep this note"
     return out + (macc / ws,) if with_merge else out
 
 
@@ -170,24 +180,36 @@ def _decide(notes, pk, pm):
         else:
             last[g["pitch"]] = None
     _decide.merged = merged
-    return keep, [h for _, h in sorted(out, key=lambda t: t[0])]      # input order, so pos[keep] lines up
+    out.sort(key=lambda t: t[0])
+    _decide.idx = [i for i, _ in out]
+    return keep, [h for _, h in out]                           # input order, so pos[keep] lines up
 
 
 def apply(notes, on, fr, audio_path=None):
     _, _, v2 = _load()
     zb = None
-    if v2:
+    if getattr(_net["net"], "no_beats", False):
+        print("[cleanup] v4 without beat inputs: madmom skipped")
+    elif v2:
         if audio_path is None:
             raise ValueError("clean-up v2 needs the song's audio for its beats")
         zb = song_beats(audio_path)
         bpm = 60 / np.median(np.diff(zb["beats"])) if len(zb["beats"]) > 2 else 0
         print(f"[cleanup] madmom: {len(zb['beats'])} beats (~{bpm:.0f} bpm), {int((zb['dbnum'] == 1).sum())} downbeats")
     p, pos, pm = probs(notes, on, fr, zb, with_merge=True)
-    if _net["ver"] == 3:
+    if _net["ver"] >= 3:
         keep, kept = _decide(notes, p, pm)
-        print(f"[cleanup] v3: {len(kept)} notes from {len(notes)} (keep bar {KEEP}, merge bar {MERGE}: "
+        print(f"[cleanup] v{_net['ver']}: {len(kept)} notes from {len(notes)} (keep bar {KEEP}, merge bar {MERGE}: "
               f"{int(keep.sum())} kept, {len(notes) - int(keep.sum()) - _decide.merged} dropped, "
               f"{_decide.merged} merged into the strike before)")
+        if _net["ver"] >= 4:                                   # drop only: notes v3 kept that no human would keep
+            nk = probs.nk[_decide.idx]
+            stay = nk < NK
+            for i, q in zip(_decide.idx, stay):
+                keep[i] = q
+            kept = [h for h, q in zip(kept, stay) if q]
+            print(f"[cleanup] v4: dropped {int((~stay).sum())} more that no human arrangement would keep "
+                  f"(bar {NK}): {len(kept)} notes")
     else:
         keep = p >= KEEP
         kept = [g for g, q in zip(notes, keep) if q]
