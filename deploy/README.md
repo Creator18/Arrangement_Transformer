@@ -74,3 +74,66 @@ Setup:
 | **Google Cloud Run** | Yes, with a 4 GiB instance. Rough capacity from the free monthly tier (180k vCPU-s, 360k GB-s): about 430–640 songs a month at 2 vCPU. Cold starts pull the 776 MB image. |
 | Render / Koyeb | No. They give 512 MB of RAM; this needs 2.5 GB at peak. |
 | Hugging Face Spaces, CPU Basic | No, not for free: Docker Spaces need PRO. |
+
+## Deployment plan (2026-10-31, not started)
+
+### Architecture
+
+- **Backend:** this image.
+  - **Oracle Always Free (Arm)** first. It is the same arm64 build as timed above.
+  - **Google Cloud Run** as fallback: x86, same Dockerfile, 4 GiB instance.
+- **Frontend:** a static build on Vercel, Cloudflare Pages or GitHub Pages. `frontend/src/utils/api.js` reads
+  `VITE_API_URL` at build time.
+- **Models and piano:** git-ignored, so the image is built locally and pushed to a **private** registry (for example
+  GHCR). The server pulls it with a token. Nothing is downloaded at startup.
+- **HTTPS:**
+  - Cloud Run gives an HTTPS URL automatically.
+  - On Oracle, put Caddy in front, with automatic Let's Encrypt and a free hostname such as DuckDNS.
+
+### App changes before going public
+
+These don't depend on the host.
+
+1. **Background jobs.**
+   - Arranging a song takes 2–3 minutes inside one HTTP request today.
+   - Proxies (Vercel, Cloudflare) cut requests off at about 100 s.
+   - Change it to: start a job, then poll its status. That needs changes in both the backend and the frontend.
+2. **One song at a time.**
+   - A queue, plus a "busy, try again shortly" reply.
+   - Never run songs side by side on 2 cores.
+3. **Caps.**
+   - A maximum song length (for example 6 min), or the start/end range picker from CLAUDE.md.
+   - An upload size limit.
+   - Basic per-IP rate limiting.
+4. **Session cleanup.** Each session keeps about 50 MB of audio, so delete sessions after a few hours.
+5. **CORS.** `allow_origins` in `app/main.py` lists `"https://*.vercel.app"`, but that setting doesn't accept wildcards,
+   so it never matches. Use the real domain or `allow_origin_regex`.
+6. **Link fetch.** YouTube usually blocks cloud IPs ("Sign in to confirm you're not a bot"), so turn it off by default
+   and make file upload the main way in.
+
+### Only the user can do
+
+- Create the Oracle or Google Cloud account. Both ask for a card even on the free tier.
+- Choose an Oracle region with free Arm capacity.
+
+### Risks
+
+- **Oracle Arm limits:**
+  - reportedly cut to 2 cores / 12 GB in June 2026;
+  - going over the free quota can get the server deleted;
+  - Oracle can reclaim Always Free servers that sit mostly idle.
+  - Check Oracle's current docs.
+- **Cloud Run cold starts:** the first visitor after a quiet spell waits while the 776 MB image is pulled and the models
+  load.
+- **Licences:**
+  - Salamander is CC-BY, so credit it on the site.
+  - Check that POP909 and Music2MIDI allow a public demo of a model trained on them.
+
+### Order
+
+1. App changes, tested in this image.
+2. The user picks the host and creates the account.
+3. Push the image to a private registry.
+4. Start the server, with HTTPS.
+5. Deploy the frontend with `VITE_API_URL`.
+6. Smoke test with a few songs.

@@ -134,6 +134,21 @@ cap, one job at a time, sessions expire. **True CPU timing** (laptop, 2 threads,
 `CUDA_VISIBLE_DEVICES=-1`; an EMPTY value does not hide it on Windows, so an earlier "56 s CPU" figure was the GPU):
 3:08 song v4 156 s, v4 no-beats 137 s (GPU: 56 s vs 12 s). Expect ~3-5 min per 3-min song on HF's free 2 vCPU:
 the start/end range picker matters for the demo.
+**Hosting update (2026-10-31): plan in `deploy/README.md`.**
+- HF Spaces is out: Docker Spaces now need PRO.
+- New plan:
+  - **Oracle Always Free Arm** (Cloud Run as fallback) running the slim image from `deploy/`;
+  - image pushed to a private registry;
+  - frontend on a static host via `VITE_API_URL`.
+- Measured in the image at 2 CPUs: 100–173 s per song, 2.5 GB peak.
+- **App changes needed before going public:**
+  - background jobs with polling;
+  - one song at a time;
+  - caps;
+  - session cleanup;
+  - CORS fix;
+  - link fetch off.
+- Nothing is started. The user picks the host and creates the account.
 **v4 without beat inputs** (`--no-beats`, `checkpoints/cleanup4_nobeat/best.pt` = step 8k, job `cutrain4nb`, init v4):
 step 0 (beats just removed) renders F1 0.775 -> 0.753, merging stops, AUC 0.717 -> 0.674; after 2k steps everything
 back (final: F1 0.777 / ends 0.534, AUC 0.721; bar 0.7 drops a bit more: 9.9 notes/s, 4.3% kept lost vs 3.0%).
