@@ -151,7 +151,7 @@ the start/end range picker matters for the demo.
 - Nothing is started. The user picks the host and creates the account.
 **Hosted now (2026-11-02): v4 without beats, never-kept bar 0.8 (user's choice):**
 `serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4_nobeat/best.pt -Keep 0.3 -Merge 0.5 -NK 0.8 -Sustain`
-**Random-note curriculum (user's design, 2026-11-02, RUNNING):** fine-tune the arranger to say exactly what was played
+**Random-note curriculum (user's design, 2026-11-02, run 2 stopped at 31k):** fine-tune the arranger to say exactly what was played
 on random notes with random qualities, easy -> hard, max 10 notes at once (fingers); same notes may recur only with new
 qualities. Rendered ON THE FLY (never pre-rendered): `eval/random_notes.py` (generator, 6 LEVELS, tags incl.
 "inaudible" = neither taught nor scored), `eval/random_producer.py` (16 CPU producers on `courses`, staggered, feed
@@ -172,6 +172,11 @@ stem tremolo at levels 2-6 (p 0.25): `restrike` (key re-struck at 8-16 Hz, label
 wobble); tag `tremolo`; the trainer reports `tremolo.held_as_one`. New test clips (`evalset`; old ones in `evalset_v1`).
 Run 2 = jobs `rnd-eval2` / `rnd-prod2` x16 / `rnd-train2` (`checkpoints/arr_random2`, init run 1's `last.pt`,
 `--start-level 2`, fresh 60k-step schedule), queued to start when run 1 ends.
+Run 2 result: **stopped by the user's rule "30k steps or 98%, whichever first"** (`eval/random_stop_watch.sh`, job
+`rnd-stopwatch`): level 2 never passed, F1 0.94-0.97 (best 0.966 at 16k; P 0.92-0.95, R 0.97-0.98), tremolo held as one
+96-99%, arrange F1 mostly 0.01-0.025 under the base. Kept `arr_random2/stop_step31000.pt` (31k, not 30k: the first
+watcher compared file times across nodes whose clocks differ and waited one check too long; it now reads the step
+inside the copy). The LR was only ~half decayed at the stop.
 
 **Position + repeats (2026-11-01, `eval/position_repeat.py`, `/scratch/basu.ang/position_repeat`, 840 songs):**
 - We do NOT drop more at the start: removed 23% of the arranger's notes in the first 5 s vs 33-37% later; final
