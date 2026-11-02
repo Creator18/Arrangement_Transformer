@@ -151,7 +151,7 @@ the start/end range picker matters for the demo.
 - Nothing is started. The user picks the host and creates the account.
 **Hosted now (2026-11-02): v4 without beats, never-kept bar 0.8 (user's choice):**
 `serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4_nobeat/best.pt -Keep 0.3 -Merge 0.5 -NK 0.8 -Sustain`
-**Random-note curriculum (user's design, 2026-11-02, run 2 stopped at 31k):** fine-tune the arranger to say exactly what was played
+**Random-note curriculum (user's design, 2026-11-02, run 3 RUNNING):** fine-tune the arranger to say exactly what was played
 on random notes with random qualities, easy -> hard, max 10 notes at once (fingers); same notes may recur only with new
 qualities. Rendered ON THE FLY (never pre-rendered): `eval/random_notes.py` (generator, 6 LEVELS, tags incl.
 "inaudible" = neither taught nor scored), `eval/random_producer.py` (16 CPU producers on `courses`, staggered, feed
@@ -177,6 +177,11 @@ Run 2 result: **stopped by the user's rule "30k steps or 98%, whichever first"**
 96-99%, arrange F1 mostly 0.01-0.025 under the base. Kept `arr_random2/stop_step31000.pt` (31k, not 30k: the first
 watcher compared file times across nodes whose clocks differ and waited one check too long; it now reads the step
 inside the copy). The LR was only ~half decayed at the stop.
+**User (2026-11-02): "6 levels but we have to go till that."** Run 3 = jobs `rnd-prod3` x16 / `rnd-train3`
+(`checkpoints/arr_random3`, init `arr_random2/stop_step31000.pt`, `--start-level 2`, fresh 60k-step schedule, started
+~17:45): `--level-budget 10000` moves up after 10k steps on a level even without passing (`level{N}_budget.pt`; a real
+pass still saves `level{N}_done.pt`; `state["ups"]` records which), so level 6 by ~40k. `--arr-base 0.5425` (base20m's
+own arrange F1) so "vs base" compares with the real base, not the init checkpoint.
 
 **Position + repeats (2026-11-01, `eval/position_repeat.py`, `/scratch/basu.ang/position_repeat`, 840 songs):**
 - We do NOT drop more at the start: removed 23% of the arranger's notes in the first 5 s vs 33-37% later; final

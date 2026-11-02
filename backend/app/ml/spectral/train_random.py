@@ -102,6 +102,10 @@ def main():
     ap.add_argument("--workers", type=int, default=6); ap.add_argument("--max-minutes", type=float, default=0)
     ap.add_argument("--onset-neighbor-weight", type=float, default=0.3)
     ap.add_argument("--start-level", type=int, default=1, help="a fresh run (no last.pt) starts at this level")
+    ap.add_argument("--level-budget", type=int, default=0,
+                    help="move up after this many steps on a level even without passing (0 = only on passing)")
+    ap.add_argument("--arr-base", type=float, default=None,
+                    help="arrange F1 to compare against (default: the init model's, measured at step 0)")
     a = ap.parse_args()
     t_start = time.time()
     dev = "cuda"
@@ -120,7 +124,7 @@ def main():
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / 500) * 0.5 * (1 + math.cos(math.pi * min(1.0, s / a.steps))))
     scaler = torch.amp.GradScaler("cuda", enabled=not bf16)
-    st = dict(step=0, level=a.start_level, passes=0, history=[], arr_base=None)
+    st = dict(step=0, level=a.start_level, passes=0, history=[], arr_base=None, level_start=0)
     last = out / "last.pt"
     if last.exists():
         ck = torch.load(last, map_location=dev, weights_only=False)
@@ -221,7 +225,7 @@ def main():
 
     if st["arr_base"] is None:
         say("step-0 checks: arrange validation ...")
-        st["arr_base"] = eval_arrange()
+        st["arr_base"] = a.arr_base if a.arr_base is not None else eval_arrange()
         say(f"  arrange note F1 {st['arr_base']}; identify test clips ...")
         r0 = eval_random(st["level"])
         say(f"VAL step 0: arrange note F1 {st['arr_base']} (the base) | identify level {st['level']}: {json.dumps(r0)}")
@@ -278,10 +282,15 @@ def main():
             say(f"VAL step {st['step']}: identify {json.dumps(r)} | arrange note F1 {af} (base {st['arr_base']}, "
                 f"{af - st['arr_base']:+.4f}) | passes at the bar {st['passes']}/2")
             save(out / f"level{st['level']}_latest.pt")
-            if st["passes"] >= 2 and st["level"] < LEVEL_MAX:
-                save(out / f"level{st['level']}_done.pt")
-                st["level"] += 1; st["passes"] = 0; set_level(st["level"])
-                say(f"LEVEL UP -> {st['level']} at step {st['step']}")
+            on_level = st["step"] - st.get("level_start", 0)
+            budget = a.level_budget and on_level >= a.level_budget
+            if (st["passes"] >= 2 or budget) and st["level"] < LEVEL_MAX:
+                passed = st["passes"] >= 2
+                save(out / f"level{st['level']}_{'done' if passed else 'budget'}.pt")
+                st.setdefault("ups", []).append(dict(level=st["level"], step=st["step"], passed=passed))
+                st["level"] += 1; st["passes"] = 0; st["level_start"] = st["step"]; set_level(st["level"])
+                say(f"LEVEL UP -> {st['level']} at step {st['step']} "
+                    f"({'passed' if passed else f'step budget: {on_level} steps on the level, not passed'})")
             save(last)
         if a.max_minutes and (time.time() - t_start) / 60 > a.max_minutes:
             save(last); say(f"time budget at step {st['step']}: saved, resubmit to resume"); return
