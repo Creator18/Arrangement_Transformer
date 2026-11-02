@@ -149,6 +149,44 @@ the start/end range picker matters for the demo.
   - CORS fix;
   - link fetch off.
 - Nothing is started. The user picks the host and creates the account.
+**Hosted now (2026-11-02): v4 without beats, never-kept bar 0.8 (user's choice):**
+`serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4_nobeat/best.pt -Keep 0.3 -Merge 0.5 -NK 0.8 -Sustain`
+**Random-note curriculum (user's design, 2026-11-02, RUNNING):** fine-tune the arranger to say exactly what was played
+on random notes with random qualities, easy -> hard, max 10 notes at once (fingers); same notes may recur only with new
+qualities. Rendered ON THE FLY (never pre-rendered): `eval/random_notes.py` (generator, 6 LEVELS, tags incl.
+"inaudible" = neither taught nor scored), `eval/random_producer.py` (16 CPU producers on `courses`, staggered, feed
+`/scratch/basu.ang/random_curriculum/spool`, read `control.json` {level, stop}, back-pressure, every bundle records
+its inputs), `app/ml/spectral/train_random.py` (GPU: task switch n_cond=3, **2 = arrange (what the app passes), 0 =
+identify**; batch 6 arrangement renders + 2 random clips; check every 1,000 steps on fixed seeded test clips
+`random_curriculum/evalset`; 2 checks >= 0.98 F1 -> next level; also arrange F1 vs the base; records per check in
+`checkpoints/arr_random/records`). `eval/random_calib.py` -> `random_presets.json`: presets whose sound is off the
+key (octave ranks etc.) excluded: 79 / 110 programs usable. Jobs `rnd-train` (courses-gpu, 60k steps), `rnd-prod`
+x16, `eval/random_run.sh MODE=calib|evalset|producer|train`. Fixes found in smoke tests: DataLoader fork after the
+spool thread = hang; strict polyphony cap. First check (step 1,000): level 1 identify F1 0.997, arrange 0.5469 vs base
+0.5425, 2.6 steps/s, GPU never waited. After it ends: compare the arrange task on real songs / by ear before any app use.
+Run 1 (`arr_random`, 60k steps): level 1 passed at step 2k; level 2 plateaued at F1 0.93-0.94 (P 0.92 / R 0.96) from
+~24k (the LR schedule was also nearly spent); arrange F1 level with the base. Extra notes: neighbours, octave ghosts,
+held notes read as re-strikes; tremolo strings / pads / organ made half of them. **User (2026-11-02): keep tremolo, and
+treat its re-strikes as ONE note** (it is what our double presses in songs look like). So `random_notes.py` now gives a
+stem tremolo at levels 2-6 (p 0.25): `restrike` (key re-struck at 8-16 Hz, label = one held note) or `volume` (level
+wobble); tag `tremolo`; the trainer reports `tremolo.held_as_one`. New test clips (`evalset`; old ones in `evalset_v1`).
+Run 2 = jobs `rnd-eval2` / `rnd-prod2` x16 / `rnd-train2` (`checkpoints/arr_random2`, init run 1's `last.pt`,
+`--start-level 2`, fresh 60k-step schedule), queued to start when run 1 ends.
+
+**Position + repeats (2026-11-01, `eval/position_repeat.py`, `/scratch/basu.ang/position_repeat`, 840 songs):**
+- We do NOT drop more at the start: removed 23% of the arranger's notes in the first 5 s vs 33-37% later; final
+  density there 5.0/s vs humans 4.7. Shifting the clean-up windows changes nothing (23 -> 22%).
+- Repeats (3,680 pairs of 10 s, found by chroma, aligned on the onset envelope): our two occurrences share 61% of
+  notes, humans' own 59%; near-identical audio 74% vs humans 75%; with an extra instrument 50% vs 44%. 74% of the
+  mismatches are notes the ARRANGER never wrote in the other occurrence (window / token position); clean-up 26%.
+  Untried fix: test-time averaging over shifted windows / half-token offsets.
+- Scoring jobs segfaulted on old Xeon nodes in librosa's tuning estimate (numba): use `tuning=0.0` and a node-local
+  `NUMBA_CACHE_DIR`.
+**Song 44c6c8e9 (user's test, 2026-11-02):** versions in `backend/temp/44c6c8e9-*` (raw06/07/08, nk05-08, a07n05-08,
+a06n05-08, heldpre/heldpost). The "botched" intro at 0:25 is a dragging melody: its quick A# neighbour notes have
+start confidence 0.6-0.8 (under the bar) and, when written, look like slides to the clean-up. **User, after listening
+against the song: the current app version sounds correct; the held-note rescue is NOT needed** (pianists adjust such
+parts themselves). `spectral_transcription.held_rescue` stays in, off by default (`ARRANGEMENT_HELD_RESCUE`).
 **v4 without beat inputs** (`--no-beats`, `checkpoints/cleanup4_nobeat/best.pt` = step 8k, job `cutrain4nb`, init v4):
 step 0 (beats just removed) renders F1 0.775 -> 0.753, merging stops, AUC 0.717 -> 0.674; after 2k steps everything
 back (final: F1 0.777 / ends 0.534, AUC 0.721; bar 0.7 drops a bit more: 9.9 notes/s, 4.3% kept lost vs 3.0%).

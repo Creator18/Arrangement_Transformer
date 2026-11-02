@@ -178,6 +178,43 @@ def centroid_onsets(notes, on, thr, fps):
     return notes
 
 
+def held_rescue(notes, on, fr, vl, fps, frame_thr=0.5, min_s=0.12, start_thr=0.35):
+    """Notes the arranger hears as SOUNDING but whose start fell under the onset bar (the user's request, 2026-11-02:
+    a smooth melody line, e.g. a voice alone, is heard held 91% of the time but its starts sit just under 0.8).
+
+    Per key: a run of frames with the held probability >= frame_thr lasting >= min_s that no written note of that
+    key starts in becomes a note, IF the strongest start inside it reaches start_thr.  Start at that onset peak, end
+    at the run's end.  Uses only the arranger's own outputs; never touches an existing note.
+
+        ARRANGEMENT_HELD_RESCUE   pre (before the clean-up, which may still drop them) / post (after it) / off
+        ARRANGEMENT_HELD_MIN_S, ARRANGEMENT_HELD_START   min_s / start_thr
+    """
+    by_key = {}
+    for n in notes:
+        by_key.setdefault(int(n["pitch"]), []).append(n["onset"])
+    add = []
+    for k in range(fr.shape[0]):
+        held = np.r_[False, fr[k] >= frame_thr, False]
+        edges = np.nonzero(np.diff(held.astype(np.int8)))[0]
+        starts = np.array(by_key.get(k + 21, []))
+        for a, b in zip(edges[::2], edges[1::2]):
+            if (b - a) / fps < min_s:
+                continue
+            if len(starts) and np.any((starts >= (a - 2) / fps) & (starts < b / fps)):
+                continue                                         # a written note already covers this held run
+            lo = max(0, a - 3)
+            seg = on[k, lo:min(b, a + int(0.25 * fps))]
+            if not len(seg) or seg.max() < start_thr:
+                continue
+            f = lo + int(np.argmax(seg))
+            add.append({"pitch": k + 21, "onset": f / fps, "offset": b / fps,
+                        "velocity": int(np.clip(float(vl[k, f:b].max()) * 127, 1, 127)) if vl is not None else 64,
+                        "rescued": True})
+    print(f"[held-rescue] {len(add)} notes added where a held note had no written start "
+          f"(held >= {frame_thr} for >= {min_s * 1000:.0f} ms, start >= {start_thr})")
+    return sorted(notes + add, key=lambda n: (n["onset"], n["pitch"]))
+
+
 def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
                ckpt: Optional[pathlib.Path] = None, cond: Optional[int] = None,
                frame_thr: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -217,10 +254,21 @@ def transcribe(audio_path: pathlib.Path, onset_thr: Optional[float] = None,
     if os.environ.get("ARRANGEMENT_ONSET_CENTROID", "1") != "0":
         from app.ml.spectral import frontend as S
         notes = centroid_onsets(notes, on, thr, S.FPS)
+    rescue = os.environ.get("ARRANGEMENT_HELD_RESCUE", "off") if ckpt is not None else "off"
+    if rescue in ("pre", "post"):
+        from app.ml.spectral import frontend as S
+        kw = dict(frame_thr=fthr, min_s=float(os.environ.get("ARRANGEMENT_HELD_MIN_S", "0.12")),
+                  start_thr=float(os.environ.get("ARRANGEMENT_HELD_START", "0.35")))
+        # found against the arranger's RAW notes either way, so "post" never re-adds a note the clean-up dropped
+        rescued = [n for n in held_rescue(notes, on, fr, vl, S.FPS, **kw) if n.get("rescued")]
+    if rescue == "pre":
+        notes = sorted(notes + rescued, key=lambda n: (n["onset"], n["pitch"]))
     if ckpt is not None:                 # the song arranger only: keep / drop each note (app/services/cleanup.py)
         from app.services import cleanup
         if cleanup.enabled():
             notes = cleanup.apply(notes, on, fr, audio_path)
+        if rescue == "post":             # after the clean-up: rescued notes are kept as heard
+            notes = sorted(notes + rescued, key=lambda n: (n["onset"], n["pitch"]))
         from app.services import slides
         if slides.enabled():             # the passing notes of slides / scoops (app/services/slides.py)
             notes = slides.apply(notes)
