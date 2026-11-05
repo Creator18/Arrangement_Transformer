@@ -151,7 +151,7 @@ the start/end range picker matters for the demo.
 - Nothing is started. The user picks the host and creates the account.
 **Hosted now (2026-11-02): v4 without beats, never-kept bar 0.8 (user's choice):**
 `serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4_nobeat/best.pt -Keep 0.3 -Merge 0.5 -NK 0.8 -Sustain`
-**Random-note curriculum (user's design, 2026-11-02, run 3 RUNNING):** fine-tune the arranger to say exactly what was played
+**Random-note curriculum (user's design, 2026-11-02; run 3 finished 2026-11-03):** fine-tune the arranger to say exactly what was played
 on random notes with random qualities, easy -> hard, max 10 notes at once (fingers); same notes may recur only with new
 qualities. Rendered ON THE FLY (never pre-rendered): `eval/random_notes.py` (generator, 6 LEVELS, tags incl.
 "inaudible" = neither taught nor scored), `eval/random_producer.py` (16 CPU producers on `courses`, staggered, feed
@@ -182,6 +182,15 @@ inside the copy). The LR was only ~half decayed at the stop.
 ~17:45): `--level-budget 10000` moves up after 10k steps on a level even without passing (`level{N}_budget.pt`; a real
 pass still saves `level{N}_done.pt`; `state["ups"]` records which), so level 6 by ~40k. `--arr-base 0.5425` (base20m's
 own arrange F1) so "vs base" compares with the real base, not the init checkpoint.
+Run 3 result (60k steps): no level passed; moved up on the budget at 10k/20k/30k/40k. Identify F1: L2 0.95-0.97,
+L3 ~0.85, L4 0.66-0.77, L5 ~0.62, L6 ~0.53 (P 0.44 / R 0.67). Arrange F1 on the check clips 0.001-0.02 over the base
+from L4 on (final 0.5575). **Real songs** (`eval/s2p_evaluate.py`, 106 held-out Music2MIDI songs, thresholds tuned on
+validation, no clean-up; `logs/eval_random3.json`), cond 2 ("adv" rows = what the app passes): strict F1 base20m 0.251,
+run 3 0.253, run 3 level-4 checkpoint 0.252 = a tie. Run 3 trades recall for precision (P 0.261 vs 0.228, R 0.265 vs
+0.298) and plays 8.3 notes/s vs 10.9 (human 8.0), slightly better harmony/melody/bass, less mud. In the HOSTED app
+(thr 0.8 + clean-up) on 3 of the user's songs the density was the same as the base (+1-2.5%), ~1 note in 7 different
+(`backend/temp/ab_random3`, base on :8000 vs run 3 on :8001). Not in the app. Next: the real-song test at the app's
+settings (fixed 0.8 + clean-up), and the user's ears.
 
 **Position + repeats (2026-11-01, `eval/position_repeat.py`, `/scratch/basu.ang/position_repeat`, 840 songs):**
 - We do NOT drop more at the start: removed 23% of the arranger's notes in the first 5 s vs 33-37% later; final
