@@ -151,7 +151,7 @@ the start/end range picker matters for the demo.
 - Nothing is started. The user picks the host and creates the account.
 **Hosted now (2026-11-02): v4 without beats, never-kept bar 0.8 (user's choice):**
 `serve.ps1 -Arranger app/ml/spectral/checkpoints/base20m/best.pt -Threshold 0.8 -Cleanup app/ml/spectral/checkpoints/cleanup4_nobeat/best.pt -Keep 0.3 -Merge 0.5 -NK 0.8 -Sustain`
-**Random-note curriculum (user's design, 2026-11-02; run 3 finished 2026-11-03):** fine-tune the arranger to say exactly what was played
+**Random-note curriculum (user's design, 2026-11-02; run 3 finished 2026-11-03, a tie on real songs):** fine-tune the arranger to say exactly what was played
 on random notes with random qualities, easy -> hard, max 10 notes at once (fingers); same notes may recur only with new
 qualities. Rendered ON THE FLY (never pre-rendered): `eval/random_notes.py` (generator, 6 LEVELS, tags incl.
 "inaudible" = neither taught nor scored), `eval/random_producer.py` (16 CPU producers on `courses`, staggered, feed
@@ -189,8 +189,13 @@ validation, no clean-up; `logs/eval_random3.json`), cond 2 ("adv" rows = what th
 run 3 0.253, run 3 level-4 checkpoint 0.252 = a tie. Run 3 trades recall for precision (P 0.261 vs 0.228, R 0.265 vs
 0.298) and plays 8.3 notes/s vs 10.9 (human 8.0), slightly better harmony/melody/bass, less mud. In the HOSTED app
 (thr 0.8 + clean-up) on 3 of the user's songs the density was the same as the base (+1-2.5%), ~1 note in 7 different
-(`backend/temp/ab_random3`, base on :8000 vs run 3 on :8001). Not in the app. Next: the real-song test at the app's
-settings (fixed 0.8 + clean-up), and the user's ears.
+(`backend/temp/ab_random3`, base on :8000 vs run 3 on :8001). Not in the app.
+**At the app's settings** (`eval/s2p_app_eval.py`: the app's own note path, cond 2, onset 0.8 / frame 0.5, clean-up v4
+no-beats keep 0.3 / merge 0.5 / NK 0.8; `logs/eval-app3.json`), 106 songs, strict F1: base20m 0.266, run 3 0.266 = a
+tie (beginner 0.336 / 0.333, intermediate 0.258 / 0.258, advanced 0.230 / 0.232); run 3 +3.5% notes (11.1 vs 10.7/s).
+The earlier "fewer notes" came only from s2p_evaluate tuning run 3 to 0.95. Clean-up: -30% notes (15.3 -> 10.7/s),
+P +0.03, F1 +0.01 for both. Still ~33% over the human density (8.0/s; beginner 7.0 vs 4.5). Run 3 NOT adopted:
+base20m stays hosted. The random-note curriculum taught identifying, not arranging.
 
 **Position + repeats (2026-11-01, `eval/position_repeat.py`, `/scratch/basu.ang/position_repeat`, 840 songs):**
 - We do NOT drop more at the start: removed 23% of the arranger's notes in the first 5 s vs 33-37% later; final
